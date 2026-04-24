@@ -24,6 +24,7 @@ final class OrbisonicEngine {
     private var sourceNodes: [AVAudioSourceNode] = []
     private var testToneNodes: [AVAudioSourceNode] = []
     private var livePipe: LiveAudioPipe?
+    private var liveCapture: LiveInputCapture?
     private var liveStartDate: Date?
     private var currentStartFrame: AVAudioFramePosition = 0
     private var completionToken = UUID()
@@ -71,11 +72,10 @@ final class OrbisonicEngine {
             throw LiveInputError.inputDeviceUnavailable(inputRoute.deviceName)
         }
 
-        let inputNode = engine.inputNode
-        try selectInputDevice(inputRoute, for: inputNode)
-
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-        let availableChannels = inputFormat.channelCount
+        let availableChannels = UInt32(inputRoute.inputChannelCount)
+        let sampleRate = inputRoute.nominalSampleRate > 0
+            ? inputRoute.nominalSampleRate
+            : preferredOutputSampleRate()
 
         guard availableChannels > 0 else {
             throw LiveInputError.noInputChannels
@@ -89,10 +89,10 @@ final class OrbisonicEngine {
         }
 
         guard let monoFormat = AVAudioFormat(
-            standardFormatWithSampleRate: inputFormat.sampleRate,
+            standardFormatWithSampleRate: sampleRate,
             channels: 1
         ) else {
-            throw LiveInputError.monoFormatCreationFailed(inputFormat.sampleRate)
+            throw LiveInputError.monoFormatCreationFailed(sampleRate)
         }
 
         let layout = SurroundLayoutDetector.fallbackLayout(for: requestedChannelCount)
@@ -103,14 +103,21 @@ final class OrbisonicEngine {
             layoutName: layout.name,
             channelSummary: layout.channelSummary,
             channelCount: layout.channelCount,
-            sampleRate: inputFormat.sampleRate,
+            sampleRate: sampleRate,
             bitDepth: 32,
             duration: 0
         )
         let liveSource = LiveInputSource(layout: layout, metadata: metadata)
-        let pipe = LiveAudioPipe(channelCount: requestedChannelCount, sampleRate: inputFormat.sampleRate)
+        let pipe = LiveAudioPipe(channelCount: requestedChannelCount, sampleRate: sampleRate)
+        let capture = try LiveInputCapture(
+            inputRoute: inputRoute,
+            activeChannelCount: requestedChannelCount,
+            sampleRate: sampleRate,
+            pipe: pipe
+        )
 
         livePipe = pipe
+        liveCapture = capture
         liveInputSource = liveSource
         loadedFile = nil
         currentStartFrame = 0
@@ -128,14 +135,15 @@ final class OrbisonicEngine {
 
         applyTuning(tuning)
 
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 512, format: inputFormat) { [weak pipe] buffer, _ in
-            pipe?.write(buffer: buffer)
-        }
-
-        if !engine.isRunning {
-            try engine.start()
-            AppLogger.shared.notice(category: "engine", "AVAudioEngine started for live input.")
+        do {
+            if !engine.isRunning {
+                try engine.start()
+                AppLogger.shared.notice(category: "engine", "AVAudioEngine started for live input.")
+            }
+            try capture.start()
+        } catch {
+            stopLiveInput()
+            throw error
         }
 
         liveStartDate = Date()
@@ -143,7 +151,7 @@ final class OrbisonicEngine {
 
         AppLogger.shared.notice(
             category: "live-input",
-            "Started live input source=\(sourceName) input=\(inputRoute.deviceName) inputUID=\(inputRoute.uid) inputChannels=\(availableChannels) activeChannels=\(requestedChannelCount) sampleRate=\(inputFormat.sampleRate) layout=\(layout.name)"
+            "Started live input source=\(sourceName) input=\(inputRoute.deviceName) inputUID=\(inputRoute.uid) inputChannels=\(availableChannels) activeChannels=\(requestedChannelCount) sampleRate=\(sampleRate) layout=\(layout.name)"
         )
 
         return liveSource
@@ -470,10 +478,11 @@ final class OrbisonicEngine {
     }
 
     private func stopLiveInput() {
-        let hadLiveInput = liveInputSource != nil || livePipe != nil || !sourceNodes.isEmpty
+        let hadLiveInput = liveInputSource != nil || livePipe != nil || liveCapture != nil || !sourceNodes.isEmpty
         guard hadLiveInput else { return }
 
-        engine.inputNode.removeTap(onBus: 0)
+        liveCapture?.stop()
+        liveCapture = nil
         livePipe?.reset()
         livePipe = nil
         liveInputSource = nil
@@ -481,34 +490,6 @@ final class OrbisonicEngine {
         detachSourceNodes()
         AppLogger.shared.notice(category: "live-input", "Stopped live input.")
         stopEngineIfRunning(reason: "live input stop")
-    }
-
-    private func selectInputDevice(_ inputRoute: InputRouteInfo, for inputNode: AVAudioInputNode) throws {
-        guard let audioUnit = inputNode.audioUnit else {
-            throw LiveInputError.inputAudioUnitUnavailable(inputRoute.deviceName)
-        }
-
-        var deviceID = inputRoute.deviceID
-        let status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &deviceID,
-            UInt32(MemoryLayout<AudioDeviceID>.size)
-        )
-
-        guard status == noErr else {
-            throw LiveInputError.inputDeviceSelectionFailed(
-                deviceName: inputRoute.deviceName,
-                status: status
-            )
-        }
-
-        AppLogger.shared.notice(
-            category: "live-input",
-            "Selected direct input device=\(inputRoute.deviceName) uid=\(inputRoute.uid) channels=\(inputRoute.inputChannelCount) sampleRate=\(inputRoute.nominalSampleRate)"
-        )
     }
 
     private func stopEngineIfRunning(reason: String) {

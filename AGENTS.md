@@ -32,6 +32,7 @@ If the app is already running, quit and reopen it before judging UI/audio behavi
 - The audio path is the most important part of this app. Prefer correctness, stability, and low-risk architecture over quick UI-visible fixes.
 - Do not mask live audio failures with buffering tricks. If the input is all zeros, diagnose routing/sample-rate/source-device problems.
 - The Roon live path captures the app-selected input device, expected to be `BlackHole 64ch`, without requiring macOS Sound Input to switch away from the user's mic.
+- macOS presents all input-device capture as "Microphone" permission, including BlackHole. That prompt is expected and does not by itself mean the physical mic is selected.
 - Local file playback and Roon live capture are separate paths. Do not assume a fix in one path fixes the other.
 - For Roon/BlackHole problems, inspect `~/Library/Logs/Orbisonic/orbisonic.log` and compare:
   - Roon output sample rate

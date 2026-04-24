@@ -23,6 +23,8 @@ Switch macOS audio output to AirPods or another headphone device before playback
 
 For Roon capture, select `BlackHole 64ch` inside Orbisonic's App Input menu. macOS Sound Input can stay on the built-in mic or another microphone for normal apps.
 
+macOS will still show this as a microphone permission prompt because every app-level input device, including BlackHole, is covered by the same privacy gate. Granting that permission lets Orbisonic capture the selected App Input; it does not force the app to use the MacBook microphone.
+
 ## Head Tracking Note
 
 The app enables Apple listener head tracking in code through `AVAudioEnvironmentNode`. Sensor-driven head tracking and personalized spatial audio profile access still require the matching entitlements in a properly signed Xcode target.

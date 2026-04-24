@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Foundation
 
@@ -10,6 +11,8 @@ enum LiveInputError: LocalizedError {
     case inputDeviceUnavailable(String)
     case inputDeviceSelectionFailed(deviceName: String, status: OSStatus)
     case inputAudioUnitUnavailable(String)
+    case inputAudioUnitConfigurationFailed(deviceName: String, operation: String, status: OSStatus)
+    case inputAudioUnitStartFailed(deviceName: String, status: OSStatus)
     case noInputChannels
     case unsupportedChannelRequest(requested: Int, available: UInt32)
     case monoFormatCreationFailed(Double)
@@ -22,13 +25,320 @@ enum LiveInputError: LocalizedError {
             "Unable to capture \(deviceName) directly. Core Audio returned \(status)."
         case .inputAudioUnitUnavailable(let deviceName):
             "Unable to access the Core Audio input unit for \(deviceName)."
+        case .inputAudioUnitConfigurationFailed(let deviceName, let operation, let status):
+            "Unable to configure \(deviceName) for live capture while \(operation). Core Audio returned \(status)."
+        case .inputAudioUnitStartFailed(let deviceName, let status):
+            "Unable to start live capture from \(deviceName). Core Audio returned \(status)."
         case .noInputChannels:
             "The selected input device has no input channels."
         case .unsupportedChannelRequest(let requested, let available):
-            "Requested \(requested) live input channels, but the current input device exposes \(available)."
+            "Requested \(requested) live input channels, but the selected input device exposes \(available)."
         case .monoFormatCreationFailed(let sampleRate):
             "Unable to create a live mono render format at \(sampleRate) Hz."
         }
+    }
+}
+
+final class LiveInputCapture {
+    private let inputRoute: InputRouteInfo
+    private let pipe: LiveAudioPipe
+    private let activeChannelCount: Int
+    private let captureChannelCount: Int
+    private let sampleRate: Double
+    private var audioUnit: AudioUnit?
+    private var isStarted = false
+
+    init(
+        inputRoute: InputRouteInfo,
+        activeChannelCount: Int,
+        sampleRate: Double,
+        pipe: LiveAudioPipe
+    ) throws {
+        self.inputRoute = inputRoute
+        self.activeChannelCount = activeChannelCount
+        self.captureChannelCount = max(inputRoute.inputChannelCount, activeChannelCount, 1)
+        self.sampleRate = sampleRate
+        self.pipe = pipe
+
+        do {
+            audioUnit = try Self.makeHALInputUnit(deviceName: inputRoute.deviceName)
+            try configure()
+        } catch {
+            dispose()
+            throw error
+        }
+    }
+
+    deinit {
+        dispose()
+    }
+
+    func start() throws {
+        guard let audioUnit else {
+            throw LiveInputError.inputAudioUnitUnavailable(inputRoute.deviceName)
+        }
+
+        let status = AudioOutputUnitStart(audioUnit)
+        guard status == noErr else {
+            throw LiveInputError.inputAudioUnitStartFailed(
+                deviceName: inputRoute.deviceName,
+                status: status
+            )
+        }
+
+        isStarted = true
+        AppLogger.shared.notice(
+            category: "live-input",
+            "Started HAL capture device=\(inputRoute.deviceName) uid=\(inputRoute.uid) captureChannels=\(captureChannelCount) activeChannels=\(activeChannelCount) sampleRate=\(sampleRate)"
+        )
+    }
+
+    func stop() {
+        dispose()
+    }
+
+    private static func makeHALInputUnit(deviceName: String) throws -> AudioUnit {
+        var description = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+
+        guard let component = AudioComponentFindNext(nil, &description) else {
+            throw LiveInputError.inputAudioUnitUnavailable(deviceName)
+        }
+
+        var audioUnit: AudioUnit?
+        let status = AudioComponentInstanceNew(component, &audioUnit)
+        guard status == noErr, let audioUnit else {
+            throw LiveInputError.inputAudioUnitConfigurationFailed(
+                deviceName: deviceName,
+                operation: "creating the HAL input unit",
+                status: status
+            )
+        }
+
+        return audioUnit
+    }
+
+    private func configure() throws {
+        guard let audioUnit else {
+            throw LiveInputError.inputAudioUnitUnavailable(inputRoute.deviceName)
+        }
+
+        var enableInput: UInt32 = 1
+        try setProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_EnableIO,
+            scope: kAudioUnitScope_Input,
+            element: 1,
+            data: &enableInput,
+            size: MemoryLayout<UInt32>.size,
+            operation: "enabling input"
+        )
+
+        var disableOutput: UInt32 = 0
+        try setProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_EnableIO,
+            scope: kAudioUnitScope_Output,
+            element: 0,
+            data: &disableOutput,
+            size: MemoryLayout<UInt32>.size,
+            operation: "disabling HAL output"
+        )
+
+        var deviceID = inputRoute.deviceID
+        try setProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            scope: kAudioUnitScope_Global,
+            element: 0,
+            data: &deviceID,
+            size: MemoryLayout<AudioDeviceID>.size,
+            operation: "selecting the input device"
+        )
+
+        var format = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat
+                | kAudioFormatFlagsNativeEndian
+                | kAudioFormatFlagIsPacked
+                | kAudioFormatFlagIsNonInterleaved,
+            mBytesPerPacket: UInt32(MemoryLayout<Float>.size),
+            mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(MemoryLayout<Float>.size),
+            mChannelsPerFrame: UInt32(captureChannelCount),
+            mBitsPerChannel: UInt32(MemoryLayout<Float>.size * 8),
+            mReserved: 0
+        )
+
+        try setProperty(
+            audioUnit,
+            kAudioUnitProperty_StreamFormat,
+            scope: kAudioUnitScope_Output,
+            element: 1,
+            data: &format,
+            size: MemoryLayout<AudioStreamBasicDescription>.size,
+            operation: "setting the input stream format"
+        )
+
+        var callback = AURenderCallbackStruct(
+            inputProc: Self.inputCallback,
+            inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
+        )
+
+        try setProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_SetInputCallback,
+            scope: kAudioUnitScope_Global,
+            element: 0,
+            data: &callback,
+            size: MemoryLayout<AURenderCallbackStruct>.size,
+            operation: "installing the input callback"
+        )
+
+        let status = AudioUnitInitialize(audioUnit)
+        guard status == noErr else {
+            throw LiveInputError.inputAudioUnitConfigurationFailed(
+                deviceName: inputRoute.deviceName,
+                operation: "initializing the HAL input unit",
+                status: status
+            )
+        }
+
+        AppLogger.shared.notice(
+            category: "live-input",
+            "Configured direct HAL input device=\(inputRoute.deviceName) uid=\(inputRoute.uid) deviceID=\(inputRoute.deviceID) captureChannels=\(captureChannelCount) activeChannels=\(activeChannelCount) sampleRate=\(sampleRate)"
+        )
+    }
+
+    private func setProperty(
+        _ audioUnit: AudioUnit,
+        _ propertyID: AudioUnitPropertyID,
+        scope: AudioUnitScope,
+        element: AudioUnitElement,
+        data: UnsafeRawPointer,
+        size: Int,
+        operation: String
+    ) throws {
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            propertyID,
+            scope,
+            element,
+            data,
+            UInt32(size)
+        )
+
+        guard status == noErr else {
+            throw LiveInputError.inputAudioUnitConfigurationFailed(
+                deviceName: inputRoute.deviceName,
+                operation: operation,
+                status: status
+            )
+        }
+    }
+
+    private static let inputCallback: AURenderCallback = { refCon, ioActionFlags, timeStamp, _, frameCount, _ in
+        let capture = Unmanaged<LiveInputCapture>.fromOpaque(refCon).takeUnretainedValue()
+        return capture.renderInput(
+            ioActionFlags: ioActionFlags,
+            timeStamp: timeStamp,
+            frameCount: frameCount
+        )
+    }
+
+    private func renderInput(
+        ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+        timeStamp: UnsafePointer<AudioTimeStamp>,
+        frameCount: UInt32
+    ) -> OSStatus {
+        guard let audioUnit else {
+            return kAudioUnitErr_Uninitialized
+        }
+
+        guard frameCount > 0 else {
+            return noErr
+        }
+
+        let bufferList = makeBufferList(frameCount: frameCount)
+        defer {
+            releaseBufferList(bufferList)
+        }
+
+        let status = AudioUnitRender(
+            audioUnit,
+            ioActionFlags,
+            timeStamp,
+            1,
+            frameCount,
+            bufferList
+        )
+
+        guard status == noErr else {
+            return status
+        }
+
+        pipe.write(bufferList: UnsafeMutableAudioBufferListPointer(bufferList), frameCount: Int(frameCount))
+        return noErr
+    }
+
+    private func makeBufferList(frameCount: UInt32) -> UnsafeMutablePointer<AudioBufferList> {
+        let channelCount = max(captureChannelCount, 1)
+        let byteCount = MemoryLayout<AudioBufferList>.size
+            + MemoryLayout<AudioBuffer>.stride * (channelCount - 1)
+        let rawBufferList = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        rawBufferList.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+
+        let bufferList = rawBufferList.bindMemory(to: AudioBufferList.self, capacity: 1)
+        bufferList.pointee.mNumberBuffers = UInt32(channelCount)
+
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+        let dataByteCount = Int(frameCount) * MemoryLayout<Float>.size
+
+        for index in buffers.indices {
+            let channelData = UnsafeMutableRawPointer.allocate(
+                byteCount: dataByteCount,
+                alignment: MemoryLayout<Float>.alignment
+            )
+            channelData.initializeMemory(as: Float.self, repeating: 0, count: Int(frameCount))
+
+            buffers[index] = AudioBuffer(
+                mNumberChannels: 1,
+                mDataByteSize: UInt32(dataByteCount),
+                mData: channelData
+            )
+        }
+
+        return bufferList
+    }
+
+    private func releaseBufferList(_ bufferList: UnsafeMutablePointer<AudioBufferList>) {
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+        for index in buffers.indices {
+            buffers[index].mData?.deallocate()
+        }
+        UnsafeMutableRawPointer(bufferList).deallocate()
+    }
+
+    private func dispose() {
+        guard let audioUnit else { return }
+
+        if isStarted {
+            AudioOutputUnitStop(audioUnit)
+            isStarted = false
+        }
+
+        AudioUnitUninitialize(audioUnit)
+        AudioComponentInstanceDispose(audioUnit)
+        self.audioUnit = nil
     }
 }
 
@@ -230,6 +540,33 @@ final class LiveAudioPipe {
             let source = channelData[channel]
             rings[channel].write(source, frameCount: frames)
             nextMeters[channel] = Self.meterLevel(samples: source, frameCount: frames)
+        }
+
+        meterLock.lock()
+        meterLevels = nextMeters
+        meterLock.unlock()
+    }
+
+    func write(bufferList: UnsafeMutableAudioBufferListPointer, frameCount: Int) {
+        let channelsToWrite = min(channelCount, bufferList.count)
+        guard frameCount > 0, channelsToWrite > 0 else { return }
+
+        var nextMeters = Array(repeating: Float(0), count: channelCount)
+
+        for channel in 0..<channelsToWrite {
+            guard let rawData = bufferList[channel].mData else {
+                continue
+            }
+
+            let source = rawData.assumingMemoryBound(to: Float.self)
+            let availableFrames = Int(bufferList[channel].mDataByteSize) / MemoryLayout<Float>.size
+            let framesToWrite = min(frameCount, availableFrames)
+            guard framesToWrite > 0 else {
+                continue
+            }
+
+            rings[channel].write(source, frameCount: framesToWrite)
+            nextMeters[channel] = Self.meterLevel(samples: source, frameCount: framesToWrite)
         }
 
         meterLock.lock()

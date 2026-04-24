@@ -15,6 +15,9 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Orbisonic",
+            exclude: [
+                "Resources/AppLogos/README.md"
+            ],
             resources: [
                 .process("Resources")
             ]
