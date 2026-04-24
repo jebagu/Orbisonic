@@ -1,5 +1,5 @@
 {
-  "format": "1024x1024 SVG app-logo sources, two-color CSS variable palette",
+  "format": "1024x1024 traced SVG app-logo sources, two-color CSS variable palette",
   "colors": {
     "background": "--logo-bg",
     "foreground": "--logo-fg"
@@ -17,10 +17,10 @@
     }
   ],
   "palette_variations": [
-    { "name": "Cyan", "background": "#071014", "foreground": "#5EEAD4" },
-    { "name": "Blue", "background": "#071014", "foreground": "#60A5FA" },
-    { "name": "Amber", "background": "#071014", "foreground": "#FACC15" },
-    { "name": "Rose", "background": "#071014", "foreground": "#FB7185" },
-    { "name": "Ice", "background": "#0D181D", "foreground": "#EFFCFF" }
+    { "name": "Green / Primary Dark", "background": "#1E212A", "foreground": "#2ECC8A" },
+    { "name": "Pink / Primary Dark", "background": "#1E212A", "foreground": "#F48FAA" },
+    { "name": "Green / Secondary Dark", "background": "#2A2E38", "foreground": "#2ECC8A" },
+    { "name": "Pink / Secondary Dark", "background": "#2A2E38", "foreground": "#F48FAA" },
+    { "name": "Pink / Deep Green", "background": "#197B67", "foreground": "#F48FAA" }
   ]
 }
