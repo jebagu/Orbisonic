@@ -1,0 +1,20 @@
+{
+  "source": "Screenshot 2026-04-24 at 11.35.03 AM.png",
+  "color": "transparent SVG, currentColor template art, default #E7ECEF",
+  "icons": [
+    { "name": "Selection Check", "file": "selection-check.svg", "category": "menu-state" },
+    { "name": "Stereo", "file": "layout-stereo.svg", "category": "base" },
+    { "name": "5.1", "file": "layout-5-1.svg", "category": "surround" },
+    { "name": "6.1", "file": "layout-6-1.svg", "category": "surround" },
+    { "name": "7.1", "file": "layout-7-1.svg", "category": "surround" },
+    { "name": "7.1 Rear Surround", "file": "layout-7-1-rear-surround.svg", "category": "surround" },
+    { "name": "5.1.2", "file": "layout-5-1-2.svg", "category": "atmos" },
+    { "name": "5.1.4", "file": "layout-5-1-4.svg", "category": "atmos" },
+    { "name": "7.1.2", "file": "layout-7-1-2.svg", "category": "atmos" },
+    { "name": "7.1.4", "file": "layout-7-1-4.svg", "category": "atmos" },
+    { "name": "9.1.6", "file": "layout-9-1-6.svg", "category": "atmos" },
+    { "name": "Quadraphonic", "file": "layout-quadraphonic.svg", "category": "geometric" },
+    { "name": "Hexagonal", "file": "layout-hexagonal.svg", "category": "geometric" },
+    { "name": "Octagonal", "file": "layout-octagonal.svg", "category": "geometric" }
+  ]
+}

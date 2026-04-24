@@ -1,0 +1,26 @@
+{
+  "format": "1024x1024 SVG app-logo sources, two-color CSS variable palette",
+  "colors": {
+    "background": "--logo-bg",
+    "foreground": "--logo-fg"
+  },
+  "logos": [
+    {
+      "name": "Surround Option 6",
+      "file": "logo-surround-option-6.svg",
+      "source": "source-assets/logo-surround-option-6.jpg"
+    },
+    {
+      "name": "Orbital Corners",
+      "file": "logo-orbital-corners.svg",
+      "source": "source-assets/logo-orbital-corners.png"
+    }
+  ],
+  "palette_variations": [
+    { "name": "Cyan", "background": "#071014", "foreground": "#5EEAD4" },
+    { "name": "Blue", "background": "#071014", "foreground": "#60A5FA" },
+    { "name": "Amber", "background": "#071014", "foreground": "#FACC15" },
+    { "name": "Rose", "background": "#071014", "foreground": "#FB7185" },
+    { "name": "Ice", "background": "#0D181D", "foreground": "#EFFCFF" }
+  ]
+}

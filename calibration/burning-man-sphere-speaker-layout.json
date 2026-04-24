@@ -1,0 +1,1027 @@
+{
+  "name": "Burning Man Sphere Speaker Layout",
+  "type": "speaker-layout-calibration",
+  "format_version": 1,
+  "source": {
+    "file": "external Flux::AudioStudio export",
+    "document_type": "Flux::AudioStudio",
+    "app_version": "25.01.0.50445",
+    "room_name": "Room 1",
+    "output_config_name": "LOVEBURN CORRECT",
+    "output_config_uid": "{ED0FF58E-E5DC-AF40-815C-20504A99EF4C}",
+    "extracted_at": "2026-04-24T01:53:07.235Z"
+  },
+  "audio": {
+    "sample_rate_hz": 48000,
+    "block_size_samples": 1024,
+    "speaker_count": 52,
+    "panning_type": "VBAP 3D",
+    "number_of_internal_channels": 8,
+    "hrtf_name": "Kemar"
+  },
+  "coordinate_system": {
+    "native": "SPAT AED: azimuth degrees, elevation degrees, distance meters",
+    "derived_xyz_m": {
+      "convention": "right/front/up Cartesian coordinates derived from SPAT AED",
+      "x": "positive right",
+      "y": "positive front",
+      "z": "positive up",
+      "formulas": {
+        "x_right": "distance * cos(elevation) * sin(azimuth)",
+        "y_front": "distance * cos(elevation) * cos(azimuth)",
+        "z_up": "distance * sin(elevation)"
+      },
+      "note": "Use SPAT AED values as authoritative if importing back into SPAT or another AED-native renderer."
+    }
+  },
+  "speakers": [
+    {
+      "channel": 1,
+      "label": "1",
+      "spat": {
+        "azimuth_deg": 90,
+        "elevation_deg": -90,
+        "distance_m": 9.600000381
+      },
+      "xyz_m": {
+        "x_right": 0,
+        "y_front": 0,
+        "z_up": -9.6
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 2,
+      "label": "2",
+      "spat": {
+        "azimuth_deg": 17.9691388,
+        "elevation_deg": -62.165154889,
+        "distance_m": 9.596774283
+      },
+      "xyz_m": {
+        "x_right": 1.3824,
+        "y_front": 4.2624,
+        "z_up": -8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 3,
+      "label": "3",
+      "spat": {
+        "azimuth_deg": 55.700996734,
+        "elevation_deg": 3.675649163,
+        "distance_m": 8.535571758
+      },
+      "xyz_m": {
+        "x_right": 7.0368,
+        "y_front": 4.8,
+        "z_up": 0.5472
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 4,
+      "label": "4",
+      "spat": {
+        "azimuth_deg": 162.0308612,
+        "elevation_deg": -62.165154889,
+        "distance_m": 9.596774283
+      },
+      "xyz_m": {
+        "x_right": 1.3824,
+        "y_front": -4.2624,
+        "z_up": -8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 5,
+      "label": "5",
+      "spat": {
+        "azimuth_deg": -125.937143431,
+        "elevation_deg": -62.160378749,
+        "distance_m": 9.597196739
+      },
+      "xyz_m": {
+        "x_right": -3.6288,
+        "y_front": -2.6304,
+        "z_up": -8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 6,
+      "label": "6",
+      "spat": {
+        "azimuth_deg": -54.062856569,
+        "elevation_deg": -62.160378749,
+        "distance_m": 9.597196739
+      },
+      "xyz_m": {
+        "x_right": -3.6288,
+        "y_front": 2.6304,
+        "z_up": -8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 7,
+      "label": "7",
+      "spat": {
+        "azimuth_deg": -45,
+        "elevation_deg": -35.545247858,
+        "distance_m": 9.594291187
+      },
+      "xyz_m": {
+        "x_right": -5.52,
+        "y_front": 5.52,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 8,
+      "label": "8",
+      "spat": {
+        "azimuth_deg": -8.976286112,
+        "elevation_deg": -35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": -1.2192,
+        "y_front": 7.7184,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 9,
+      "label": "9",
+      "spat": {
+        "azimuth_deg": 26.974523238,
+        "elevation_deg": -35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": 3.5424,
+        "y_front": 6.960001,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 10,
+      "label": "10",
+      "spat": {
+        "azimuth_deg": 63.025476762,
+        "elevation_deg": -35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": 6.960001,
+        "y_front": 3.5424,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 11,
+      "label": "11",
+      "spat": {
+        "azimuth_deg": 98.976286112,
+        "elevation_deg": -35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": 7.7184,
+        "y_front": -1.2192,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 12,
+      "label": "12",
+      "spat": {
+        "azimuth_deg": 135,
+        "elevation_deg": -35.545247858,
+        "distance_m": 9.594291187
+      },
+      "xyz_m": {
+        "x_right": 5.52,
+        "y_front": -5.52,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 13,
+      "label": "13",
+      "spat": {
+        "azimuth_deg": 171.023713888,
+        "elevation_deg": -35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": 1.2192,
+        "y_front": -7.7184,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 14,
+      "label": "14",
+      "spat": {
+        "azimuth_deg": -153.025476762,
+        "elevation_deg": -35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": -3.5424,
+        "y_front": -6.960001,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 15,
+      "label": "15",
+      "spat": {
+        "azimuth_deg": -116.974523238,
+        "elevation_deg": -35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": -6.960001,
+        "y_front": -3.5424,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 16,
+      "label": "16",
+      "spat": {
+        "azimuth_deg": -81.023713888,
+        "elevation_deg": -35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": -7.7184,
+        "y_front": 1.2192,
+        "z_up": -5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 17,
+      "label": "17",
+      "spat": {
+        "azimuth_deg": -62.990400036,
+        "elevation_deg": -11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": -8.380801,
+        "y_front": 4.272,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 18,
+      "label": "18",
+      "spat": {
+        "azimuth_deg": -27.009599964,
+        "elevation_deg": -11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": -4.272,
+        "y_front": 8.380801,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 19,
+      "label": "19",
+      "spat": {
+        "azimuth_deg": 8.981744705,
+        "elevation_deg": -11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": 1.4688,
+        "y_front": 9.2928,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 20,
+      "label": "20",
+      "spat": {
+        "azimuth_deg": 45,
+        "elevation_deg": -11.477911739,
+        "distance_m": 9.600475819
+      },
+      "xyz_m": {
+        "x_right": 6.6528,
+        "y_front": 6.6528,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 21,
+      "label": "21",
+      "spat": {
+        "azimuth_deg": 81.018255295,
+        "elevation_deg": -11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": 9.2928,
+        "y_front": 1.4688,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 22,
+      "label": "22",
+      "spat": {
+        "azimuth_deg": 117.009599964,
+        "elevation_deg": -11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": 8.380801,
+        "y_front": -4.272,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 23,
+      "label": "23",
+      "spat": {
+        "azimuth_deg": 152.990400036,
+        "elevation_deg": -11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": 4.272,
+        "y_front": -8.380801,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 24,
+      "label": "24",
+      "spat": {
+        "azimuth_deg": -171.018255295,
+        "elevation_deg": -11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": -1.4688,
+        "y_front": -9.2928,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 25,
+      "label": "25",
+      "spat": {
+        "azimuth_deg": -135,
+        "elevation_deg": -11.477911739,
+        "distance_m": 9.600475819
+      },
+      "xyz_m": {
+        "x_right": -6.6528,
+        "y_front": -6.6528,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 26,
+      "label": "26",
+      "spat": {
+        "azimuth_deg": -98.981744705,
+        "elevation_deg": -11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": -9.2928,
+        "y_front": -1.4688,
+        "z_up": -1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 27,
+      "label": "27",
+      "spat": {
+        "azimuth_deg": -81.018255295,
+        "elevation_deg": 11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": -9.2928,
+        "y_front": 1.4688,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 28,
+      "label": "28",
+      "spat": {
+        "azimuth_deg": -45,
+        "elevation_deg": 11.477911739,
+        "distance_m": 9.600475819
+      },
+      "xyz_m": {
+        "x_right": -6.6528,
+        "y_front": 6.6528,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 29,
+      "label": "29",
+      "spat": {
+        "azimuth_deg": -8.981744705,
+        "elevation_deg": 11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": -1.4688,
+        "y_front": 9.2928,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 30,
+      "label": "30",
+      "spat": {
+        "azimuth_deg": 27.009599964,
+        "elevation_deg": 11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": 4.272,
+        "y_front": 8.380801,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 31,
+      "label": "31",
+      "spat": {
+        "azimuth_deg": 62.990400036,
+        "elevation_deg": 11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": 8.380801,
+        "y_front": 4.272,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 32,
+      "label": "32",
+      "spat": {
+        "azimuth_deg": 98.981744705,
+        "elevation_deg": 11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": 9.2928,
+        "y_front": -1.4688,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 33,
+      "label": "33",
+      "spat": {
+        "azimuth_deg": 135,
+        "elevation_deg": 11.477911739,
+        "distance_m": 9.600475819
+      },
+      "xyz_m": {
+        "x_right": 6.6528,
+        "y_front": -6.6528,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 34,
+      "label": "34",
+      "spat": {
+        "azimuth_deg": 171.018255295,
+        "elevation_deg": 11.478290188,
+        "distance_m": 9.600163529
+      },
+      "xyz_m": {
+        "x_right": 1.4688,
+        "y_front": -9.2928,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 35,
+      "label": "35",
+      "spat": {
+        "azimuth_deg": -152.990400036,
+        "elevation_deg": 11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": -4.272,
+        "y_front": -8.380801,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 36,
+      "label": "36",
+      "spat": {
+        "azimuth_deg": -117.009599964,
+        "elevation_deg": 11.47991318,
+        "distance_m": 9.598824496
+      },
+      "xyz_m": {
+        "x_right": -8.380801,
+        "y_front": -4.272,
+        "z_up": 1.9104
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 37,
+      "label": "37",
+      "spat": {
+        "azimuth_deg": -98.976286112,
+        "elevation_deg": 35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": -7.7184,
+        "y_front": -1.2192,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 38,
+      "label": "38",
+      "spat": {
+        "azimuth_deg": -63.025476762,
+        "elevation_deg": 35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": -6.960001,
+        "y_front": 3.5424,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 39,
+      "label": "39",
+      "spat": {
+        "azimuth_deg": -26.974523238,
+        "elevation_deg": 35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": -3.5424,
+        "y_front": 6.960001,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 40,
+      "label": "40",
+      "spat": {
+        "azimuth_deg": 8.976286112,
+        "elevation_deg": 35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": 1.2192,
+        "y_front": 7.7184,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 41,
+      "label": "41",
+      "spat": {
+        "azimuth_deg": 45,
+        "elevation_deg": 35.545247858,
+        "distance_m": 9.594291187
+      },
+      "xyz_m": {
+        "x_right": 5.52,
+        "y_front": 5.52,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 42,
+      "label": "42",
+      "spat": {
+        "azimuth_deg": 81.023713888,
+        "elevation_deg": 35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": 7.7184,
+        "y_front": 1.2192,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 43,
+      "label": "43",
+      "spat": {
+        "azimuth_deg": 116.974523238,
+        "elevation_deg": 35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": 6.960001,
+        "y_front": -3.5424,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 44,
+      "label": "44",
+      "spat": {
+        "azimuth_deg": 153.025476762,
+        "elevation_deg": 35.534267769,
+        "distance_m": 9.596865427
+      },
+      "xyz_m": {
+        "x_right": 3.5424,
+        "y_front": -6.960001,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 45,
+      "label": "45",
+      "spat": {
+        "azimuth_deg": -171.023713888,
+        "elevation_deg": 35.51873852,
+        "distance_m": 9.600509163
+      },
+      "xyz_m": {
+        "x_right": -1.2192,
+        "y_front": -7.7184,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 46,
+      "label": "46",
+      "spat": {
+        "azimuth_deg": -135,
+        "elevation_deg": 35.545247858,
+        "distance_m": 9.594291187
+      },
+      "xyz_m": {
+        "x_right": -5.52,
+        "y_front": -5.52,
+        "z_up": 5.5776
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 47,
+      "label": "47",
+      "spat": {
+        "azimuth_deg": -125.937143431,
+        "elevation_deg": 62.160378749,
+        "distance_m": 9.597196739
+      },
+      "xyz_m": {
+        "x_right": -3.6288,
+        "y_front": -2.6304,
+        "z_up": 8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 48,
+      "label": "48",
+      "spat": {
+        "azimuth_deg": -54.062856569,
+        "elevation_deg": 62.160378749,
+        "distance_m": 9.597196739
+      },
+      "xyz_m": {
+        "x_right": -3.6288,
+        "y_front": 2.6304,
+        "z_up": 8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 49,
+      "label": "49",
+      "spat": {
+        "azimuth_deg": 17.9691388,
+        "elevation_deg": 62.165154889,
+        "distance_m": 9.596774283
+      },
+      "xyz_m": {
+        "x_right": 1.3824,
+        "y_front": 4.2624,
+        "z_up": 8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 50,
+      "label": "50",
+      "spat": {
+        "azimuth_deg": 90,
+        "elevation_deg": 62.15337752,
+        "distance_m": 9.597816195
+      },
+      "xyz_m": {
+        "x_right": 4.4832,
+        "y_front": 0,
+        "z_up": 8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 51,
+      "label": "51",
+      "spat": {
+        "azimuth_deg": 162.0308612,
+        "elevation_deg": 62.165154889,
+        "distance_m": 9.596774283
+      },
+      "xyz_m": {
+        "x_right": 1.3824,
+        "y_front": -4.2624,
+        "z_up": 8.4864
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 52,
+      "label": "52",
+      "spat": {
+        "azimuth_deg": 90,
+        "elevation_deg": 90,
+        "distance_m": 9.600000381
+      },
+      "xyz_m": {
+        "x_right": 0,
+        "y_front": 0,
+        "z_up": 9.6
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    }
+  ]
+}

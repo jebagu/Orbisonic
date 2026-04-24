@@ -1,0 +1,788 @@
+{
+  "name": "Chateau du Fey Sphere Speaker Layout",
+  "type": "speaker-layout-calibration",
+  "format_version": 1,
+  "source": {
+    "generated_layout": true,
+    "basis": "Best-guess 30-speaker spherical layout requested by user; no measured Chateau du Fey coordinates were provided.",
+    "layout_model": "Horizontal rings numbered from bottom to top, with per-ring azimuth offsets to make the count spiral upward.",
+    "generated_at": "2026-04-24T01:57:33.960Z"
+  },
+  "audio": {
+    "sample_rate_hz": 48000,
+    "block_size_samples": 1024,
+    "speaker_count": 30,
+    "panning_type": "VBAP 3D",
+    "number_of_internal_channels": null,
+    "hrtf_name": null
+  },
+  "layout_assumptions": {
+    "radius_m": 1,
+    "radius_note": "Normalized unit-radius sphere. Replace distance_m with measured venue radius if physical distance/delay calibration is required.",
+    "ring_counts_bottom_to_top": [
+      1,
+      5,
+      9,
+      9,
+      5,
+      1
+    ],
+    "ring_elevations_deg_bottom_to_top": [
+      -90,
+      -54,
+      -18,
+      18,
+      54,
+      90
+    ],
+    "ring_start_azimuths_deg_bottom_to_top": [
+      0,
+      0,
+      20,
+      40,
+      60,
+      0
+    ],
+    "ring_spacing_rule": "Elevations use 36-degree steps from -90 to +90; ring counts 1/5/9/9/5/1 approximate circumference at each elevation.",
+    "numbering_rule": "Channel 1 is the bottom pole. Subsequent channels run around each horizontal ring, then move to the next higher ring. Ring start azimuths rotate upward to create a spiral numbering pattern."
+  },
+  "coordinate_system": {
+    "native": "SPAT AED: azimuth degrees, elevation degrees, distance meters",
+    "derived_xyz_m": {
+      "convention": "right/front/up Cartesian coordinates derived from SPAT AED",
+      "x": "positive right",
+      "y": "positive front",
+      "z": "positive up",
+      "formulas": {
+        "x_right": "distance * cos(elevation) * sin(azimuth)",
+        "y_front": "distance * cos(elevation) * cos(azimuth)",
+        "z_up": "distance * sin(elevation)"
+      },
+      "note": "Use SPAT AED values as authoritative if importing into SPAT or another AED-native renderer."
+    }
+  },
+  "speakers": [
+    {
+      "channel": 1,
+      "label": "1",
+      "ring": {
+        "index": 1,
+        "position": 1,
+        "count": 1,
+        "note": "bottom pole"
+      },
+      "spat": {
+        "azimuth_deg": 0,
+        "elevation_deg": -90,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0,
+        "y_front": 0,
+        "z_up": -1
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 2,
+      "label": "2",
+      "ring": {
+        "index": 2,
+        "position": 1,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": 0,
+        "elevation_deg": -54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0,
+        "y_front": 0.587785,
+        "z_up": -0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 3,
+      "label": "3",
+      "ring": {
+        "index": 2,
+        "position": 2,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": 72,
+        "elevation_deg": -54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.559017,
+        "y_front": 0.181636,
+        "z_up": -0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 4,
+      "label": "4",
+      "ring": {
+        "index": 2,
+        "position": 3,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": 144,
+        "elevation_deg": -54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.345492,
+        "y_front": -0.475528,
+        "z_up": -0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 5,
+      "label": "5",
+      "ring": {
+        "index": 2,
+        "position": 4,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": -144,
+        "elevation_deg": -54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.345492,
+        "y_front": -0.475528,
+        "z_up": -0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 6,
+      "label": "6",
+      "ring": {
+        "index": 2,
+        "position": 5,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": -72,
+        "elevation_deg": -54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.559017,
+        "y_front": 0.181636,
+        "z_up": -0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 7,
+      "label": "7",
+      "ring": {
+        "index": 3,
+        "position": 1,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 20,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.32528,
+        "y_front": 0.893701,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 8,
+      "label": "8",
+      "ring": {
+        "index": 3,
+        "position": 2,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 60,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.823639,
+        "y_front": 0.475528,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 9,
+      "label": "9",
+      "ring": {
+        "index": 3,
+        "position": 3,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 100,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.936608,
+        "y_front": -0.165149,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 10,
+      "label": "10",
+      "ring": {
+        "index": 3,
+        "position": 4,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 140,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.611327,
+        "y_front": -0.728552,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 11,
+      "label": "11",
+      "ring": {
+        "index": 3,
+        "position": 5,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -180,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0,
+        "y_front": -0.951057,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 12,
+      "label": "12",
+      "ring": {
+        "index": 3,
+        "position": 6,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -140,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.611327,
+        "y_front": -0.728552,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 13,
+      "label": "13",
+      "ring": {
+        "index": 3,
+        "position": 7,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -100,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.936608,
+        "y_front": -0.165149,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 14,
+      "label": "14",
+      "ring": {
+        "index": 3,
+        "position": 8,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -60,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.823639,
+        "y_front": 0.475528,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 15,
+      "label": "15",
+      "ring": {
+        "index": 3,
+        "position": 9,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -20,
+        "elevation_deg": -18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.32528,
+        "y_front": 0.893701,
+        "z_up": -0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 16,
+      "label": "16",
+      "ring": {
+        "index": 4,
+        "position": 1,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 40,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.611327,
+        "y_front": 0.728552,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 17,
+      "label": "17",
+      "ring": {
+        "index": 4,
+        "position": 2,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 80,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.936608,
+        "y_front": 0.165149,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 18,
+      "label": "18",
+      "ring": {
+        "index": 4,
+        "position": 3,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 120,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.823639,
+        "y_front": -0.475528,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 19,
+      "label": "19",
+      "ring": {
+        "index": 4,
+        "position": 4,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 160,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.32528,
+        "y_front": -0.893701,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 20,
+      "label": "20",
+      "ring": {
+        "index": 4,
+        "position": 5,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -160,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.32528,
+        "y_front": -0.893701,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 21,
+      "label": "21",
+      "ring": {
+        "index": 4,
+        "position": 6,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -120,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.823639,
+        "y_front": -0.475528,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 22,
+      "label": "22",
+      "ring": {
+        "index": 4,
+        "position": 7,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -80,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.936608,
+        "y_front": 0.165149,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 23,
+      "label": "23",
+      "ring": {
+        "index": 4,
+        "position": 8,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": -40,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.611327,
+        "y_front": 0.728552,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 24,
+      "label": "24",
+      "ring": {
+        "index": 4,
+        "position": 9,
+        "count": 9
+      },
+      "spat": {
+        "azimuth_deg": 0,
+        "elevation_deg": 18,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0,
+        "y_front": 0.951057,
+        "z_up": 0.309017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 25,
+      "label": "25",
+      "ring": {
+        "index": 5,
+        "position": 1,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": 60,
+        "elevation_deg": 54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.509037,
+        "y_front": 0.293893,
+        "z_up": 0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 26,
+      "label": "26",
+      "ring": {
+        "index": 5,
+        "position": 2,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": 132,
+        "elevation_deg": 54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0.43681,
+        "y_front": -0.393305,
+        "z_up": 0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 27,
+      "label": "27",
+      "ring": {
+        "index": 5,
+        "position": 3,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": -156,
+        "elevation_deg": 54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.239074,
+        "y_front": -0.536969,
+        "z_up": 0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 28,
+      "label": "28",
+      "ring": {
+        "index": 5,
+        "position": 4,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": -84,
+        "elevation_deg": 54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.584565,
+        "y_front": 0.06144,
+        "z_up": 0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 29,
+      "label": "29",
+      "ring": {
+        "index": 5,
+        "position": 5,
+        "count": 5
+      },
+      "spat": {
+        "azimuth_deg": -12,
+        "elevation_deg": 54,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": -0.122207,
+        "y_front": 0.574941,
+        "z_up": 0.809017
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    },
+    {
+      "channel": 30,
+      "label": "30",
+      "ring": {
+        "index": 6,
+        "position": 1,
+        "count": 1,
+        "note": "top pole; azimuth is arbitrary at the pole"
+      },
+      "spat": {
+        "azimuth_deg": 0,
+        "elevation_deg": 90,
+        "distance_m": 1
+      },
+      "xyz_m": {
+        "x_right": 0,
+        "y_front": 0,
+        "z_up": 1
+      },
+      "orientation": {
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+.DS_Store
+
+# SwiftPM and Xcode generated output
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+
+# Double-clickable and archived app bundles are build artifacts.
+*.app/
+
+# Web/archive generated output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Packaged archives and local logs
+*.zip
+*.log
+
+# Local environment overrides
+.env
+.env.*
