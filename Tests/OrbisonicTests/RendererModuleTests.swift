@@ -2,6 +2,18 @@ import XCTest
 @testable import Orbisonic
 
 final class RendererModuleTests: XCTestCase {
+    func testRendererModelHandlesTwoHundredFiftySixDiscreteInputChannels() {
+        let layout = SurroundLayoutDetector.fallbackLayout(for: 256)
+        XCTAssertEqual(layout.name, "256-Channel Discrete")
+        XCTAssertEqual(layout.channelCount, 256)
+
+        let scene = RendererMatrixBuilder.sceneModel(for: layout, preset: .sonicSphere30Point1)
+        XCTAssertEqual(scene.inputSpeakers.count, 256)
+        XCTAssertEqual(scene.matrix.inputCount, 256)
+        XCTAssertEqual(scene.matrix.outputCount, 31)
+        XCTAssertTrue(scene.matrix.gains.allSatisfy { $0.count == 31 })
+    }
+
     func testDefaultPresetBuildsThirtyPointOneSpeakerTopology() {
         let preset = RendererPreset.sonicSphere30Point1
         let speakers = SonicSphereTopology.outputSpeakers(for: preset)
