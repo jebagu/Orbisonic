@@ -29,6 +29,24 @@ struct RoonBridgeSnapshot: Codable, Equatable {
         return bridge.message
     }
 
+    var audioPathText: String {
+        if let output = selectedZone?.outputs.first(where: {
+            $0.displayName.localizedCaseInsensitiveContains("Orbisonic Roon Input")
+        }) {
+            return output.displayName
+        }
+
+        if let output = selectedZone?.outputs.first {
+            return output.displayName
+        }
+
+        if let zoneHint = bridge.zoneHint, !zoneHint.isEmpty {
+            return zoneHint
+        }
+
+        return "Orbisonic Roon Input"
+    }
+
     var compactStatusText: String {
         if isReadyForTransport {
             return "Connected"

@@ -64,6 +64,7 @@ final class RoonBridgeClientTests: XCTestCase {
         XCTAssertTrue(snapshot.isReadyForTransport)
         XCTAssertEqual(snapshot.compactStatusText, "Connected")
         XCTAssertEqual(snapshot.statusText, "Orbisonic Roon Input / PLAYING")
+        XCTAssertEqual(snapshot.audioPathText, "Orbisonic Roon Input")
         XCTAssertEqual(snapshot.selectedZone?.titleText, "Money")
         XCTAssertEqual(snapshot.selectedZone?.subtitleText, "Pink Floyd - The Dark Side of the Moon")
         XCTAssertEqual(snapshot.selectedZone?.allows(.pause), true)

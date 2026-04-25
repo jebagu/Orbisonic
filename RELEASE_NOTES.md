@@ -7,8 +7,8 @@ Orbisonic 1.0 is the first packaged app build for the native macOS Sonic Sphere 
 ### Highlights
 
 - Adds the compact `Player` pane with centralized transport and live-source controls.
-- Splits the main workspace into `Input`, `Routing`, `Output`, `Renderer`, `Scene Tuning`, `Local Playlist`, `Diagnostics`, and `Settings`.
-- Adds compact pulsing square VU meters on the `Routing` tab for input, monitor, and renderer activity.
+- Splits the main workspace into `Input`, `Routing`, `Output`, `Renderer`, `Local Music`, `Diagnostics`, and `Settings`.
+- Adds compact adaptive square and hex VU meters on the `Routing` and `Diagnostics` tabs for input, monitor, and renderer activity.
 - Adds monitor output selection from existing Core Audio outputs without adding another virtual soundcard.
 - Makes live monitor stops explicit and stops the active Roon or Aux Cable monitor when switching sources.
 - Keeps the Sonic Sphere renderer on the default 30.1 topology.

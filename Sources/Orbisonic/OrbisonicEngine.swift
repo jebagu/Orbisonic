@@ -13,6 +13,7 @@ enum OutputDeviceSelectionError: LocalizedError {
     case outputAudioUnitUnavailable
     case setDeviceFailed(OSStatus)
     case invalidDiagnosticChannel(Int, Int)
+    case diagnosticFormatCreationFailed(channelCount: Int, sampleRate: Double)
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +25,8 @@ enum OutputDeviceSelectionError: LocalizedError {
             "Could not select that output device. Core Audio returned \(status)."
         case .invalidDiagnosticChannel(let index, let count):
             "Diagnostic channel \(index + 1) is outside the available \(count)-channel range."
+        case .diagnosticFormatCreationFailed(let channelCount, let sampleRate):
+            "Unable to create a \(channelCount)-channel diagnostic output format at \(sampleRate) Hz."
         }
     }
 }
@@ -334,12 +337,7 @@ final class OrbisonicEngine {
         stopTestTone()
 
         let sampleRate = preferredOutputSampleRate()
-        guard let channelFormat = AVAudioFormat(
-            standardFormatWithSampleRate: sampleRate,
-            channels: AVAudioChannelCount(channelCount)
-        ) else {
-            throw LiveInputError.monoFormatCreationFailed(sampleRate)
-        }
+        let channelFormat = try diagnosticChannelFormat(channelCount: channelCount, sampleRate: sampleRate)
 
         let node = makeChannelToneNode(
             channelIndex: channelIndex,
@@ -361,6 +359,38 @@ final class OrbisonicEngine {
             category: "diagnostics",
             "Started channel diagnostic tone channel=\(channelIndex + 1)/\(channelCount) frequency=\(440 + Double(channelIndex % 12) * 18)Hz"
         )
+    }
+
+    private func diagnosticChannelFormat(channelCount: Int, sampleRate: Double) throws -> AVAudioFormat {
+        guard channelCount > 2 else {
+            guard let format = AVAudioFormat(
+                standardFormatWithSampleRate: sampleRate,
+                channels: AVAudioChannelCount(channelCount)
+            ) else {
+                throw OutputDeviceSelectionError.diagnosticFormatCreationFailed(
+                    channelCount: channelCount,
+                    sampleRate: sampleRate
+                )
+            }
+            return format
+        }
+
+        let layoutTag = AudioChannelLayoutTag(kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channelCount))
+        guard let layout = AVAudioChannelLayout(layoutTag: layoutTag) else {
+            throw OutputDeviceSelectionError.diagnosticFormatCreationFailed(
+                channelCount: channelCount,
+                sampleRate: sampleRate
+            )
+        }
+
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            interleaved: false,
+            channelLayout: layout
+        )
+
+        return format
     }
 
     func stopTestTone() {

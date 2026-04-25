@@ -167,6 +167,7 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var localMusicSortMode: PlaylistSortMode = .name
     @Published private(set) var sessionQueue: [LocalMusicTrack] = []
     @Published private(set) var sessionQueueIndex: Int?
+    @Published private(set) var selectedSessionQueueIndex: Int?
     @Published var isShuffleEnabled = false
 
     let meterStore = ChannelMeterStore()
@@ -473,6 +474,9 @@ final class OrbisonicViewModel: ObservableObject {
         if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) == false {
             self.sessionQueueIndex = sessionQueue.isEmpty ? nil : 0
         }
+        if let selectedSessionQueueIndex, sessionQueue.indices.contains(selectedSessionQueueIndex) == false {
+            self.selectedSessionQueueIndex = self.sessionQueueIndex
+        }
 
         persistLocalMusicDatabase()
         statusMessage = "Local music library scanned: \(localMusicTracks.count) tracks, \(localMusicPlaylists.count) playlists."
@@ -492,7 +496,10 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func toggleLocalMusicPlayback() {
-        guard let track = selectedLocalMusicTrack ?? currentLocalMusicTrack ?? visibleLocalMusicTracks.first else {
+        let selectedQueueTrack = selectedSessionQueueIndex.flatMap { index in
+            sessionQueue.indices.contains(index) ? sessionQueue[index] : nil
+        }
+        guard let track = selectedQueueTrack ?? selectedLocalMusicTrack ?? currentLocalMusicTrack ?? visibleLocalMusicTracks.first else {
             statusMessage = "Add a watch folder in Settings, then scan local music."
             return
         }
@@ -511,6 +518,20 @@ final class OrbisonicViewModel: ObservableObject {
         togglePlayback()
     }
 
+    func playLocalMusicTrackNow(_ track: LocalMusicTrack) {
+        selectedLocalMusicTrackID = track.id
+        selectedSessionQueueIndex = nil
+        let tracks = visibleLocalMusicTracks.contains(where: { $0.id == track.id })
+            ? visibleLocalMusicTracks
+            : [track]
+        startSessionQueue(from: tracks, startTrackID: track.id, shuffle: false, autoplay: true)
+    }
+
+    func selectLocalMusicTrack(_ track: LocalMusicTrack) {
+        selectedLocalMusicTrackID = track.id
+        selectedSessionQueueIndex = nil
+    }
+
     func playNextLocalMusicTrack() {
         playQueueOffset(1, wrap: true)
     }
@@ -521,17 +542,23 @@ final class OrbisonicViewModel: ObservableObject {
 
     func selectSessionQueueIndex(_ index: Int) {
         guard sessionQueue.indices.contains(index) else { return }
-        sessionQueueIndex = index
+        selectedSessionQueueIndex = index
         selectedLocalMusicTrackID = sessionQueue[index].id
     }
 
+    func playSessionQueueIndex(_ index: Int) {
+        guard sessionQueue.indices.contains(index) else { return }
+        selectedSessionQueueIndex = index
+        _ = playQueueIndex(index)
+    }
+
     func playSelectedSessionQueueTrack() {
-        if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) {
-            if currentFileURL?.path == sessionQueue[sessionQueueIndex].id, sourceMode == .filePlayback {
+        if let selectedSessionQueueIndex, sessionQueue.indices.contains(selectedSessionQueueIndex) {
+            if currentFileURL?.path == sessionQueue[selectedSessionQueueIndex].id, sourceMode == .filePlayback {
                 togglePlayback()
                 return
             }
-            playQueueIndex(sessionQueueIndex)
+            playQueueIndex(selectedSessionQueueIndex)
             return
         }
 
@@ -558,6 +585,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         if wasEmpty {
             sessionQueueIndex = 0
+            selectedSessionQueueIndex = 0
         }
 
         statusMessage = "Added \(track.displayTitle) to the session queue."
@@ -589,6 +617,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         if wasEmpty {
             sessionQueueIndex = 0
+            selectedSessionQueueIndex = 0
             selectedLocalMusicTrackID = tracks[0].id
         }
 
@@ -610,11 +639,20 @@ final class OrbisonicViewModel: ObservableObject {
 
         if sessionQueue.isEmpty {
             sessionQueueIndex = nil
+            selectedSessionQueueIndex = nil
         } else if let currentIndex = sessionQueueIndex {
             if currentIndex == index {
                 sessionQueueIndex = min(index, sessionQueue.count - 1)
             } else if index < currentIndex {
                 sessionQueueIndex = currentIndex - 1
+            }
+        }
+
+        if let selectedIndex = selectedSessionQueueIndex {
+            if selectedIndex == index {
+                selectedSessionQueueIndex = sessionQueue.isEmpty ? nil : min(index, sessionQueue.count - 1)
+            } else if index < selectedIndex {
+                selectedSessionQueueIndex = selectedIndex - 1
             }
         }
 
@@ -781,6 +819,7 @@ final class OrbisonicViewModel: ObservableObject {
         localMusicPlaylists = database.playlists
         sessionQueue = []
         sessionQueueIndex = nil
+        selectedSessionQueueIndex = nil
         AppLogger.shared.notice(
             category: "local-music",
             "Loaded local music database tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) watchFolders=\(localMusicSettings.watchFolderPaths.count)"
@@ -827,6 +866,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         sessionQueue = queue
         sessionQueueIndex = queue.firstIndex { $0.id == startTrack.id } ?? 0
+        selectedSessionQueueIndex = sessionQueueIndex
         selectedLocalMusicTrackID = startTrack.id
         _ = loadFile(url: startTrack.url, autoplay: autoplay)
     }
@@ -869,6 +909,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func playQueueIndex(_ index: Int) -> Bool {
         guard sessionQueue.indices.contains(index) else { return false }
         sessionQueueIndex = index
+        selectedSessionQueueIndex = index
         let track = sessionQueue[index]
         selectedLocalMusicTrackID = track.id
         return loadFile(url: track.url, autoplay: true)
@@ -887,6 +928,14 @@ final class OrbisonicViewModel: ObservableObject {
                 sessionQueueIndex = destinationIndex
             } else if currentIndex == destinationIndex {
                 sessionQueueIndex = sourceIndex
+            }
+        }
+
+        if let selectedIndex = selectedSessionQueueIndex {
+            if selectedIndex == sourceIndex {
+                selectedSessionQueueIndex = destinationIndex
+            } else if selectedIndex == destinationIndex {
+                selectedSessionQueueIndex = sourceIndex
             }
         }
     }
@@ -1064,6 +1113,10 @@ final class OrbisonicViewModel: ObservableObject {
 
     var roonTransportStatusText: String {
         roonBridgeSnapshot.statusText
+    }
+
+    var roonAudioPathText: String {
+        roonBridgeSnapshot.audioPathText
     }
 
     var roonTransportCompactStatusText: String {
@@ -2526,7 +2579,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func applyRoonLogSnapshot(_ snapshot: RoonLogSnapshot?) {
         guard let snapshot else {
             roonNowPlayingStatus = roonBridgeSnapshot.isReadyForTransport
-                ? "Roon API connected. Signal-path log has not updated yet."
+                ? "Roon connected. Signal-path log has not updated yet."
                 : "No Roon playback line found in RoonServer log yet."
             return
         }
@@ -2540,9 +2593,9 @@ final class OrbisonicViewModel: ObservableObject {
                 )
             }
 
-            roonNowPlayingStatus = "\(next.updatedText) • \(roonZoneText)"
+            roonNowPlayingStatus = next.updatedText
         } else if roonBridgeSnapshot.isReadyForTransport {
-            roonNowPlayingStatus = "Roon API connected. Waiting for signal-path log details."
+            roonNowPlayingStatus = "Roon connected. Waiting for signal-path log details."
         } else {
             roonNowPlayingStatus = "No Roon playback line found in RoonServer log yet."
         }
