@@ -26,6 +26,8 @@ final class OrbisonicEngine {
     private var livePipe: LiveAudioPipe?
     private var liveCapture: LiveInputCapture?
     private var liveStartDate: Date?
+    private let monitorMeterLock = NSLock()
+    private var monitorMeterLevelSnapshot: [Float] = []
     private var currentStartFrame: AVAudioFramePosition = 0
     private var completionToken = UUID()
 
@@ -322,6 +324,36 @@ final class OrbisonicEngine {
         }
     }
 
+    func monitorMeterChannelCount() -> Int {
+        monitorMeterLock.lock()
+        let currentCount = monitorMeterLevelSnapshot.count
+        monitorMeterLock.unlock()
+
+        if currentCount > 0 {
+            return currentCount
+        }
+
+        let mixerCount = Int(engine.mainMixerNode.outputFormat(forBus: 0).channelCount)
+        if mixerCount > 0 {
+            return mixerCount
+        }
+
+        let outputCount = Int(engine.outputNode.inputFormat(forBus: 0).channelCount)
+        return max(outputCount, 2)
+    }
+
+    func monitorMeterLevels() -> [Float] {
+        monitorMeterLock.lock()
+        let levels = monitorMeterLevelSnapshot
+        monitorMeterLock.unlock()
+
+        if !levels.isEmpty {
+            return levels
+        }
+
+        return Array(repeating: 0, count: monitorMeterChannelCount())
+    }
+
     func liveInputStatus() -> LiveAudioPipeStatus? {
         livePipe?.status()
     }
@@ -346,6 +378,7 @@ final class OrbisonicEngine {
         environment.distanceAttenuationParameters.maximumDistance = 10
         environment.distanceAttenuationParameters.rolloffFactor = 0.2
         engine.mainMixerNode.outputVolume = 0.92
+        installMonitorMeterTap()
     }
 
     private func rebuildPlayers(for loadedFile: LoadedAudioFile) {
@@ -495,6 +528,7 @@ final class OrbisonicEngine {
     private func stopEngineIfRunning(reason: String) {
         guard engine.isRunning else { return }
         engine.stop()
+        resetMonitorMeterLevels()
         AppLogger.shared.notice(category: "engine", "AVAudioEngine stopped. reason=\(reason)")
     }
 
@@ -520,6 +554,39 @@ final class OrbisonicEngine {
             return 0.94
         }
         return 1
+    }
+
+    private func installMonitorMeterTap() {
+        engine.mainMixerNode.removeTap(onBus: 0)
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1_024, format: nil) { [weak self] buffer, _ in
+            self?.captureMonitorMeters(from: buffer)
+        }
+    }
+
+    private func captureMonitorMeters(from buffer: AVAudioPCMBuffer) {
+        let channelCount = Int(buffer.format.channelCount)
+        guard channelCount > 0, let channelData = buffer.floatChannelData else {
+            resetMonitorMeterLevels()
+            return
+        }
+
+        let frameCount = Int(buffer.frameLength)
+        var levels = Array(repeating: Float(0), count: channelCount)
+
+        for channel in 0..<channelCount {
+            levels[channel] = Self.meterLevel(samples: channelData[channel], frameCount: frameCount)
+        }
+
+        monitorMeterLock.lock()
+        monitorMeterLevelSnapshot = levels
+        monitorMeterLock.unlock()
+    }
+
+    private func resetMonitorMeterLevels() {
+        let channelCount = monitorMeterChannelCount()
+        monitorMeterLock.lock()
+        monitorMeterLevelSnapshot = Array(repeating: 0, count: channelCount)
+        monitorMeterLock.unlock()
     }
 
     private func formatTime(_ value: TimeInterval) -> String {
@@ -570,6 +637,20 @@ final class OrbisonicEngine {
         }
 
         let rms = sqrtf(energy / Float(count))
+        let db = 20 * log10f(max(rms, 0.000_01))
+        return min(max((db + 60) / 60, 0), 1)
+    }
+
+    private static func meterLevel(samples: UnsafePointer<Float>, frameCount: Int) -> Float {
+        guard frameCount > 0 else { return 0 }
+
+        var energy: Float = 0
+        for index in 0..<frameCount {
+            let sample = samples[index]
+            energy += sample * sample
+        }
+
+        let rms = sqrtf(energy / Float(frameCount))
         let db = 20 * log10f(max(rms, 0.000_01))
         return min(max((db + 60) / 60, 0), 1)
     }

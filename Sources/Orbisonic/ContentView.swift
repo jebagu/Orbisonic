@@ -1,11 +1,11 @@
-import AVFoundation
+import SceneKit
 import SwiftUI
 
 private enum StageTab: String, CaseIterable, Identifiable {
     case routing = "Routing"
     case outputVU = "Output"
+    case vuMeter = "VU Meter"
     case renderer = "Renderer"
-    case sceneTuning = "Scene Tuning"
     case localMusic = "Local Music"
     case settings = "Settings"
     case diagnostics = "Diagnostics"
@@ -14,12 +14,48 @@ private enum StageTab: String, CaseIterable, Identifiable {
 }
 
 private enum LocalMusicPanel: String, CaseIterable, Identifiable {
-    case player = "Player"
-    case allMusic = "All Music"
+    case music = "Music"
     case playlists = "Playlists"
     case queue = "Session Queue"
 
     var id: String { rawValue }
+}
+
+private enum VUMeterVisualStyle: String, CaseIterable, Identifiable {
+    case squarePulse = "Square Pulse"
+    case squareFlicker = "Square Flicker"
+    case hexPulse = "Hex Pulse"
+    case hexFlicker = "Hex Flicker"
+
+    var id: String { rawValue }
+
+    var shapeLabel: String {
+        switch self {
+        case .squarePulse, .squareFlicker: "Squares"
+        case .hexPulse, .hexFlicker: "Hexagons"
+        }
+    }
+
+    var motionLabel: String {
+        switch self {
+        case .squarePulse, .hexPulse: "Pulse"
+        case .squareFlicker, .hexFlicker: "Flicker"
+        }
+    }
+
+    var isHex: Bool {
+        switch self {
+        case .hexPulse, .hexFlicker: true
+        case .squarePulse, .squareFlicker: false
+        }
+    }
+
+    var isFlicker: Bool {
+        switch self {
+        case .squareFlicker, .hexFlicker: true
+        case .squarePulse, .hexPulse: false
+        }
+    }
 }
 
 private enum LabTheme {
@@ -64,7 +100,8 @@ private struct LabButtonStyle: ButtonStyle {
 struct ContentView: View {
     @StateObject private var model = OrbisonicViewModel()
     @State private var selectedStageTab: StageTab = .routing
-    @State private var selectedLocalMusicPanel: LocalMusicPanel = .player
+    @State private var selectedLocalMusicPanel: LocalMusicPanel = .music
+    @State private var selectedVUMeterStyle: VUMeterVisualStyle = .hexFlicker
 
     var body: some View {
         HStack(spacing: 24) {
@@ -107,6 +144,7 @@ struct ContentView: View {
                 headerCard
                 nowPlayingSessionCard
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -149,10 +187,10 @@ struct ContentView: View {
             tabPage { routingTab }
         case .outputVU:
             tabPage { outputVUTab }
+        case .vuMeter:
+            tabPage { vuMeterTab }
         case .renderer:
             tabPage { rendererTab }
-        case .sceneTuning:
-            tabPage { sceneTuningTab }
         case .localMusic:
             localMusicTab
         case .settings:
@@ -189,41 +227,12 @@ struct ContentView: View {
 
     private var routingTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Source Selector") {
-                    sourceModeSelector
-                    routingPrimaryControls
-                    infoRow(title: "Mode", value: model.sourceMode.rawValue)
-                    infoRow(title: "App Input", value: model.inputNowText)
-                    infoRow(title: "System Input", value: model.systemInputNowText)
-                }
-
-                settingsPanel(title: "Incoming Stream") {
-                    infoRow(title: "Detected", value: model.sourceMode.isLiveInput ? model.inputNowText : model.sourceFlowTitle)
-                    infoRow(title: "Channels", value: model.sourceMode.isLiveInput ? "\(model.activeLiveChannelCount) selected • \(model.inputRoute.inputChannelCount) available" : outputChannelText)
-                    infoRow(title: "Signal", value: model.sourceMode.isLiveInput ? model.liveSignalStatus : model.sourceFlowDetail)
-                    if model.sourceMode == .roonBlackHole, let signalPath = model.roonSignalPath {
-                        infoRow(title: "Roon Map", value: signalPath.statusText)
-                    }
-                }
+            settingsPanel(title: "Source Selector") {
+                sourceModeSelector
+                routingPrimaryControls
             }
 
             routingFlowGraphic
-
-            HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Output 1: Monitor Stream") {
-                    infoRow(title: "Device", value: model.outputNowText)
-                    infoRow(title: "Purpose", value: "MacBook speakers, headphones, or local confidence monitoring.")
-                    infoRow(title: "Mode", value: "Monitor fold-down / headphone render")
-                }
-
-                settingsPanel(title: "Output 2: Renderer Feed") {
-                    infoRow(title: "Renderer", value: model.rendererTargetText)
-                    infoRow(title: "Selected In", value: "Renderer tab")
-                    infoRow(title: "Layouts", value: model.rendererLayoutText)
-                    infoRow(title: "Current", value: model.rendererText)
-                }
-            }
 
             inputMeters
         }
@@ -234,64 +243,23 @@ struct ContentView: View {
     private var routingPrimaryControls: some View {
         switch model.sourceMode {
         case .roonBlackHole:
-            inputDeviceMenu
-            channelCountMenu
-
             Button(action: model.startRoonPipe) {
-                Label("Start Roon Route", systemImage: "dot.radiowaves.left.and.right")
+                Label("Start Roon", systemImage: "dot.radiowaves.left.and.right")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(LabButtonStyle(isActive: true))
-
-        case .testTone:
-            testTonePointMenu
-
-            HStack(spacing: 10) {
-                Button(action: model.playSelectedTestTone) {
-                    Label("Play Tone", systemImage: "waveform")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
-
-                Button(action: { model.stopTestTone() }) {
-                    Label("Stop Tone", systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle())
-            }
 
         case .filePlayback:
-            HStack(spacing: 10) {
-                Button(action: model.openFile) {
-                    Label("Open File", systemImage: "waveform.badge.magnifyingglass")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true))
+            EmptyView()
 
-                Button(action: {
-                    selectedStageTab = .localMusic
-                }) {
-                    Label("Local Music", systemImage: "music.note.list")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle())
-            }
-
-        case .blackHoleOtherInput:
-            inputDeviceMenu
-            channelCountMenu
-
-            Button(action: model.startOtherInputPipe) {
-                Label("Start Live Input", systemImage: "cable.connector")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(LabButtonStyle(isActive: true))
+        case .testTone, .blackHoleOtherInput:
+            EmptyView()
         }
     }
 
     private var sourceModeSelector: some View {
         HStack(spacing: 6) {
-            ForEach(SourceMode.allCases) { mode in
+            ForEach(primarySourceModes) { mode in
                 Button {
                     model.selectSourceMode(mode)
                 } label: {
@@ -311,6 +279,10 @@ struct ContentView: View {
                         .stroke(LabTheme.line, lineWidth: 1)
                 )
         )
+    }
+
+    private var primarySourceModes: [SourceMode] {
+        [.roonBlackHole, .filePlayback]
     }
 
     private var channelCountMenu: some View {
@@ -437,7 +409,7 @@ struct ContentView: View {
                 VStack(spacing: 10) {
                     routingOutputCard(
                         title: "Output 1",
-                        subtitle: "Monitor Stream",
+                        subtitle: "Monitor",
                         detail: model.outputRoute.targetName,
                         icon: "headphones",
                         accent: LabTheme.blue
@@ -445,7 +417,7 @@ struct ContentView: View {
 
                     routingOutputCard(
                         title: "Output 2",
-                        subtitle: "Renderer Feed",
+                        subtitle: "Renderer",
                         detail: model.rendererSelectionText,
                         icon: "dot.radiowaves.left.and.right",
                         accent: LabTheme.cyan
@@ -553,13 +525,13 @@ struct ContentView: View {
     private var outputVUTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Output Route") {
+                settingsPanel(title: "Output 1: Monitor") {
                     infoRow(title: "Output", value: model.outputNowText)
                     infoRow(title: "Target", value: model.targetFlowTitle)
                     infoRow(title: "Detail", value: model.targetFlowDetail)
                 }
 
-                settingsPanel(title: "Rendered Layout") {
+                settingsPanel(title: "Output 2: Renderer") {
                     infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
                     infoRow(title: "Channels", value: outputChannelText)
                     infoRow(title: "Renderer", value: model.rendererText)
@@ -572,57 +544,187 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var rendererTab: some View {
+    private var vuMeterTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Renderer") {
-                    infoRow(title: "Engine", value: model.rendererText)
-                    infoRow(title: "Mode", value: model.sourceMode == .testTone ? "Test tone render" : (model.sourceMode.isLiveInput ? "Live input render" : "Local player render"))
-                    infoRow(title: "Target", value: model.targetFlowTitle)
-                }
+                DenseVUMeterPanel(
+                    title: "Input",
+                    subtitle: inputVUMeterSubtitle,
+                    style: selectedVUMeterStyle,
+                    meterStore: model.meterStore,
+                    minHeight: 220
+                )
 
-                settingsPanel(title: "Source Objects") {
-                    infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
-                    infoRow(title: "Objects", value: model.renderFlowDetail)
-                    infoRow(title: "Channels", value: outputChannelText)
-                }
+                DenseVUMeterPanel(
+                    title: "Monitor",
+                    subtitle: monitorVUMeterSubtitle,
+                    style: selectedVUMeterStyle,
+                    meterStore: model.monitorMeterStore,
+                    minHeight: 220
+                )
             }
 
-            settingsPanel(title: "Spatial Scene") {
-                infoRow(title: "Preset", value: model.preset.rawValue)
-                infoRow(title: "Front Angle", value: String(format: "%.0f deg", model.frontAngle))
-                infoRow(title: "Rear Angle", value: String(format: "%.0f deg", model.rearAngle))
-                infoRow(title: "Head Tracking", value: model.headTrackingEnabled ? "Requested" : "Off")
-            }
-
-            signalFlowPanel
+            DenseVUMeterPanel(
+                title: "Renderer",
+                subtitle: rendererVUMeterSubtitle,
+                style: selectedVUMeterStyle,
+                meterStore: model.rendererMeterStore,
+                minHeight: 240
+            )
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var headerCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 10) {
-                    Text("Orbisonic")
-                        .font(.system(size: 18, weight: .heavy))
-                        .foregroundStyle(LabTheme.text)
-                        .lineLimit(1)
+    private var vuMeterStylePicker: some View {
+        HStack(spacing: 10) {
+            ForEach(VUMeterVisualStyle.allCases) { style in
+                Button {
+                    selectedVUMeterStyle = style
+                } label: {
+                    VStack(alignment: .leading, spacing: 9) {
+                        VUMeterStylePreview(style: style)
+                            .frame(height: 46)
 
-                    Spacer()
-
-                    Image(systemName: model.isPlaying ? "waveform.circle.fill" : "circle")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(model.isPlaying ? LabTheme.cyan : LabTheme.textSoft.opacity(0.42))
-                        .frame(width: 24, height: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(style.rawValue)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(LabTheme.text)
+                            Text("\(style.shapeLabel) • \(style.motionLabel)")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(LabTheme.textSoft)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
                 }
-
-                Text(model.sourceMode.rawValue)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(LabTheme.cyan)
-                    .lineLimit(1)
+                .buttonStyle(LabButtonStyle(isActive: selectedVUMeterStyle == style))
             }
         }
+    }
+
+    private var inputVUMeterSubtitle: String {
+        let sourceText = model.sourceMode.isLiveInput ? model.inputRoute.displayName : model.loadedFileName
+        let count = model.meterStore.channelMeters.count
+        return count > 0 ? "\(sourceText) • \(count) ch" : "\(sourceText) • no input channels"
+    }
+
+    private var monitorVUMeterSubtitle: String {
+        let count = model.monitorMeterStore.channelMeters.count
+        return "\(model.outputNowText) • \(count) ch"
+    }
+
+    private var rendererVUMeterSubtitle: String {
+        let count = model.rendererMeterStore.channelMeters.count
+        return "\(model.rendererText) • \(count) renderer outputs"
+    }
+
+    private var rendererTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 18) {
+                settingsPanel(title: "Renderer Preset") {
+                    rendererPresetMenu
+                    infoRow(title: "Preset", value: model.rendererPreset.name)
+                    infoRow(title: "Status", value: model.rendererPresetIsDirty ? "Edited, not saved" : model.rendererPresetStatus)
+                    infoRow(title: "Folder", value: model.rendererPresetDirectoryText)
+
+                    HStack(spacing: 10) {
+                        Button(action: model.saveRendererPreset) {
+                            Label("Save JSON", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(LabButtonStyle(isActive: model.rendererPresetIsDirty))
+
+                        Button(action: { model.reloadRendererPresets() }) {
+                            Label("Reload", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(LabButtonStyle())
+
+                        Button(action: model.revealRendererPresetFolder) {
+                            Label("Folder", systemImage: "folder")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(LabButtonStyle())
+                    }
+                }
+
+                settingsPanel(title: "Geometry") {
+                    tuningSlider(title: "Input Bed Radius", value: $model.rendererBedRadius, range: 0.25...1.75, format: "%.2f")
+                    infoRow(title: "Output", value: model.rendererLayoutText)
+                    infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
+                    infoRow(title: "Inputs", value: "\(model.rendererScene.inputSpeakers.count) cubes")
+                    infoRow(title: "Speakers", value: "\(model.rendererPreset.outputTopology.fullRangeCount) solid shell spheres")
+                    infoRow(title: "Matrix", value: model.rendererText)
+                }
+            }
+
+            SonicSphereRendererSceneView(
+                sceneModel: model.rendererScene,
+                isPlaying: model.isPlaying
+            )
+            .frame(minHeight: 430)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.22))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .stroke(LabTheme.line, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
+
+            HStack(alignment: .top, spacing: 18) {
+                settingsPanel(title: "Renderer Feed") {
+                    infoRow(title: "Mode", value: model.sourceMode == .testTone ? "Test tone render" : (model.sourceMode.isLiveInput ? "Live input render" : "Local player render"))
+                    infoRow(title: "Target", value: model.rendererTargetText)
+                    infoRow(title: "Objects", value: model.renderFlowDetail)
+                }
+
+                settingsPanel(title: "Monitor Path") {
+                    infoRow(title: "Output", value: "Two-channel downmix")
+                    infoRow(title: "Device", value: model.outputNowText)
+                    infoRow(title: "Scope", value: "Independent from Sonic Sphere matrix")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var rendererPresetMenu: some View {
+        Menu {
+            ForEach(model.rendererPresets) { preset in
+                Button(preset.name) {
+                    model.selectRendererPreset(preset)
+                }
+            }
+        } label: {
+            HStack {
+                Text("JSON PRESET")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft)
+                Spacer()
+                Text(model.rendererPreset.name)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(LabTheme.cyan)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(LabButtonStyle(isActive: true))
+    }
+
+    private var headerCard: some View {
+        card {
+            Text("Orbisonic")
+                .font(.system(size: 18, weight: .heavy))
+                .foregroundStyle(LabTheme.text)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var primaryTransportTitle: String {
@@ -648,6 +750,10 @@ struct ContentView: View {
             return model.inputRoute.displayName
         }
 
+        if model.sourceMode == .filePlayback, let track = model.selectedLocalMusicTrack {
+            return track.displayTitle
+        }
+
         if let metadata = model.sourceMetadata {
             return metadata.fileName
         }
@@ -657,11 +763,15 @@ struct ContentView: View {
 
     private var nowPlayingSubtitle: String {
         if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roonBlackHole {
-            return nowPlaying.artist.isEmpty ? "Roon via BlackHole" : nowPlaying.artist
+            return nowPlaying.artist.isEmpty ? "Roon" : nowPlaying.artist
         }
 
         if model.sourceMode == .testTone {
             return model.testToneStatus
+        }
+
+        if model.sourceMode == .filePlayback, let track = model.selectedLocalMusicTrack {
+            return track.displaySubtitle
         }
 
         if let metadata = model.sourceMetadata {
@@ -679,7 +789,7 @@ struct ContentView: View {
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(LabTheme.text)
                     Spacer()
-                    Text(model.isPlaying ? "ON AIR" : "READY")
+                    Text(model.isPlaying ? "LIVE" : "READY")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(model.isPlaying ? LabTheme.bg : LabTheme.textSoft)
                         .frame(width: 58, height: 22)
@@ -710,7 +820,7 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button(action: model.togglePlayback) {
+                    Button(action: primaryNowPlayingAction) {
                         Label(primaryTransportTitle, systemImage: model.isPlaying ? "pause.fill" : "play.fill")
                             .frame(maxWidth: .infinity)
                     }
@@ -721,6 +831,10 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(LabButtonStyle())
+                }
+
+                if model.sourceMode == .filePlayback || !model.localMusicTracks.isEmpty {
+                    localMusicNowPlayingControls
                 }
 
                 HStack {
@@ -779,7 +893,7 @@ struct ContentView: View {
                     .overlay(Color.white.opacity(0.08))
 
                 VStack(alignment: .leading, spacing: 8) {
-                    transportRow(title: "App Input", value: model.inputNowText)
+                    transportRow(title: "Input", value: nowPlayingInputText)
                     transportRow(title: "System Input", value: model.systemInputNowText)
                     transportRow(title: "Output", value: model.outputRoute.deviceName)
                     transportRow(title: "Renderer", value: model.rendererText)
@@ -788,61 +902,49 @@ struct ContentView: View {
         }
     }
 
-    private var sceneTuningTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 20) {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Preset")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(LabTheme.text)
-
-                    presetSelector
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Scene Width")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(LabTheme.text)
-
-                    tuningSlider(title: "Front Width", value: $model.frontAngle, range: 25...55, format: "%.0f°")
-                    tuningSlider(title: "Rear Wrap", value: $model.rearAngle, range: 95...155, format: "%.0f°")
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-
-            SpatialFieldView(
-                tuning: model.currentTuning(),
-                channels: model.loadedChannels,
-                isPlaying: model.isPlaying
-            )
-            .frame(minHeight: 430)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+    private var nowPlayingInputText: String {
+        model.sourceMode == .roonBlackHole ? "Roon" : model.inputNowText
     }
 
-    private var presetSelector: some View {
-        HStack(spacing: 6) {
-            ForEach(SpatialPreset.allCases) { preset in
-                Button {
-                    model.preset = preset
-                } label: {
-                    Text(preset.rawValue)
-                        .lineLimit(1)
+    private func primaryNowPlayingAction() {
+        if model.sourceMode == .filePlayback, !model.localMusicTracks.isEmpty {
+            model.toggleLocalMusicPlayback()
+        } else {
+            model.togglePlayback()
+        }
+    }
+
+    private var localMusicNowPlayingControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Button(action: model.playPreviousLocalMusicTrack) {
+                    Label("Back", systemImage: "backward.fill")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(LabButtonStyle(isActive: model.preset == preset))
+                .buttonStyle(LabButtonStyle())
+
+                Button(action: model.playNextLocalMusicTrack) {
+                    Label("Next", systemImage: "forward.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LabButtonStyle())
+            }
+
+            HStack(spacing: 10) {
+                Button(action: { model.playAllLocalMusic(shuffle: false) }) {
+                    Label("Play All", systemImage: "play.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LabButtonStyle())
+
+                Button(action: { model.playAllLocalMusic(shuffle: true) }) {
+                    Label("Shuffle", systemImage: "shuffle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LabButtonStyle(isActive: model.isShuffleEnabled))
             }
         }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                .fill(Color.black.opacity(0.16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                        .stroke(LabTheme.line, lineWidth: 1)
-                )
-        )
+        .disabled(model.localMusicTracks.isEmpty)
     }
 
     private var localMusicTab: some View {
@@ -882,9 +984,7 @@ struct ContentView: View {
     @ViewBuilder
     private var localMusicPanelContent: some View {
         switch selectedLocalMusicPanel {
-        case .player:
-            localMusicPlayerPanel
-        case .allMusic:
+        case .music:
             localMusicAllTracksPanel
         case .playlists:
             localMusicPlaylistsPanel
@@ -893,68 +993,8 @@ struct ContentView: View {
         }
     }
 
-    private var localMusicPlayerPanel: some View {
-        HStack(alignment: .top, spacing: 18) {
-            settingsPanel(title: "Player") {
-                HStack(spacing: 10) {
-                    Button(action: model.playPreviousLocalMusicTrack) {
-                        Image(systemName: "backward.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle())
-
-                    Button(action: model.toggleLocalMusicPlayback) {
-                        Image(systemName: model.isPlaying && model.sourceMode == .filePlayback ? "pause.fill" : "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle(isActive: true))
-
-                    Button(action: model.stop) {
-                        Image(systemName: "stop.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle())
-
-                    Button(action: model.playNextLocalMusicTrack) {
-                        Image(systemName: "forward.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle())
-                }
-
-                HStack(spacing: 10) {
-                    Button(action: { model.playAllLocalMusic(shuffle: false) }) {
-                        Label("Play All", systemImage: "play.circle")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle())
-
-                    Button(action: { model.playAllLocalMusic(shuffle: true) }) {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle(isActive: model.isShuffleEnabled))
-                }
-
-                infoRow(title: "Loaded", value: model.currentLocalMusicTrack?.displayTitle ?? model.loadedFileName)
-                infoRow(title: "Queue", value: model.localMusicQueueText)
-                infoRow(title: "Library", value: model.localMusicCountText)
-            }
-
-            settingsPanel(title: "Selected Track") {
-                let track = model.selectedLocalMusicTrack ?? model.currentLocalMusicTrack
-                infoRow(title: "Song", value: track?.displayTitle ?? "No track selected")
-                infoRow(title: "Artist", value: track?.displayArtist ?? "-")
-                infoRow(title: "Album", value: track?.displayAlbum ?? "-")
-                infoRow(title: "Channels", value: track?.channelDetailText ?? "-")
-                infoRow(title: "Rate", value: track?.sampleRateText ?? "-")
-                infoRow(title: "Length", value: track?.durationText ?? "-")
-            }
-        }
-    }
-
     private var localMusicAllTracksPanel: some View {
-        settingsPanel(title: "All Music") {
+        settingsPanel(title: "Music") {
             localMusicSearchSortBar
             infoRow(title: "Tracks", value: model.localMusicCountText)
             localMusicTrackList(model.visibleLocalMusicTracks)
@@ -963,86 +1003,61 @@ struct ContentView: View {
     }
 
     private var localMusicPlaylistsPanel: some View {
-        HStack(alignment: .top, spacing: 18) {
-            settingsPanel(title: "Playlists") {
-                HStack(spacing: 10) {
-                    Button(action: { model.playSelectedLocalMusicPlaylist(shuffle: false) }) {
-                        Label("Play", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle(isActive: true))
-
-                    Button(action: { model.playSelectedLocalMusicPlaylist(shuffle: true) }) {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle())
+        settingsPanel(title: "Playlists") {
+            HStack(spacing: 10) {
+                Button(action: { model.addSelectedLocalMusicPlaylistToQueue(shuffle: false) }) {
+                    Label("Add to Queue", systemImage: "text.badge.plus")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(LabButtonStyle(isActive: true))
 
-                infoRow(title: "Playlists", value: model.localMusicPlaylistCountText)
+                Button(action: { model.addSelectedLocalMusicPlaylistToQueue(shuffle: true) }) {
+                    Label("Shuffle to Queue", systemImage: "shuffle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LabButtonStyle())
+            }
 
-                ScrollView(.vertical, showsIndicators: true) {
-                    LazyVStack(spacing: 6) {
-                        ForEach(model.localMusicPlaylists) { playlist in
-                            Button {
-                                model.selectedLocalMusicPlaylistID = playlist.id
-                            } label: {
-                                playlistLibraryRow(
-                                    playlist,
-                                    trackCount: model.tracks(for: playlist).count,
-                                    isSelected: model.selectedLocalMusicPlaylistID == playlist.id
-                                )
+            infoRow(title: "Playlists", value: model.localMusicPlaylistCountText)
+
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(spacing: 6) {
+                    ForEach(model.localMusicPlaylists) { playlist in
+                        Button {
+                            model.selectedLocalMusicPlaylistID = playlist.id
+                        } label: {
+                            playlistLibraryRow(
+                                playlist,
+                                trackCount: model.tracks(for: playlist).count,
+                                isSelected: model.selectedLocalMusicPlaylistID == playlist.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("Add to Queue") {
+                                model.addLocalMusicPlaylistToQueue(playlist, shuffle: false)
                             }
-                            .buttonStyle(.plain)
+                            Button("Shuffle to Queue") {
+                                model.addLocalMusicPlaylistToQueue(playlist, shuffle: true)
+                            }
                         }
                     }
-                    .padding(8)
                 }
-                .frame(minHeight: 380, maxHeight: .infinity)
-                .background(localMusicListBackground)
+                .padding(8)
             }
-
-            settingsPanel(title: "Playlist Tracks") {
-                let playlist = model.selectedLocalMusicPlaylist ?? model.localMusicPlaylists.first
-                infoRow(title: "Playlist", value: playlist?.name ?? "No playlist selected")
-                localMusicTrackList(playlist.map { model.tracks(for: $0) } ?? [])
-            }
+            .frame(minHeight: 480, maxHeight: .infinity)
+            .background(localMusicListBackground)
         }
     }
 
     private var localMusicQueuePanel: some View {
         settingsPanel(title: "Session Queue") {
-            HStack(spacing: 10) {
-                Button(action: model.playPreviousLocalMusicTrack) {
-                    Label("Back", systemImage: "backward.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle())
-
-                Button(action: model.playSelectedSessionQueueTrack) {
-                    Label(model.isPlaying && model.sourceMode == .filePlayback ? "Pause" : "Play", systemImage: model.isPlaying && model.sourceMode == .filePlayback ? "pause.fill" : "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true))
-
-                Button(action: model.playNextLocalMusicTrack) {
-                    Label("Next", systemImage: "forward.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle())
-            }
-
             infoRow(title: "Queue", value: model.localMusicQueueText)
 
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(spacing: 6) {
-                    ForEach(Array(model.sessionQueue.enumerated()), id: \.element.id) { index, track in
-                        Button {
-                            model.selectSessionQueueIndex(index)
-                        } label: {
-                            queueTrackRow(track, index: index, isCurrent: model.sessionQueueIndex == index)
-                        }
-                        .buttonStyle(.plain)
+                    ForEach(Array(model.sessionQueue.enumerated()), id: \.offset) { index, track in
+                        queueTrackRow(track, index: index, isCurrent: model.sessionQueueIndex == index)
                     }
                 }
                 .padding(8)
@@ -1108,9 +1123,8 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
-                        Button("Play") {
-                            model.selectedLocalMusicTrackID = track.id
-                            model.toggleLocalMusicPlayback()
+                        Button("Add to Queue") {
+                            model.addLocalMusicTrackToQueue(track)
                         }
                     }
                 }
@@ -1250,9 +1264,41 @@ struct ContentView: View {
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundStyle(isCurrent ? LabTheme.cyan : LabTheme.textSoft)
                 .frame(width: 58, alignment: .trailing)
+
+            HStack(spacing: 4) {
+                Button {
+                    model.moveSessionQueueItemUp(index)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(LabButtonStyle())
+                .disabled(index == 0)
+
+                Button {
+                    model.moveSessionQueueItemDown(index)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(LabButtonStyle())
+                .disabled(index >= model.sessionQueue.count - 1)
+
+                Button {
+                    model.removeSessionQueueItem(index)
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(LabButtonStyle())
+            }
         }
         .frame(height: 46)
         .padding(.horizontal, 10)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            model.selectSessionQueueIndex(index)
+        }
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isCurrent ? LabTheme.cyan.opacity(0.10) : Color.white.opacity(0.035))
@@ -1438,6 +1484,10 @@ struct ContentView: View {
                 }
             }
 
+            settingsPanel(title: "Meter Style") {
+                vuMeterStylePicker
+            }
+
             diagnosticChannelGrid
             stageMeters
             signalFlowPanel
@@ -1518,7 +1568,7 @@ struct ContentView: View {
 
     private var inputMeters: some View {
         LiveSurroundVUView(
-            title: "Input VU",
+            title: "Input",
             subtitle: model.sourceMode.isLiveInput ? model.inputRoute.displayName : model.loadedFileName,
             meterStore: model.meterStore
         )
@@ -1526,7 +1576,7 @@ struct ContentView: View {
 
     private var outputMeters: some View {
         LiveSurroundVUView(
-            title: "Output VU",
+            title: "Output",
             subtitle: outputChannelText,
             meterStore: model.meterStore
         )
@@ -1534,7 +1584,7 @@ struct ContentView: View {
 
     private var stageMeters: some View {
         LiveSurroundVUView(
-            title: "Diagnostic VU",
+            title: "Diagnostic",
             subtitle: model.activeDiagnosticText,
             meterStore: model.meterStore
         )
@@ -1589,6 +1639,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
@@ -1810,79 +1861,632 @@ private struct LiveSurroundVUView: View {
     }
 }
 
-private struct SpatialFieldView: View {
-    let tuning: SpatialTuning
-    let channels: [SurroundChannel]
-    let isPlaying: Bool
+private struct DenseVUMeterPanel: View {
+    let title: String
+    let subtitle: String
+    let style: VUMeterVisualStyle
+    @ObservedObject var meterStore: ChannelMeterStore
+    var minHeight: CGFloat
+
+    private var sortedMeters: [ChannelMeter] {
+        meterStore.channelMeters.sorted { lhs, rhs in
+            if lhs.channel.role.displayOrder == rhs.channel.role.displayOrder {
+                return lhs.channel.index < rhs.channel.index
+            }
+            return lhs.channel.role.displayOrder < rhs.channel.role.displayOrder
+        }
+    }
+
+    private var activeCount: Int {
+        sortedMeters.filter { $0.level >= 0.005 }.count
+    }
+
+    private var hotCount: Int {
+        sortedMeters.filter { $0.level >= 0.72 }.count
+    }
 
     var body: some View {
-        GeometryReader { geometry in
-            Canvas { context, size in
-                let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                let radius = min(size.width, size.height) * 0.34
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(LabTheme.text)
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
 
-                var grid = Path()
-                grid.addEllipse(in: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
-                grid.addEllipse(in: CGRect(x: center.x - radius * 0.7, y: center.y - radius * 0.7, width: radius * 1.4, height: radius * 1.4))
-                grid.move(to: CGPoint(x: center.x - radius, y: center.y))
-                grid.addLine(to: CGPoint(x: center.x + radius, y: center.y))
-                grid.move(to: CGPoint(x: center.x, y: center.y - radius))
-                grid.addLine(to: CGPoint(x: center.x, y: center.y + radius))
-                context.stroke(grid, with: .color(LabTheme.line), lineWidth: 1)
+                Spacer(minLength: 0)
 
-                let listenerRect = CGRect(x: center.x - 12, y: center.y - 12, width: 24, height: 24)
-                context.fill(Path(ellipseIn: listenerRect), with: .color(LabTheme.cyan))
+                meterPill("CH", sortedMeters.count)
+                meterPill("A", activeCount)
+                meterPill("HOT", hotCount, accent: hotCount > 0 ? LabTheme.amber : LabTheme.textSoft)
+            }
 
-                for channel in channels.displayOrdered() {
-                    let position = tuning.position(for: channel)
-                    let point = projectedPoint(for: position, center: center, radius: radius)
-                    let color = color(for: channel.role)
-                    let sizeBoost: CGFloat = isPlaying ? 6 : 0
-                    let orbRect = CGRect(x: point.x - 13 - sizeBoost / 2, y: point.y - 13 - sizeBoost / 2, width: 26 + sizeBoost, height: 26 + sizeBoost)
-                    context.fill(Path(ellipseIn: orbRect), with: .color(color.opacity(0.95)))
-                    context.draw(
-                        Text(channel.shortLabel)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(LabTheme.text),
-                        at: CGPoint(x: point.x, y: point.y + 28)
+            TimelineView(.animation) { timeline in
+                Canvas { context, size in
+                    DenseVUMeterRenderer.draw(
+                        meters: sortedMeters,
+                        style: style,
+                        time: timeline.date.timeIntervalSinceReferenceDate,
+                        context: &context,
+                        size: size
                     )
                 }
             }
+            .frame(minHeight: minHeight)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                            .stroke(LabTheme.line, lineWidth: 1)
+                    )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(18)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                .fill(
-                    RadialGradient(
-                        colors: [
-                            LabTheme.cyan.opacity(0.12),
-                            LabTheme.bg
-                        ],
-                        center: .center,
-                        startRadius: 40,
-                        endRadius: 420
-                    )
+                .fill(LabTheme.panelSoft)
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
                 )
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                .stroke(LabTheme.line, lineWidth: 1)
+    }
+
+    private func meterPill(_ label: String, _ value: Int, accent: Color = LabTheme.cyan) -> some View {
+        HStack(spacing: 5) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+            Text("\(value)")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(accent)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                .fill(Color.black.opacity(0.16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct VUMeterStylePreview: View {
+    let style: VUMeterVisualStyle
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let levels: [Float] = [0.28, 0.76, 0.48, 0.12, 0.92, 0.36]
+                let meters = levels.enumerated().map { index, level in
+                    ChannelMeter(
+                        channel: SurroundChannel(index: index, role: .discrete(index)),
+                        level: level
+                    )
+                }
+
+                DenseVUMeterRenderer.draw(
+                    meters: meters,
+                    style: style,
+                    time: timeline.date.timeIntervalSinceReferenceDate,
+                    context: &context,
+                    size: size,
+                    showLabels: false
+                )
+            }
+        }
+    }
+}
+
+private struct DenseMeterCell {
+    let index: Int
+    let center: CGPoint
+    let rect: CGRect
+    let size: CGFloat
+    let radius: CGFloat
+}
+
+private enum DenseVUMeterRenderer {
+    static func draw(
+        meters: [ChannelMeter],
+        style: VUMeterVisualStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        size: CGSize,
+        showLabels: Bool = true
+    ) {
+        let background = Path(CGRect(origin: .zero, size: size))
+        context.fill(background, with: .color(LabTheme.bg.opacity(0.22)))
+
+        guard !meters.isEmpty else {
+            context.draw(
+                Text("NO CHANNELS")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(LabTheme.textSoft),
+                at: CGPoint(x: size.width / 2, y: size.height / 2)
+            )
+            return
+        }
+
+        if style.isHex {
+            let cells = hexCells(count: meters.count, size: size)
+            for (meter, cell) in zip(meters, cells) {
+                drawHex(meter: meter, cell: cell, style: style, time: time, context: &context, showLabels: showLabels)
+            }
+        } else {
+            let cells = squareCells(count: meters.count, size: size)
+            for (meter, cell) in zip(meters, cells) {
+                drawSquare(meter: meter, cell: cell, style: style, time: time, context: &context, showLabels: showLabels)
+            }
+        }
+    }
+
+    private static func squareCells(count: Int, size: CGSize) -> [DenseMeterCell] {
+        let padding = max(CGFloat(12), min(size.width, size.height) * 0.055)
+        let aspect = size.width / max(size.height, 1)
+        var best: (cols: Int, rows: Int, side: CGFloat, gap: CGFloat, score: CGFloat)?
+
+        for cols in 1...max(count, 1) {
+            let rows = Int(ceil(Double(count) / Double(cols)))
+            let gapRatio: CGFloat = count > 50 ? 0.11 : count > 20 ? 0.14 : 0.18
+            let side = min(
+                (size.width - padding * 2) / (CGFloat(cols) + gapRatio * CGFloat(max(cols - 1, 0))),
+                (size.height - padding * 2) / (CGFloat(rows) + gapRatio * CGFloat(max(rows - 1, 0)))
+            )
+            guard side > 1 else { continue }
+
+            let gridAspect = CGFloat(cols) / CGFloat(max(rows, 1))
+            let score = side - abs(log(gridAspect / aspect)) * 5
+            if best == nil || score > best!.score {
+                best = (cols, rows, side, side * gapRatio, score)
+            }
+        }
+
+        guard let best else { return [] }
+
+        let gridWidth = CGFloat(best.cols) * best.side + CGFloat(max(best.cols - 1, 0)) * best.gap
+        let gridHeight = CGFloat(best.rows) * best.side + CGFloat(max(best.rows - 1, 0)) * best.gap
+        let startX = (size.width - gridWidth) / 2
+        let startY = (size.height - gridHeight) / 2
+
+        return (0..<count).map { index in
+            let col = index % best.cols
+            let row = index / best.cols
+            let rect = CGRect(
+                x: startX + CGFloat(col) * (best.side + best.gap),
+                y: startY + CGFloat(row) * (best.side + best.gap),
+                width: best.side,
+                height: best.side
+            )
+            return DenseMeterCell(index: index, center: CGPoint(x: rect.midX, y: rect.midY), rect: rect, size: best.side, radius: best.side / 2)
+        }
+    }
+
+    private static func hexCells(count: Int, size: CGSize) -> [DenseMeterCell] {
+        let padding = max(CGFloat(12), min(size.width, size.height) * 0.055)
+        let gapRatio: CGFloat = count > 50 ? 0.12 : count > 20 ? 0.16 : 0.2
+        let sqrt3 = CGFloat(sqrt(3.0))
+        var best: (cols: Int, rows: Int, radius: CGFloat, score: CGFloat)?
+
+        for cols in 1...max(count, 1) {
+            let rows = Int(ceil(Double(count) / Double(cols)))
+            let widthFactor = CGFloat(cols) * sqrt3 + CGFloat(max(cols - 1, 0)) * gapRatio + (rows > 1 ? sqrt3 / 2 : 0)
+            let heightFactor = CGFloat(2) + CGFloat(max(rows - 1, 0)) * (1.5 + gapRatio)
+            let radius = min((size.width - padding * 2) / widthFactor, (size.height - padding * 2) / heightFactor)
+            guard radius > 1 else { continue }
+
+            let usedWidth = radius * widthFactor
+            let usedHeight = radius * heightFactor
+            let score = radius - abs(log((usedWidth / max(usedHeight, 1)) / (size.width / max(size.height, 1)))) * 4
+            if best == nil || score > best!.score {
+                best = (cols, rows, radius, score)
+            }
+        }
+
+        guard let best else { return [] }
+
+        let radius = best.radius
+        let gap = radius * gapRatio
+        let hexWidth = sqrt3 * radius
+        let stepX = hexWidth + gap
+        let stepY = radius * 1.5 + gap
+        let usedWidth = CGFloat(best.cols) * hexWidth + CGFloat(max(best.cols - 1, 0)) * gap + (best.rows > 1 ? hexWidth / 2 : 0)
+        let usedHeight = radius * 2 + CGFloat(max(best.rows - 1, 0)) * stepY
+        let startX = (size.width - usedWidth) / 2 + hexWidth / 2
+        let startY = (size.height - usedHeight) / 2 + radius
+
+        return (0..<count).map { index in
+            let col = index % best.cols
+            let row = index / best.cols
+            let center = CGPoint(
+                x: startX + CGFloat(col) * stepX + (row.isMultiple(of: 2) ? 0 : hexWidth / 2),
+                y: startY + CGFloat(row) * stepY
+            )
+            return DenseMeterCell(
+                index: index,
+                center: center,
+                rect: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2),
+                size: radius * 2,
+                radius: radius
+            )
+        }
+    }
+
+    private static func drawSquare(
+        meter: ChannelMeter,
+        cell: DenseMeterCell,
+        style: VUMeterVisualStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        showLabels: Bool
+    ) {
+        let level = clampedLevel(meter.level)
+        let shell = Path(roundedRect: cell.rect, cornerRadius: max(2, cell.size * 0.055))
+        context.fill(shell, with: .color(Color.white.opacity(0.035)))
+        context.stroke(shell, with: .color(level >= 0.96 ? LabTheme.red.opacity(0.85) : LabTheme.line.opacity(0.8 + Double(level))), lineWidth: 1)
+
+        if style.isFlicker {
+            drawSquareFlicker(level: level, cell: cell, time: time, context: &context)
+        } else {
+            let inner = cell.size * (0.1 + CGFloat(level) * 0.72)
+            let rect = CGRect(x: cell.center.x - inner / 2, y: cell.center.y - inner / 2, width: inner, height: inner)
+            context.fill(Path(roundedRect: rect, cornerRadius: max(1, inner * 0.06)), with: .color(meterColor(level: level).opacity(0.24 + Double(level) * 0.68)))
+        }
+
+        drawLabelIfNeeded(meter.channel.shortLabel, level: level, cell: cell, context: &context, showLabels: showLabels)
+    }
+
+    private static func drawHex(
+        meter: ChannelMeter,
+        cell: DenseMeterCell,
+        style: VUMeterVisualStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        showLabels: Bool
+    ) {
+        let level = clampedLevel(meter.level)
+        let shell = hexPath(center: cell.center, radius: cell.radius)
+        context.fill(shell, with: .color(Color.white.opacity(0.032)))
+        context.stroke(shell, with: .color(level >= 0.96 ? LabTheme.red.opacity(0.85) : LabTheme.line.opacity(0.85 + Double(level))), lineWidth: max(1, cell.radius * 0.035))
+
+        if style.isFlicker {
+            drawHexRipple(level: level, cell: cell, time: time, context: &context)
+        } else {
+            let inner = cell.radius * (0.16 + CGFloat(level) * 0.7)
+            context.fill(hexPath(center: cell.center, radius: inner), with: .color(meterColor(level: level).opacity(0.24 + Double(level) * 0.68)))
+        }
+
+        drawLabelIfNeeded(meter.channel.shortLabel, level: level, cell: cell, context: &context, showLabels: showLabels)
+    }
+
+    private static func drawSquareFlicker(level: Float, cell: DenseMeterCell, time: TimeInterval, context: inout GraphicsContext) {
+        let energy = pow(CGFloat(level), 1.4)
+        let block = max(CGFloat(2), floor(cell.size / (energy > 0.5 ? 8 : 10)))
+        let inset = cell.size * 0.12
+        let field = cell.size - inset * 2
+        let pulse = sin(CGFloat(time) * (0.8 + energy * 4.2) * .pi * 2 + CGFloat(cell.index)) * 0.5 + 0.5
+        let coreSize = max(block, floor(field * (0.12 + CGFloat(level) * 0.68) * (0.78 + pulse * 0.34) / block) * block)
+        let coreRect = CGRect(
+            x: floor((cell.center.x - coreSize / 2) / block) * block,
+            y: floor((cell.center.y - coreSize / 2) / block) * block,
+            width: coreSize,
+            height: coreSize
+        )
+        context.fill(Path(roundedRect: coreRect, cornerRadius: max(1, block)), with: .color(meterColor(level: level).opacity(0.06 + Double(energy) * 0.32)))
+
+        let pixels = max(1, Int(1 + energy * min(20, cell.size / 2.4)))
+        let speed = 0.35 + energy * 15
+        let frame = floor(CGFloat(time) * speed)
+
+        for pixel in 0..<pixels {
+            let seed = noise(CGFloat(cell.index) * 31.7 + CGFloat(pixel) * 5.1)
+            let jitter = noise(CGFloat(cell.index) * 9.3 + CGFloat(pixel) * 13.9 + frame)
+            let x = cell.rect.minX + inset + noise(seed * 101 + jitter * 7) * field
+            let y = cell.rect.minY + inset + noise(seed * 209 + jitter * 11) * field
+            let rect = CGRect(x: floor(x / block) * block, y: floor(y / block) * block, width: block, height: block)
+            context.fill(Path(rect), with: .color(pixelColor(level: level, seed: seed).opacity(0.12 + Double(level) * 0.7)))
+        }
+    }
+
+    private static func drawHexRipple(level: Float, cell: DenseMeterCell, time: TimeInterval, context: inout GraphicsContext) {
+        let energy = pow(CGFloat(level), 1.35)
+        let maxRadius = cell.radius * 0.84
+        let block = max(CGFloat(2), floor(cell.radius / (energy > 0.55 ? 4.2 : 5.4)))
+        let diameter = maxRadius * 2
+        let columns = max(1, Int(ceil(diameter / block)))
+        let startX = floor((cell.center.x - diameter / 2) / block) * block
+        let startY = floor((cell.center.y - diameter / 2) / block) * block
+        let speed = 0.045 + energy * 0.42
+        let travel = (CGFloat(time) * speed + noise(CGFloat(cell.index) * 0.23)).truncatingRemainder(dividingBy: 1)
+        let width = 9.5 - energy * 3.3
+        let shimmerFrame = floor(CGFloat(time) * (0.35 + energy * 1.45))
+        var clipped = context
+        clipped.clip(to: hexPath(center: cell.center, radius: maxRadius))
+
+        for row in 0...columns {
+            for col in 0...columns {
+                let x = startX + CGFloat(col) * block
+                let y = startY + CGFloat(row) * block
+                let sample = CGPoint(x: x + block / 2, y: y + block / 2)
+                let distance = hypot(sample.x - cell.center.x, sample.y - cell.center.y)
+                guard distance <= maxRadius else { continue }
+
+                let normalized = distance / max(maxRadius, 1)
+                let seed = noise(CGFloat(cell.index) * 53.2 + CGFloat(row) * 7.9 + CGFloat(col) * 3.1)
+                let ring = rippleBand(normalized: normalized, travel: travel + seed * 0.025, width: width)
+                let secondary = rippleBand(normalized: normalized, travel: travel - 0.34 + seed * 0.018, width: width * 1.18) * 0.48
+                let centerBloom = pow(1 - normalized, 2.4) * (0.08 + energy * 0.34)
+                let shimmer = 0.82 + noise(seed * 113 + shimmerFrame) * 0.36
+                let alpha = (ring + secondary + centerBloom) * shimmer * (0.08 + pow(CGFloat(level), 0.92) * 0.8)
+
+                guard alpha >= 0.025 else { continue }
+                clipped.fill(Path(CGRect(x: x, y: y, width: block, height: block)), with: .color(pixelColor(level: level, seed: min(seed + ring * energy * 0.55, 1)).opacity(Double(alpha))))
+            }
+        }
+    }
+
+    private static func drawLabelIfNeeded(
+        _ label: String,
+        level: Float,
+        cell: DenseMeterCell,
+        context: inout GraphicsContext,
+        showLabels: Bool
+    ) {
+        guard showLabels, cell.size >= 42 else { return }
+        context.draw(
+            Text(label)
+                .font(.system(size: min(11, max(8, cell.size * 0.15)), weight: .bold, design: .monospaced))
+                .foregroundColor(level >= 0.58 ? LabTheme.bg.opacity(0.84) : LabTheme.textSoft.opacity(0.78)),
+            at: cell.center
         )
     }
 
-    private func projectedPoint(for position: AVAudio3DPoint, center: CGPoint, radius: CGFloat) -> CGPoint {
-        let x = center.x + CGFloat(position.x) * radius
-        let y = center.y + CGFloat(position.z) * radius
-        return CGPoint(x: x, y: y)
+    private static func hexPath(center: CGPoint, radius: CGFloat) -> Path {
+        var path = Path()
+        for index in 0..<6 {
+            let angle = -.pi / 2 + CGFloat(index) * .pi / 3
+            let point = CGPoint(
+                x: center.x + cos(angle) * radius,
+                y: center.y + sin(angle) * radius
+            )
+            if index == 0 {
+                path.move(to: point)
+            } else {
+                path.addLine(to: point)
+            }
+        }
+        path.closeSubpath()
+        return path
     }
 
-    private func color(for role: SurroundChannelRole) -> Color {
-        if role.isLFE {
-            return LabTheme.amber
-        }
-        if role.isRear {
-            return LabTheme.blue
-        }
+    private static func clampedLevel(_ level: Float) -> Float {
+        min(max(level, 0), 1)
+    }
+
+    private static func meterColor(level: Float) -> Color {
+        if level > 0.9 { return LabTheme.red }
+        if level > 0.72 { return LabTheme.amber }
+        if level > 0.34 { return LabTheme.blue }
         return LabTheme.cyan
+    }
+
+    private static func pixelColor(level: Float, seed: CGFloat) -> Color {
+        if level > 0.9, seed > 0.35 { return LabTheme.red }
+        if level > 0.72, seed > 0.22 { return LabTheme.amber }
+        if level > 0.5, seed > 0.82 { return Color(red: 244 / 255, green: 114 / 255, blue: 182 / 255) }
+        if level > 0.34, seed > 0.18 { return LabTheme.blue }
+        return LabTheme.cyan
+    }
+
+    private static func rippleBand(normalized: CGFloat, travel: CGFloat, width: CGFloat) -> CGFloat {
+        let wrapped = ((travel.truncatingRemainder(dividingBy: 1)) + 1).truncatingRemainder(dividingBy: 1)
+        let distance = min(abs(normalized - wrapped), abs(normalized - wrapped + 1), abs(normalized - wrapped - 1))
+        return pow(max(1 - distance * width, 0), 2.2)
+    }
+
+    private static func noise(_ value: CGFloat) -> CGFloat {
+        let raw = sin(value * 127.1 + 311.7) * 43_758.5453
+        return raw - floor(raw)
+    }
+}
+
+private struct SonicSphereRendererSceneView: NSViewRepresentable {
+    let sceneModel: RendererSceneModel
+    let isPlaying: Bool
+
+    func makeNSView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.allowsCameraControl = true
+        view.autoenablesDefaultLighting = false
+        view.backgroundColor = .clear
+        view.rendersContinuously = true
+        view.scene = makeScene()
+        return view
+    }
+
+    func updateNSView(_ nsView: SCNView, context: Context) {
+        nsView.scene = makeScene()
+    }
+
+    private func makeScene() -> SCNScene {
+        let scene = SCNScene()
+        scene.background.contents = NSColor.clear
+
+        let root = scene.rootNode
+        let target = SCNNode()
+        target.position = SCNVector3(0, 0, 0)
+        root.addChildNode(target)
+
+        let camera = SCNCamera()
+        camera.fieldOfView = 46
+        camera.zNear = 0.01
+        camera.zFar = 100
+        let cameraNode = SCNNode()
+        cameraNode.camera = camera
+        cameraNode.position = SCNVector3(0, 1.45, 4.15)
+        cameraNode.constraints = [SCNLookAtConstraint(target: target)]
+        root.addChildNode(cameraNode)
+
+        let ambient = SCNLight()
+        ambient.type = .ambient
+        ambient.intensity = 520
+        let ambientNode = SCNNode()
+        ambientNode.light = ambient
+        root.addChildNode(ambientNode)
+
+        let key = SCNLight()
+        key.type = .omni
+        key.intensity = 680
+        let keyNode = SCNNode()
+        keyNode.light = key
+        keyNode.position = SCNVector3(-2.5, 2.5, 3.0)
+        root.addChildNode(keyNode)
+
+        root.addChildNode(makeLamellaSphere())
+        root.addChildNode(makeEquator())
+
+        for output in sceneModel.outputSpeakers {
+            root.addChildNode(makeOutputSpeaker(output))
+        }
+
+        for input in sceneModel.inputSpeakers {
+            root.addChildNode(makeInputSpeaker(input))
+        }
+
+        root.addChildNode(makeListener())
+        return scene
+    }
+
+    private func makeLamellaSphere() -> SCNNode {
+        let container = SCNNode()
+
+        let sphere = SCNSphere(radius: 1)
+        sphere.segmentCount = 64
+        let sphereMaterial = material(
+            color: NSColor(calibratedRed: 0.37, green: 0.92, blue: 0.83, alpha: 0.32),
+            emission: NSColor(calibratedRed: 0.10, green: 0.35, blue: 0.32, alpha: 0.22),
+            fillMode: .lines
+        )
+        sphere.firstMaterial = sphereMaterial
+        container.addChildNode(SCNNode(geometry: sphere))
+
+        let lamellaAngles = stride(from: -60.0, through: 60.0, by: 15.0)
+        for angle in lamellaAngles {
+            let node = torusNode(
+                radius: cos(abs(angle) * .pi / 180),
+                color: NSColor(calibratedRed: 0.34, green: 0.90, blue: 0.84, alpha: 0.52)
+            )
+            node.position.y = CGFloat(sin(angle * .pi / 180))
+            container.addChildNode(node)
+        }
+
+        for angle in stride(from: 0.0, to: 180.0, by: 22.5) {
+            let node = torusNode(
+                radius: 1,
+                color: NSColor(calibratedRed: 0.24, green: 0.54, blue: 0.95, alpha: 0.30)
+            )
+            node.eulerAngles.x = CGFloat.pi / 2
+            node.eulerAngles.y = CGFloat(angle * .pi / 180)
+            container.addChildNode(node)
+        }
+
+        return container
+    }
+
+    private func makeEquator() -> SCNNode {
+        let node = torusNode(
+            radius: 1.002,
+            color: NSColor(calibratedRed: 0.98, green: 0.80, blue: 0.08, alpha: 0.82),
+            pipeRadius: 0.0038
+        )
+        return node
+    }
+
+    private func makeOutputSpeaker(_ speaker: RendererOutputSpeaker) -> SCNNode {
+        let geometry = SCNSphere(radius: speaker.isLFE ? 0.048 : 0.036)
+        geometry.segmentCount = speaker.isLFE ? 16 : 20
+        geometry.firstMaterial = material(
+            color: speaker.isLFE
+                ? NSColor(calibratedRed: 0.98, green: 0.80, blue: 0.08, alpha: 1.0)
+                : NSColor(calibratedRed: 0.37, green: 0.92, blue: 0.83, alpha: 1.0),
+            emission: speaker.isLFE
+                ? NSColor(calibratedRed: 0.28, green: 0.20, blue: 0.02, alpha: 1.0)
+                : NSColor(calibratedRed: 0.06, green: 0.34, blue: 0.31, alpha: 1.0)
+        )
+
+        let node = SCNNode(geometry: geometry)
+        node.name = speaker.displayName
+        node.position = speaker.position.scnVector
+        return node
+    }
+
+    private func makeInputSpeaker(_ speaker: RendererInputSpeaker) -> SCNNode {
+        let geometry = SCNBox(width: 0.075, height: 0.075, length: 0.075, chamferRadius: 0.008)
+        geometry.firstMaterial = material(
+            color: speaker.channel.role.isLFE
+                ? NSColor(calibratedRed: 0.98, green: 0.80, blue: 0.08, alpha: 0.95)
+                : NSColor(calibratedRed: 0.96, green: 0.44, blue: 0.52, alpha: 0.95),
+            emission: speaker.channel.role.isLFE
+                ? NSColor(calibratedRed: 0.28, green: 0.20, blue: 0.02, alpha: 1.0)
+                : NSColor(calibratedRed: 0.26, green: 0.08, blue: 0.12, alpha: 1.0)
+        )
+
+        let node = SCNNode(geometry: geometry)
+        node.name = speaker.displayName
+        node.position = speaker.position.scnVector
+        return node
+    }
+
+    private func makeListener() -> SCNNode {
+        let geometry = SCNSphere(radius: isPlaying ? 0.043 : 0.034)
+        geometry.segmentCount = 20
+        geometry.firstMaterial = material(
+            color: NSColor(calibratedRed: 0.93, green: 0.99, blue: 1.0, alpha: 1.0),
+            emission: NSColor(calibratedRed: 0.16, green: 0.26, blue: 0.28, alpha: 1.0)
+        )
+        return SCNNode(geometry: geometry)
+    }
+
+    private func torusNode(
+        radius: Double,
+        color: NSColor,
+        pipeRadius: CGFloat = 0.0025
+    ) -> SCNNode {
+        let torus = SCNTorus(ringRadius: CGFloat(max(radius, 0.001)), pipeRadius: pipeRadius)
+        torus.ringSegmentCount = 96
+        torus.pipeSegmentCount = 6
+        torus.firstMaterial = material(color: color, emission: color.withAlphaComponent(0.18))
+        return SCNNode(geometry: torus)
+    }
+
+    private func material(
+        color: NSColor,
+        emission: NSColor,
+        fillMode: SCNFillMode = .fill
+    ) -> SCNMaterial {
+        let material = SCNMaterial()
+        material.diffuse.contents = color
+        material.emission.contents = emission
+        material.lightingModel = .physicallyBased
+        material.transparency = CGFloat(color.alphaComponent)
+        material.isDoubleSided = true
+        material.fillMode = fillMode
+        return material
+    }
+}
+
+private extension RendererVector3 {
+    var scnVector: SCNVector3 {
+        SCNVector3(Float(x), Float(y), Float(z))
     }
 }

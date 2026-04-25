@@ -46,6 +46,14 @@ final class ChannelMeterStore: ObservableObject {
         channelMeters = channels.map { ChannelMeter(channel: $0, level: 0) }
     }
 
+    func configureIfNeeded(channels: [SurroundChannel]) {
+        let currentIDs = channelMeters.map(\.id)
+        let nextIDs = channels.map(\.id)
+        guard currentIDs != nextIDs else { return }
+
+        configure(channels: channels)
+    }
+
     func reset() {
         channelMeters = channelMeters.map { ChannelMeter(channel: $0.channel, level: 0) }
     }
@@ -76,6 +84,19 @@ final class OrbisonicViewModel: ObservableObject {
             applyPreset(preset)
         }
     }
+
+    @Published private(set) var rendererPresets: [RendererPreset] = [.sonicSphere30Point1]
+    @Published private(set) var rendererPreset: RendererPreset = .sonicSphere30Point1
+    @Published var rendererBedRadius: Double = RendererPreset.sonicSphere30Point1.inputGeometry.bedRadius {
+        didSet {
+            guard !suppressRendererPublish else { return }
+            updateRendererBedRadius(rendererBedRadius)
+        }
+    }
+    @Published private(set) var rendererScene: RendererSceneModel = .empty
+    @Published private(set) var rendererPresetStatus = "Renderer presets have not loaded yet."
+    @Published private(set) var rendererPresetDirectoryText = ""
+    @Published private(set) var rendererPresetIsDirty = false
 
     @Published var frontAngle: Double = SpatialTuning.default.frontAngle {
         didSet { if !suppressTuningPublish { publishTuning() } }
@@ -129,9 +150,12 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var isShuffleEnabled = false
 
     let meterStore = ChannelMeterStore()
+    let monitorMeterStore = ChannelMeterStore()
+    let rendererMeterStore = ChannelMeterStore()
 
     private let engine = OrbisonicEngine()
     private let localMusicLibrary = LocalMusicLibrary()
+    private let rendererPresetStore = RendererPresetStore()
     private let roonNowPlayingReader = RoonNowPlayingReader()
     private var refreshTimer: Timer?
     private var lastHeartbeatSecond: Int = -1
@@ -148,6 +172,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var lastBlackHoleSampleRateRepairTime = Date.distantPast
     private var selectedInputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedInputDeviceUIDKey)
     private var suppressTuningPublish = false
+    private var suppressRendererPublish = false
 
     init() {
         AppLogger.shared.notice(category: "view-model", "View model initialized.")
@@ -157,8 +182,11 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         applyPreset(.defaultPreset, pushToEngine: false)
+        loadRendererPresets()
         loadLocalMusicDatabase()
         refreshRoutesIfNeeded(force: true)
+        configureMonitorMeters()
+        configureRendererMeters()
 
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
             Task { @MainActor [weak self] in
@@ -214,9 +242,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .roonBlackHole:
             currentFileURL = nil
             selectPreferredBlackHoleInputIfAvailable()
-            statusMessage = inputRoute.isBlackHole
-                ? "Roon route will capture \(inputRoute.deviceName) directly. Your macOS system mic can stay on \(systemInputRoute.displayName)."
-                : "Choose BlackHole 64ch as the Orbisonic input, then start the Roon route."
+            statusMessage = "Roon is selected. Start Roon when the source is playing."
         case .testTone:
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
@@ -448,6 +474,82 @@ final class OrbisonicViewModel: ObservableObject {
         playLocalMusicPlaylist(playlist, shuffle: shuffle)
     }
 
+    func addLocalMusicTrackToQueue(_ track: LocalMusicTrack) {
+        let wasEmpty = sessionQueue.isEmpty
+        sessionQueue.append(track)
+        selectedLocalMusicTrackID = track.id
+
+        if wasEmpty {
+            sessionQueueIndex = 0
+        }
+
+        statusMessage = "Added \(track.displayTitle) to the session queue."
+    }
+
+    func addSelectedLocalMusicPlaylistToQueue(shuffle: Bool = false) {
+        guard let playlist = selectedLocalMusicPlaylist ?? localMusicPlaylists.first else {
+            statusMessage = "No M3U playlists are available. Add one in Settings or scan a folder that contains playlists."
+            return
+        }
+
+        addLocalMusicPlaylistToQueue(playlist, shuffle: shuffle)
+    }
+
+    func addLocalMusicPlaylistToQueue(_ playlist: LocalMusicPlaylist, shuffle: Bool = false) {
+        var tracks = tracks(for: playlist)
+        guard !tracks.isEmpty else {
+            statusMessage = "\(playlist.name) has no playable tracks in the current library."
+            return
+        }
+
+        if shuffle {
+            tracks.shuffle()
+        }
+
+        let wasEmpty = sessionQueue.isEmpty
+        sessionQueue.append(contentsOf: tracks)
+        selectedLocalMusicPlaylistID = playlist.id
+
+        if wasEmpty {
+            sessionQueueIndex = 0
+            selectedLocalMusicTrackID = tracks[0].id
+        }
+
+        statusMessage = "Added \(tracks.count) track\(tracks.count == 1 ? "" : "s") from \(playlist.name) to the session queue."
+    }
+
+    func moveSessionQueueItemUp(_ index: Int) {
+        moveSessionQueueItem(from: index, to: index - 1)
+    }
+
+    func moveSessionQueueItemDown(_ index: Int) {
+        moveSessionQueueItem(from: index, to: index + 1)
+    }
+
+    func removeSessionQueueItem(_ index: Int) {
+        guard sessionQueue.indices.contains(index) else { return }
+
+        let removed = sessionQueue.remove(at: index)
+
+        if sessionQueue.isEmpty {
+            sessionQueueIndex = nil
+        } else if let currentIndex = sessionQueueIndex {
+            if currentIndex == index {
+                sessionQueueIndex = min(index, sessionQueue.count - 1)
+            } else if index < currentIndex {
+                sessionQueueIndex = currentIndex - 1
+            }
+        }
+
+        if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) {
+            selectedLocalMusicTrackID = sessionQueue[sessionQueueIndex].id
+        } else if selectedLocalMusicTrackID == removed.id {
+            selectedLocalMusicTrackID = nil
+        }
+
+        statusMessage = "Removed \(removed.displayTitle) from the session queue."
+    }
+
     func playLocalMusicPlaylist(_ playlist: LocalMusicPlaylist, shuffle: Bool = false) {
         let tracks = tracks(for: playlist)
         guard !tracks.isEmpty else {
@@ -558,11 +660,14 @@ final class OrbisonicViewModel: ObservableObject {
             }
             sourceMetadata = loaded.metadata
             loadedChannels = loaded.layout.channels
+            refreshRendererScene()
             duration = loaded.duration
             currentTime = 0
             scrubProgress = 0
             meterStore.configure(channels: loaded.layout.channels)
             meterStore.reset()
+            monitorMeterStore.reset()
+            updateRendererMeters(from: Array(repeating: 0, count: loaded.layout.channelCount))
             isPlaying = false
             lastHeartbeatSecond = -1
             lastLiveMeterLogSecond = -1
@@ -692,6 +797,23 @@ final class OrbisonicViewModel: ObservableObject {
         return loadFile(url: track.url, autoplay: true)
     }
 
+    private func moveSessionQueueItem(from sourceIndex: Int, to destinationIndex: Int) {
+        guard sessionQueue.indices.contains(sourceIndex),
+              sessionQueue.indices.contains(destinationIndex),
+              sourceIndex != destinationIndex
+        else { return }
+
+        sessionQueue.swapAt(sourceIndex, destinationIndex)
+
+        if let currentIndex = sessionQueueIndex {
+            if currentIndex == sourceIndex {
+                sessionQueueIndex = destinationIndex
+            } else if currentIndex == destinationIndex {
+                sessionQueueIndex = sourceIndex
+            }
+        }
+    }
+
     func startRoonPipe() {
         cancelDiagnosticsForMusicAction()
         sourceMode = .roonBlackHole
@@ -762,12 +884,15 @@ final class OrbisonicViewModel: ObservableObject {
             loadedFileName = liveSource.metadata.fileName
             sourceMetadata = liveSource.metadata
             loadedChannels = liveSource.layout.channels
+            refreshRendererScene()
             duration = 0
             currentTime = 0
             scrubProgress = 0
             activeLiveChannelCount = requestedChannelCount
             meterStore.configure(channels: liveSource.layout.channels)
             meterStore.reset()
+            monitorMeterStore.reset()
+            updateRendererMeters(from: Array(repeating: 0, count: liveSource.layout.channelCount))
             isPlaying = true
             lastHeartbeatSecond = -1
             lastLiveMeterLogSecond = -1
@@ -779,7 +904,7 @@ final class OrbisonicViewModel: ObservableObject {
             refreshRoonNowPlayingIfNeeded(force: true)
 
             if sourceMode == .roonBlackHole, inputRoute.isBlackHole {
-                statusMessage = "Capturing Roon through \(inputRoute.deviceName) and rendering to \(routeDisplayName). System input remains \(systemInputRoute.displayName)."
+                statusMessage = "Capturing Roon and rendering to \(routeDisplayName)."
             } else {
                 statusMessage = "Capturing \(inputRoute.deviceName) and rendering to \(routeDisplayName). System input remains \(systemInputRoute.displayName)."
             }
@@ -865,6 +990,8 @@ final class OrbisonicViewModel: ObservableObject {
         currentTime = 0
         scrubProgress = 0
         meterStore.reset()
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
         lastHeartbeatSecond = -1
         lastLiveMeterLogSecond = -1
         lastLiveBufferLogSecond = -1
@@ -971,6 +1098,8 @@ final class OrbisonicViewModel: ObservableObject {
             let channels = point.meterChannels
             meterStore.configure(channels: channels)
             meterStore.update(with: Array(repeating: 0.82, count: channels.count))
+            updateMonitorMeters()
+            updateRendererMeters(from: Array(repeating: 0.82, count: rendererScene.matrix.inputCount))
 
             AppLogger.shared.notice(
                 category: "diagnostics",
@@ -997,6 +1126,8 @@ final class OrbisonicViewModel: ObservableObject {
         activeDiagnosticPoint = nil
         diagnosticSequencePosition = 0
         meterStore.reset()
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
         testToneStatus = automatic ? "Diagnostic channel walk finished." : "Diagnostic channel walk stopped."
 
         AppLogger.shared.notice(
@@ -1101,6 +1232,8 @@ final class OrbisonicViewModel: ObservableObject {
             let channels = selectedTestTonePoint.meterChannels
             meterStore.configure(channels: channels)
             meterStore.update(with: Array(repeating: 0.82, count: channels.count))
+            updateMonitorMeters()
+            updateRendererMeters(from: Array(repeating: 0.82, count: rendererScene.matrix.inputCount))
 
             AppLogger.shared.notice(
                 category: "diagnostics",
@@ -1135,6 +1268,8 @@ final class OrbisonicViewModel: ObservableObject {
 
         isTestTonePlaying = false
         meterStore.reset()
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
         testToneStatus = automatic ? "Diagnostic tone finished." : "Diagnostic tone stopped."
 
         if automatic {
@@ -1175,6 +1310,65 @@ final class OrbisonicViewModel: ObservableObject {
         )
     }
 
+    func selectRendererPreset(_ preset: RendererPreset) {
+        applyRendererPreset(preset, markDirty: false)
+        statusMessage = "Selected renderer preset \(preset.name)."
+    }
+
+    func saveRendererPreset() {
+        do {
+            _ = try rendererPresetStore.save(rendererPreset)
+            rendererPresetIsDirty = false
+            reloadRendererPresets(selectCurrent: true)
+            rendererPresetStatus = "Saved \(rendererPreset.name) to JSON."
+            AppLogger.shared.notice(
+                category: "renderer",
+                "Saved renderer preset id=\(rendererPreset.id) name=\(rendererPreset.name) path=\(rendererPresetStore.directoryURL.path)"
+            )
+        } catch {
+            let message = "Renderer preset save failed: \(error.localizedDescription)"
+            rendererPresetStatus = message
+            lastError = message
+            AppLogger.shared.error(category: "renderer", message)
+        }
+    }
+
+    func reloadRendererPresets(selectCurrent: Bool = true) {
+        do {
+            let currentID = rendererPreset.id
+            let presets = try rendererPresetStore.loadPresets()
+            rendererPresets = presets
+            rendererPresetDirectoryText = rendererPresetStore.directoryURL.path
+
+            if selectCurrent, let match = presets.first(where: { $0.id == currentID }) {
+                applyRendererPreset(match, markDirty: false)
+            } else if !presets.contains(where: { $0.id == rendererPreset.id }), let first = presets.first {
+                applyRendererPreset(first, markDirty: false)
+            } else {
+                refreshRendererScene()
+            }
+
+            rendererPresetStatus = "Loaded \(presets.count) renderer preset\(presets.count == 1 ? "" : "s")."
+        } catch {
+            rendererPresets = [.sonicSphere30Point1]
+            applyRendererPreset(.sonicSphere30Point1, markDirty: false)
+            rendererPresetStatus = "Using built-in preset because JSON presets could not load."
+            AppLogger.shared.error(category: "renderer", "Renderer preset reload failed: \(error.localizedDescription)")
+        }
+    }
+
+    func revealRendererPresetFolder() {
+        do {
+            try rendererPresetStore.ensureDirectoryAndDefaultPreset()
+            NSWorkspace.shared.activateFileViewerSelecting([rendererPresetStore.directoryURL])
+        } catch {
+            let message = "Could not open renderer preset folder: \(error.localizedDescription)"
+            rendererPresetStatus = message
+            lastError = message
+            AppLogger.shared.error(category: "renderer", message)
+        }
+    }
+
     var sourceFlowTitle: String {
         switch sourceMode {
         case .roonBlackHole:
@@ -1190,11 +1384,10 @@ final class OrbisonicViewModel: ObservableObject {
 
     var sourceFlowDetail: String {
         if sourceMode == .roonBlackHole {
-            let routeText = inputRoute.isAvailable ? inputRoute.detail : inputRoute.roonReadiness
             if let roonNowPlaying {
-                return "\(roonNowPlaying.titleLine) • \(routeText) • \(liveSignalStatus) • \(liveBufferStatus)"
+                return "\(roonNowPlaying.titleLine) • \(liveSignalStatus) • \(liveBufferStatus)"
             }
-            return "\(routeText) • \(liveSignalStatus) • \(liveBufferStatus)"
+            return "\(liveSignalStatus) • \(liveBufferStatus)"
         }
 
         if sourceMode == .blackHoleOtherInput {
@@ -1279,7 +1472,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var roonZoneText: String {
-        "roon-blackhole"
+        "Roon"
     }
 
     var availableLiveChannelCounts: [Int] {
@@ -1299,20 +1492,18 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var rendererText: String {
-        let sourceCount = sourceMetadata?.channelCount ?? loadedChannels.count
-        let renderedCount = max(sourceCount, 0)
-        guard renderedCount > 0 else {
-            return "AVAudioEnvironmentNode • waiting for source"
+        guard rendererScene.matrix.inputCount > 0 else {
+            return "\(rendererPreset.name) • waiting for source"
         }
-        return "AVAudioEnvironmentNode • \(renderedCount) positioned sources"
+        return "\(rendererPreset.name) • \(rendererScene.matrix.inputCount)x\(rendererScene.matrix.outputCount) matrix"
     }
 
     var rendererTargetText: String {
-        "Sonic Sphere / Sound System"
+        rendererPreset.outputTopology.kind == .sonicSphere ? "Sonic Sphere" : "Sound System"
     }
 
     var rendererLayoutText: String {
-        "30.1 / 52ch / custom speaker map"
+        "\(rendererPreset.outputTopology.fullRangeCount).\(rendererPreset.outputTopology.lfeCount) • \(rendererScene.outputSpeakers.count) outputs"
     }
 
     var rendererSelectionText: String {
@@ -1326,7 +1517,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var liveInputSourceName: String {
         switch sourceMode {
         case .roonBlackHole:
-            return "Roon via BlackHole"
+            return "Roon"
         case .blackHoleOtherInput:
             return inputRoute.isBlackHole ? "BlackHole Input" : "\(inputRoute.deviceName) Input"
         case .filePlayback:
@@ -1439,6 +1630,8 @@ final class OrbisonicViewModel: ObservableObject {
 
         isPlaying = false
         meterStore.reset()
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
         statusMessage = "Playback finished."
     }
 
@@ -1511,6 +1704,8 @@ final class OrbisonicViewModel: ObservableObject {
 
             let levels = engine.channelMeterLevels()
             meterStore.update(with: levels)
+            updateMonitorMeters()
+            updateRendererMeters(from: levels)
 
             let wholeSecond = Int(nextTime.rounded(.down))
             updateLiveBufferStatus(elapsedSecond: wholeSecond)
@@ -1556,7 +1751,10 @@ final class OrbisonicViewModel: ObservableObject {
             }
         }
 
-        meterStore.update(with: engine.channelMeterLevels())
+        let levels = engine.channelMeterLevels()
+        meterStore.update(with: levels)
+        updateMonitorMeters()
+        updateRendererMeters(from: levels)
     }
 
     private func refreshRoutesIfNeeded(force: Bool = false) {
@@ -1567,6 +1765,7 @@ final class OrbisonicViewModel: ObservableObject {
         let nextRoute = OutputRouteMonitor.currentRoute()
         if nextRoute != outputRoute {
             outputRoute = nextRoute
+            configureMonitorMeters()
             AppLogger.shared.notice(
                 category: "route",
                 "Default output route changed device=\(nextRoute.deviceName) transport=\(nextRoute.transportName) channels=\(nextRoute.outputChannelCount) target=\(nextRoute.targetName)"
@@ -1639,6 +1838,119 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func publishTuning() {
         engine.updateTuning(currentTuning())
+    }
+
+    private func loadRendererPresets() {
+        reloadRendererPresets(selectCurrent: false)
+    }
+
+    private func applyRendererPreset(_ preset: RendererPreset, markDirty: Bool) {
+        rendererPreset = preset
+        rendererPresetIsDirty = markDirty
+        suppressRendererPublish = true
+        rendererBedRadius = preset.inputGeometry.bedRadius
+        suppressRendererPublish = false
+        refreshRendererScene()
+    }
+
+    private func updateRendererBedRadius(_ rawRadius: Double) {
+        let radius = min(max(rawRadius, 0.25), 1.75)
+        if abs(radius - rawRadius) > 0.000_1 {
+            suppressRendererPublish = true
+            rendererBedRadius = radius
+            suppressRendererPublish = false
+        }
+
+        rendererPreset = rendererPreset.replacingBedRadius(radius)
+        rendererPresetIsDirty = true
+        rendererPresetStatus = "Edited \(rendererPreset.name). Save to update its JSON preset."
+        refreshRendererScene()
+    }
+
+    private func refreshRendererScene() {
+        rendererScene = RendererMatrixBuilder.sceneModel(
+            for: currentRendererLayout,
+            preset: rendererPreset
+        )
+        configureRendererMeters()
+    }
+
+    private func configureMonitorMeters() {
+        let detectedCount = max(engine.monitorMeterChannelCount(), outputRoute.outputChannelCount, 2)
+        monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: detectedCount).channels)
+    }
+
+    private func updateMonitorMeters() {
+        let levels = engine.monitorMeterLevels()
+        let channelCount = max(levels.count, outputRoute.outputChannelCount, 2)
+        let paddedLevels = padded(levels, count: channelCount)
+        monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: channelCount).channels)
+        monitorMeterStore.update(with: paddedLevels)
+    }
+
+    private func configureRendererMeters() {
+        rendererMeterStore.configureIfNeeded(channels: rendererMeterChannels())
+    }
+
+    private func updateRendererMeters(from sourceLevels: [Float]) {
+        let channels = rendererMeterChannels()
+        guard !channels.isEmpty else { return }
+
+        rendererMeterStore.configureIfNeeded(channels: channels)
+
+        guard rendererScene.matrix.inputCount > 0,
+              rendererScene.matrix.outputCount == channels.count,
+              sourceLevels.count == rendererScene.matrix.inputCount
+        else {
+            rendererMeterStore.update(with: Array(repeating: 0, count: channels.count))
+            return
+        }
+
+        var nextLevels = Array(repeating: Float(0), count: rendererScene.matrix.outputCount)
+
+        for inputIndex in 0..<rendererScene.matrix.inputCount {
+            let inputLevel = sourceLevels[inputIndex]
+            guard inputLevel > 0 else { continue }
+
+            for outputIndex in 0..<rendererScene.matrix.outputCount {
+                let gain = Float(abs(rendererScene.matrix.gains[inputIndex][outputIndex]))
+                let weightedLevel = inputLevel * gain
+                nextLevels[outputIndex] += weightedLevel * weightedLevel
+            }
+        }
+
+        rendererMeterStore.update(with: nextLevels.map { min(sqrtf($0), 1) })
+    }
+
+    private func rendererMeterChannels() -> [SurroundChannel] {
+        var lfeCount = 0
+
+        return rendererScene.outputSpeakers.enumerated().map { offset, speaker in
+            let role: SurroundChannelRole
+            if speaker.isLFE {
+                role = lfeCount == 0 ? .lfe : .lfe2
+                lfeCount += 1
+            } else {
+                role = .discrete(offset)
+            }
+
+            return SurroundChannel(index: offset, role: role)
+        }
+    }
+
+    private func padded(_ levels: [Float], count: Int) -> [Float] {
+        guard count > 0 else { return [] }
+        if levels.count == count { return levels }
+        if levels.count > count { return Array(levels.prefix(count)) }
+        return levels + Array(repeating: 0, count: count - levels.count)
+    }
+
+    private var currentRendererLayout: SurroundLayout? {
+        guard !loadedChannels.isEmpty else { return nil }
+        return SurroundLayout(
+            name: sourceMetadata?.layoutName ?? "\(loadedChannels.count)-Channel Input",
+            channels: loadedChannels
+        )
     }
 
     private func updateLiveBufferStatus(elapsedSecond: Int) {
