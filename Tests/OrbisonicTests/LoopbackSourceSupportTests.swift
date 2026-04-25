@@ -3,10 +3,17 @@ import XCTest
 @testable import Orbisonic
 
 final class LoopbackSourceSupportTests: XCTestCase {
-    func testMusicInputsExposeExactlyRoonAuxAndLocalFiles() {
+    func testMusicInputsExposeExactlyRoonAuxCableAndLocalFiles() {
         XCTAssertEqual(SourceMode.musicInputs, [.roon, .aux, .filePlayback])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Roon", "Aux Cable", "Local Files"])
         XCTAssertTrue(SourceMode.musicInputs.allSatisfy(\.isUserFacingMusicInput))
         XCTAssertFalse(SourceMode.musicInputs.contains(.testTone))
+    }
+
+    func testAuxCableLabelsUseFullName() {
+        XCTAssertEqual(SourceMode.aux.monitorActionLabel, "Monitor Aux Cable")
+        XCTAssertEqual(SourceMode.aux.muteActionLabel, "Mute Aux Cable")
+        XCTAssertEqual(SourceMode.aux.mutedActionLabel, "Resume Aux Cable")
     }
 
     func testLiveSourcesMapToStableOrbisonicLoopbackUIDs() {

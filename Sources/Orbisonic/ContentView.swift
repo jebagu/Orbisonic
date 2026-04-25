@@ -149,7 +149,7 @@ struct ContentView: View {
             }
             Button("Remind Me Later", role: .cancel) {}
         } message: {
-            Text("Install Orbisonic Inputs to use Roon and Aux live capture. Roon itself is optional; install it only if you want Roon playback. Local Files works without Roon.")
+            Text("Install Orbisonic Inputs to use Roon and Aux Cable live capture. Roon itself is optional; install it only if you want Roon playback. Local Files works without Roon.")
         }
         .onAppear {
             if !hasConfirmedLoopbackSetup {
@@ -925,7 +925,7 @@ struct ContentView: View {
         }
 
         if model.sourceMode == .aux {
-            return "Aux Input"
+            return "Aux Cable"
         }
 
         if model.sourceMode == .filePlayback, let track = model.selectedLocalMusicTrack {
@@ -964,7 +964,7 @@ struct ContentView: View {
             return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
         }
 
-        return "Choose Roon, Aux, or Local Files."
+        return "Choose Roon, Aux Cable, or Local Files."
     }
 
     private var nowPlayingSessionCard: some View {

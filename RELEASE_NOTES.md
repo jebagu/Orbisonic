@@ -10,6 +10,7 @@ Orbisonic 1.0 is the first packaged app build for the native macOS Sonic Sphere 
 - Splits the main workspace into `Input`, `Routing`, `Output`, `Renderer`, `Scene Tuning`, `Local Playlist`, `Diagnostics`, and `Settings`.
 - Adds compact pulsing square VU meters on the `Routing` tab for input, monitor, and renderer activity.
 - Adds monitor output selection from existing Core Audio outputs without adding another virtual soundcard.
+- Makes live monitor stops explicit and stops the active Roon or Aux Cable monitor when switching sources.
 - Keeps the Sonic Sphere renderer on the default 30.1 topology.
 - Adds compact monitor and renderer channel-walk diagnostics.
 - Adds the optional Orbisonic Roon Bridge helper for Roon transport control.
@@ -29,7 +30,7 @@ Orbisonic live capture also expects the Orbisonic virtual loopback inputs, which
 - `Orbisonic Roon Input`
 - `Orbisonic Aux Cable`
 
-The app package does not install or replace those loopback drivers. Without Orbisonic Inputs, local file playback still works, but Roon and Aux live capture will report the missing input devices.
+The app package does not install or replace those loopback drivers. Without Orbisonic Inputs, local file playback still works, but Roon and Aux Cable live capture will report the missing input devices.
 
 ### Notes
 

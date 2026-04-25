@@ -41,7 +41,7 @@ enum OutputRouteRisk: Equatable {
 
 enum SourceMode: String, CaseIterable, Identifiable {
     case roon = "Roon"
-    case aux = "Aux"
+    case aux = "Aux Cable"
     case filePlayback = "Local Files"
     case testTone = "Test Tone"
 
@@ -75,7 +75,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
         case .roon:
             "Monitor Roon"
         case .aux:
-            "Monitor Aux"
+            "Monitor Aux Cable"
         case .filePlayback:
             "Play"
         case .testTone:
@@ -88,7 +88,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
         case .roon:
             "Resume Roon"
         case .aux:
-            "Resume Aux"
+            "Resume Aux Cable"
         case .filePlayback:
             "Play"
         case .testTone:
@@ -101,7 +101,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
         case .roon:
             "Mute Roon"
         case .aux:
-            "Mute Aux"
+            "Mute Aux Cable"
         case .filePlayback:
             "Pause"
         case .testTone:
@@ -152,7 +152,7 @@ enum LiveMonitorState: Equatable {
     var statusLabel: String {
         switch self {
         case .stopped:
-            "READY"
+            "STOPPED"
         case .monitoring:
             "MONITORING"
         case .muted:

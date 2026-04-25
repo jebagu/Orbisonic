@@ -250,7 +250,9 @@ final class OrbisonicViewModel: ObservableObject {
     func selectSourceMode(_ mode: SourceMode) {
         guard mode != sourceMode else { return }
 
-        if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
+        if sourceMode.isLiveInput {
+            stopLiveMonitorForSourceSwitch(to: mode)
+        } else if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
             stop()
         }
 
@@ -268,6 +270,7 @@ final class OrbisonicViewModel: ObservableObject {
                 : "Local player source is ready."
         case .roon:
             currentFileURL = nil
+            clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata not requested yet."
             roonSignalPath = nil
             refreshRoonBridgeIfNeeded(force: true)
@@ -288,12 +291,13 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = "Test tone source is ready. Use Diagnostics to play the selected tone."
         case .aux:
             currentFileURL = nil
+            clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
             roonNowPlaying = nil
             if selectExpectedLoopbackInputIfAvailable(for: .aux) {
                 liveMonitorState = .stopped
-                statusMessage = "Aux is selected. Monitor Aux when the source app is playing."
+                statusMessage = "Aux Cable is selected. Monitor Aux Cable when the source app is playing."
             } else {
                 let message = missingLoopbackMessage(for: .aux)
                 liveMonitorState = .unavailable(message)
@@ -309,7 +313,7 @@ final class OrbisonicViewModel: ObservableObject {
             if isPlaying {
                 stop()
             }
-            statusMessage = "Roon mode captures Orbisonic Roon Input only. Switch to Aux to capture \(route.deviceName)."
+            statusMessage = "Roon mode captures Orbisonic Roon Input only. Switch to Aux Cable to capture \(route.deviceName)."
             return
         }
 
@@ -317,7 +321,7 @@ final class OrbisonicViewModel: ObservableObject {
             if isPlaying {
                 stop()
             }
-            statusMessage = "Aux mode captures Orbisonic Aux Cable only."
+            statusMessage = "Aux Cable mode captures Orbisonic Aux Cable only."
             return
         }
 
@@ -984,7 +988,7 @@ final class OrbisonicViewModel: ObservableObject {
             if sourceMode == .roon, inputRoute.isRoonLoopback {
                 statusMessage = "Capturing Roon and rendering to \(routeDisplayName)."
             } else {
-                statusMessage = "Capturing Aux and rendering to \(routeDisplayName). Source playback stays in the source app."
+                statusMessage = "Capturing Aux Cable and rendering to \(routeDisplayName). Source playback stays in the source app."
             }
 
             AppLogger.shared.notice(
@@ -1148,7 +1152,51 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
-        stop()
+        let sourceName = sourceMode.rawValue
+        markLiveMonitorStopped(sourceName: sourceName)
+        engine.stop()
+        markLiveMonitorStopped(sourceName: sourceName)
+        AppLogger.shared.notice(category: "live-input", "Stopped live monitor source=\(sourceName)")
+    }
+
+    private func stopLiveMonitorForSourceSwitch(to mode: SourceMode) {
+        guard sourceMode.isLiveInput else { return }
+
+        let sourceName = sourceMode.rawValue
+        markLiveMonitorStopped(sourceName: sourceName)
+        engine.stop()
+        markLiveMonitorStopped(sourceName: sourceName)
+        AppLogger.shared.notice(
+            category: "live-input",
+            "Stopped live monitor source=\(sourceName) before selecting source=\(mode.rawValue)"
+        )
+    }
+
+    private func markLiveMonitorStopped(sourceName: String) {
+        isPlaying = false
+        liveMonitorState = .stopped
+        clearLoadedSourceSnapshot()
+        duration = 0
+        currentTime = 0
+        scrubProgress = 0
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
+        lastHeartbeatSecond = -1
+        lastLiveMeterLogSecond = -1
+        lastLiveBufferLogSecond = -1
+        lastLiveSilenceWarningSecond = -1
+        lastLiveSignalPresent = nil
+        liveSignalStatus = "\(sourceName) monitoring stopped."
+        liveBufferStatus = "No live buffer."
+        statusMessage = "\(sourceName) monitoring stopped."
+    }
+
+    private func clearLoadedSourceSnapshot() {
+        sourceMetadata = nil
+        loadedChannels = []
+        loadedFileName = "No file loaded"
+        meterStore.configure(channels: [])
+        refreshRendererScene()
     }
 
     func stop() {
@@ -1601,7 +1649,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .filePlayback:
             return sourceMetadata?.fileName ?? "Local Files"
         case .aux:
-            return "Aux"
+            return "Aux Cable"
         }
     }
 
@@ -1792,7 +1840,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .roon:
             return "Roon"
         case .aux:
-            return "Aux"
+            return "Aux Cable"
         case .filePlayback:
             return "Local Files"
         case .testTone:
