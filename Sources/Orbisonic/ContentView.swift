@@ -2,12 +2,11 @@ import SceneKit
 import SwiftUI
 
 private enum StageTab: String, CaseIterable, Identifiable {
-    case routing = "Routing"
+    case input = "Input"
     case outputVU = "Output"
-    case vuMeter = "VU Meter"
     case renderer = "Renderer"
-    case localMusic = "Local Music"
-    case settings = "Settings"
+    case sceneTuning = "Scene Tuning"
+    case localMusic = "Local Playlist"
     case diagnostics = "Diagnostics"
 
     var id: String { rawValue }
@@ -17,6 +16,7 @@ private enum LocalMusicPanel: String, CaseIterable, Identifiable {
     case music = "Music"
     case playlists = "Playlists"
     case queue = "Session Queue"
+    case settings = "Settings"
 
     var id: String { rawValue }
 }
@@ -99,9 +99,11 @@ private struct LabButtonStyle: ButtonStyle {
 
 struct ContentView: View {
     @StateObject private var model = OrbisonicViewModel()
-    @State private var selectedStageTab: StageTab = .routing
+    @AppStorage("Orbisonic.hasConfirmedLoopbackSetup") private var hasConfirmedLoopbackSetup = false
+    @State private var selectedStageTab: StageTab = .input
     @State private var selectedLocalMusicPanel: LocalMusicPanel = .music
     @State private var selectedVUMeterStyle: VUMeterVisualStyle = .hexFlicker
+    @State private var showsLoopbackSetupDialog = false
 
     var body: some View {
         HStack(spacing: 24) {
@@ -135,6 +137,23 @@ struct ContentView: View {
             }
         } message: {
             Text(model.lastError ?? "Unknown error")
+        }
+        .confirmationDialog(
+            "Install Orbisonic Inputs",
+            isPresented: $showsLoopbackSetupDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Got It") {
+                hasConfirmedLoopbackSetup = true
+            }
+            Button("Remind Me Later", role: .cancel) {}
+        } message: {
+            Text("Install Orbisonic Inputs to use Roon and Aux live capture. Roon itself is optional; install it only if you want Roon playback. Local Files works without Roon.")
+        }
+        .onAppear {
+            if !hasConfirmedLoopbackSetup {
+                showsLoopbackSetupDialog = true
+            }
         }
     }
 
@@ -183,18 +202,16 @@ struct ContentView: View {
     @ViewBuilder
     private var selectedStageContent: some View {
         switch selectedStageTab {
-        case .routing:
+        case .input:
             tabPage { routingTab }
         case .outputVU:
             tabPage { outputVUTab }
-        case .vuMeter:
-            tabPage { vuMeterTab }
         case .renderer:
             tabPage { rendererTab }
+        case .sceneTuning:
+            tabPage { sceneTuningTab }
         case .localMusic:
             localMusicTab
-        case .settings:
-            tabPage { settingsTab }
         case .diagnostics:
             tabPage { diagnosticsTab }
         }
@@ -242,17 +259,30 @@ struct ContentView: View {
     @ViewBuilder
     private var routingPrimaryControls: some View {
         switch model.sourceMode {
-        case .roonBlackHole:
-            Button(action: model.startRoonPipe) {
-                Label("Start Roon", systemImage: "dot.radiowaves.left.and.right")
-                    .frame(maxWidth: .infinity)
+        case .roon, .aux:
+            HStack(spacing: 10) {
+                Button(action: livePrimaryAction) {
+                    Label(livePrimaryTitle, systemImage: livePrimaryIcon)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LabButtonStyle(isActive: true))
+
+                Button(action: model.stopSelectedLiveMonitor) {
+                    Label("Stop Monitor", systemImage: "stop.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LabButtonStyle())
+                .disabled(!model.liveMonitorState.isCapturing)
             }
-            .buttonStyle(LabButtonStyle(isActive: true))
+
+            infoRow(title: "Device", value: model.selectedSourceDeviceStatusText)
+            infoRow(title: "Status", value: model.liveSignalStatus)
+            channelCountMenu
 
         case .filePlayback:
             EmptyView()
 
-        case .testTone, .blackHoleOtherInput:
+        case .testTone:
             EmptyView()
         }
     }
@@ -282,7 +312,7 @@ struct ContentView: View {
     }
 
     private var primarySourceModes: [SourceMode] {
-        [.roonBlackHole, .filePlayback]
+        SourceMode.musicInputs
     }
 
     private var channelCountMenu: some View {
@@ -316,7 +346,10 @@ struct ContentView: View {
                 Button(route.deviceName) {
                     model.selectInputRoute(route)
                 }
-                .disabled(model.sourceMode == .roonBlackHole && !route.isBlackHole)
+                .disabled(
+                    (model.sourceMode == .roon && !route.isRoonLoopback)
+                    || (model.sourceMode == .aux && !route.isAuxLoopback)
+                )
             }
         } label: {
             HStack {
@@ -535,10 +568,18 @@ struct ContentView: View {
                     infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
                     infoRow(title: "Channels", value: outputChannelText)
                     infoRow(title: "Renderer", value: model.rendererText)
+                    infoRow(title: "Safety", value: model.outputSafetyText)
                 }
             }
 
             outputMeters
+            DenseVUMeterPanel(
+                title: "Renderer",
+                subtitle: rendererVUMeterSubtitle,
+                style: selectedVUMeterStyle,
+                meterStore: model.rendererMeterStore,
+                minHeight: 220
+            )
             signalFlowPanel
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -717,6 +758,44 @@ struct ContentView: View {
         .buttonStyle(LabButtonStyle(isActive: true))
     }
 
+    private var sceneTuningTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 18) {
+                settingsPanel(title: "Spatial Bed") {
+                    tuningSlider(title: "Input Bed Radius", value: $model.rendererBedRadius, range: 0.25...1.75, format: "%.2f")
+                    tuningSlider(title: "Front Angle", value: $model.frontAngle, range: 20...120, format: "%.0f")
+                    tuningSlider(title: "Rear Angle", value: $model.rearAngle, range: 90...180, format: "%.0f")
+
+                    Toggle("Head tracking", isOn: $model.headTrackingEnabled)
+                        .toggleStyle(.switch)
+                        .tint(LabTheme.cyan)
+                }
+
+                settingsPanel(title: "Active Source") {
+                    infoRow(title: "Source", value: model.sourceMode.rawValue)
+                    infoRow(title: "Input", value: model.selectedSourceDeviceStatusText)
+                    infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
+                    infoRow(title: "Renderer", value: model.rendererText)
+                }
+            }
+
+            SonicSphereRendererSceneView(
+                sceneModel: model.rendererScene,
+                isPlaying: model.isPlaying
+            )
+            .frame(minHeight: 500)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.22))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .stroke(LabTheme.line, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
+        }
+    }
+
     private var headerCard: some View {
         card {
             Text("Orbisonic")
@@ -732,13 +811,71 @@ struct ContentView: View {
             return model.isTestTonePlaying ? "Stop Tone" : "Play Tone"
         }
         if model.sourceMode.isLiveInput {
-            return model.isPlaying ? "Stop Live" : "Start Live"
+            return livePrimaryTitle
         }
         return model.isPlaying ? "Pause" : "Play"
     }
 
+    private var primaryTransportIcon: String {
+        if model.sourceMode.isLiveInput {
+            return livePrimaryIcon
+        }
+        return model.isPlaying ? "pause.fill" : "play.fill"
+    }
+
+    private var secondaryTransportTitle: String {
+        model.sourceMode.isLiveInput ? model.sourceMode.stopMonitorLabel : "Stop"
+    }
+
+    private var statusChipText: String {
+        if model.sourceMode.isLiveInput {
+            return model.liveMonitorState.statusLabel
+        }
+        if model.sourceMode == .testTone {
+            return model.isTestTonePlaying ? "TONE" : "READY"
+        }
+        return model.isPlaying ? "PLAYING" : "READY"
+    }
+
+    private var statusChipIsActive: Bool {
+        if model.sourceMode.isLiveInput {
+            return model.liveMonitorState == .monitoring
+        }
+        return model.isPlaying || model.isTestTonePlaying
+    }
+
+    private var livePrimaryTitle: String {
+        if model.liveMonitorState.isMuted {
+            return "Resume Monitor"
+        }
+        if model.liveMonitorState.isCapturing {
+            return model.sourceMode.muteActionLabel
+        }
+        return model.sourceMode.monitorActionLabel
+    }
+
+    private var livePrimaryIcon: String {
+        if model.liveMonitorState.isMuted {
+            return "speaker.wave.2.fill"
+        }
+        if model.liveMonitorState.isCapturing {
+            return "speaker.slash.fill"
+        }
+        return "waveform.path.ecg"
+    }
+
+    private func livePrimaryAction() {
+        if model.liveMonitorState.isMuted {
+            model.resumeLiveMonitor()
+        } else if model.liveMonitorState.isCapturing {
+            model.muteLiveMonitor()
+        } else {
+            model.startSelectedLiveMonitor()
+        }
+    }
+
     private var nowPlayingTitle: String {
-        if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roonBlackHole {
+        if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roon {
             return nowPlaying.title
         }
 
@@ -746,8 +883,8 @@ struct ContentView: View {
             return model.selectedTestTonePoint.rawValue
         }
 
-        if model.sourceMode == .blackHoleOtherInput, model.sourceMetadata == nil {
-            return model.inputRoute.displayName
+        if model.sourceMode == .aux {
+            return "Aux Input"
         }
 
         if model.sourceMode == .filePlayback, let track = model.selectedLocalMusicTrack {
@@ -762,12 +899,16 @@ struct ContentView: View {
     }
 
     private var nowPlayingSubtitle: String {
-        if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roonBlackHole {
+        if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roon {
             return nowPlaying.artist.isEmpty ? "Roon" : nowPlaying.artist
         }
 
         if model.sourceMode == .testTone {
             return model.testToneStatus
+        }
+
+        if model.sourceMode == .aux {
+            return model.selectedSourceDeviceStatusText
         }
 
         if model.sourceMode == .filePlayback, let track = model.selectedLocalMusicTrack {
@@ -778,7 +919,7 @@ struct ContentView: View {
             return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
         }
 
-        return "Choose Roon, Test Tone, Local Player, or BlackHole / Other Input."
+        return "Choose Roon, Aux, or Local Files."
     }
 
     private var nowPlayingSessionCard: some View {
@@ -789,16 +930,16 @@ struct ContentView: View {
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(LabTheme.text)
                     Spacer()
-                    Text(model.isPlaying ? "LIVE" : "READY")
+                    Text(statusChipText)
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(model.isPlaying ? LabTheme.bg : LabTheme.textSoft)
-                        .frame(width: 58, height: 22)
+                        .foregroundStyle(statusChipIsActive ? LabTheme.bg : LabTheme.textSoft)
+                        .frame(width: 86, height: 22)
                         .background(
                             RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                .fill(model.isPlaying ? LabTheme.cyan : LabTheme.panelSoft)
+                                .fill(statusChipIsActive ? LabTheme.cyan : LabTheme.panelSoft)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                        .stroke(model.isPlaying ? LabTheme.cyan.opacity(0.55) : LabTheme.line, lineWidth: 1)
+                                        .stroke(statusChipIsActive ? LabTheme.cyan.opacity(0.55) : LabTheme.line, lineWidth: 1)
                                 )
                         )
                 }
@@ -821,19 +962,19 @@ struct ContentView: View {
 
                 HStack(spacing: 10) {
                     Button(action: primaryNowPlayingAction) {
-                        Label(primaryTransportTitle, systemImage: model.isPlaying ? "pause.fill" : "play.fill")
+                        Label(primaryTransportTitle, systemImage: primaryTransportIcon)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(LabButtonStyle(isActive: true))
 
-                    Button(action: model.stop) {
-                        Label("Stop", systemImage: "stop.fill")
+                    Button(action: secondaryNowPlayingAction) {
+                        Label(secondaryTransportTitle, systemImage: "stop.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(LabButtonStyle())
                 }
 
-                if model.sourceMode == .filePlayback || !model.localMusicTracks.isEmpty {
+                if model.sourceMode == .filePlayback {
                     localMusicNowPlayingControls
                 }
 
@@ -856,7 +997,7 @@ struct ContentView: View {
                 Divider()
                     .overlay(Color.white.opacity(0.08))
 
-                if model.sourceMode == .roonBlackHole {
+                if model.sourceMode == .roon {
                     if let nowPlaying = model.roonNowPlaying {
                         VStack(alignment: .leading, spacing: 8) {
                             transportRow(title: "Format", value: nowPlaying.tidyFormatText)
@@ -872,6 +1013,13 @@ struct ContentView: View {
                             .foregroundStyle(LabTheme.textSoft)
                             .lineLimit(2)
                             .frame(minHeight: 36, alignment: .topLeading)
+                    }
+                } else if model.sourceMode == .aux {
+                    VStack(alignment: .leading, spacing: 8) {
+                        transportRow(title: "Device", value: model.selectedSourceDeviceStatusText)
+                        transportRow(title: "Signal", value: model.liveSignalStatus)
+                        transportRow(title: "Buffer", value: model.liveBufferStatus)
+                        transportRow(title: "Control", value: "Playback is controlled in the source app.")
                     }
                 } else if let metadata = model.sourceMetadata {
                     VStack(alignment: .leading, spacing: 8) {
@@ -903,14 +1051,30 @@ struct ContentView: View {
     }
 
     private var nowPlayingInputText: String {
-        model.sourceMode == .roonBlackHole ? "Roon" : model.inputNowText
+        if model.sourceMode.isLiveInput {
+            return model.selectedSourceDeviceStatusText
+        }
+        if model.sourceMode == .testTone {
+            return "Diagnostics"
+        }
+        return model.currentLocalMusicTrack?.displayTitle ?? model.loadedFileName
     }
 
     private func primaryNowPlayingAction() {
-        if model.sourceMode == .filePlayback, !model.localMusicTracks.isEmpty {
+        if model.sourceMode.isLiveInput {
+            livePrimaryAction()
+        } else if model.sourceMode == .filePlayback, !model.localMusicTracks.isEmpty {
             model.toggleLocalMusicPlayback()
         } else {
             model.togglePlayback()
+        }
+    }
+
+    private func secondaryNowPlayingAction() {
+        if model.sourceMode.isLiveInput {
+            model.stopSelectedLiveMonitor()
+        } else {
+            model.stop()
         }
     }
 
@@ -990,6 +1154,8 @@ struct ContentView: View {
             localMusicPlaylistsPanel
         case .queue:
             localMusicQueuePanel
+        case .settings:
+            settingsTab
         }
     }
 

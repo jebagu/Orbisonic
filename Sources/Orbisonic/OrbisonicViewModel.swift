@@ -10,19 +10,6 @@ struct ChannelMeter: Identifiable {
     var id: String { channel.id }
 }
 
-enum SourceMode: String, CaseIterable, Identifiable {
-    case roonBlackHole = "Roon"
-    case testTone = "Test Tone"
-    case filePlayback = "Local Player"
-    case blackHoleOtherInput = "BlackHole / Other Input"
-
-    var id: String { rawValue }
-
-    var isLiveInput: Bool {
-        self == .roonBlackHole || self == .blackHoleOtherInput
-    }
-}
-
 enum PlaylistSortMode: String, CaseIterable, Identifiable {
     case name = "Name"
     case artist = "Artist"
@@ -126,6 +113,7 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var systemInputRoute: InputRouteInfo = .unavailable
     @Published private(set) var availableInputRoutes: [InputRouteInfo] = []
     @Published var sourceMode: SourceMode = .filePlayback
+    @Published private(set) var liveMonitorState: LiveMonitorState = .stopped
     @Published var activeLiveChannelCount = 8
     @Published var liveSignalStatus = "No live input."
     @Published var liveBufferStatus = "No live buffer."
@@ -169,7 +157,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var localMusicScanTask: Task<Void, Never>?
     private var lastRouteRefreshTime = Date.distantPast
     private var lastRoonNowPlayingRefreshTime = Date.distantPast
-    private var lastBlackHoleSampleRateRepairTime = Date.distantPast
+    private var lastLegacyLoopbackSampleRateRepairTime = Date.distantPast
     private var selectedInputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedInputDeviceUIDKey)
     private var suppressTuningPublish = false
     private var suppressRendererPublish = false
@@ -234,37 +222,63 @@ final class OrbisonicViewModel: ObservableObject {
         case .filePlayback:
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
+            liveMonitorState = .stopped
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
             statusMessage = sourceMetadata == nil
                 ? "Open a local multichannel file or scan watch folders in Settings."
                 : "Local player source is ready."
-        case .roonBlackHole:
+        case .roon:
             currentFileURL = nil
-            selectPreferredBlackHoleInputIfAvailable()
-            statusMessage = "Roon is selected. Start Roon when the source is playing."
+            roonNowPlayingStatus = "Roon metadata not requested yet."
+            roonSignalPath = nil
+            if selectExpectedLoopbackInputIfAvailable(for: .roon) {
+                liveMonitorState = .stopped
+                statusMessage = "Roon is selected. Monitor Roon when the source is playing."
+            } else {
+                let message = missingLoopbackMessage(for: .roon)
+                liveMonitorState = .unavailable(message)
+                statusMessage = message
+            }
         case .testTone:
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
+            liveMonitorState = .stopped
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
-            statusMessage = "Test tone source is ready. Use the Routing tab to play the selected tone."
-        case .blackHoleOtherInput:
+            statusMessage = "Test tone source is ready. Use Diagnostics to play the selected tone."
+        case .aux:
             currentFileURL = nil
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
-            statusMessage = "Using \(inputRoute.displayName) as Orbisonic's live source. macOS system input remains separate."
+            roonNowPlaying = nil
+            if selectExpectedLoopbackInputIfAvailable(for: .aux) {
+                liveMonitorState = .stopped
+                statusMessage = "Aux is selected. Monitor Aux when the source app is playing."
+            } else {
+                let message = missingLoopbackMessage(for: .aux)
+                liveMonitorState = .unavailable(message)
+                statusMessage = message
+            }
         }
     }
 
     func selectInputRoute(_ route: InputRouteInfo) {
         guard route.isAvailable else { return }
 
-        if sourceMode == .roonBlackHole, !route.isBlackHole {
+        if sourceMode == .roon, !route.isRoonLoopback {
             if isPlaying {
                 stop()
             }
-            statusMessage = "Roon mode captures BlackHole only. Switch to BlackHole / Other Input to capture \(route.deviceName)."
+            statusMessage = "Roon mode captures Orbisonic Roon Input only. Switch to Aux to capture \(route.deviceName)."
+            return
+        }
+
+        if sourceMode == .aux, !route.isAuxLoopback {
+            if isPlaying {
+                stop()
+            }
+            statusMessage = "Aux mode captures Orbisonic Aux Cable only."
             return
         }
 
@@ -816,22 +830,23 @@ final class OrbisonicViewModel: ObservableObject {
 
     func startRoonPipe() {
         cancelDiagnosticsForMusicAction()
-        sourceMode = .roonBlackHole
+        sourceMode = .roon
         currentFileURL = nil
         refreshRoutesIfNeeded(force: true)
         refreshRoonNowPlayingIfNeeded(force: true)
-        selectPreferredBlackHoleInputIfAvailable()
+        selectExpectedLoopbackInputIfAvailable(for: .roon)
 
-        guard inputRoute.isBlackHole else {
-            let message = "Choose BlackHole 64ch as Orbisonic's input before starting the Roon pipe. macOS system input can stay on \(systemInputRoute.displayName)."
+        guard inputRoute.isRoonLoopback else {
+            let message = missingLoopbackMessage(for: .roon)
             AppLogger.shared.error(category: "ui", message)
             statusMessage = message
             lastError = message
+            liveMonitorState = .unavailable(message)
             return
         }
 
-        guard !outputRoute.isBlackHole else {
-            let message = "Set macOS Sound Output to your headphones before starting. Output is currently \(outputRoute.deviceName), which would route the render back into BlackHole."
+        guard !outputRoute.routeRisk.blocksLiveMonitoring else {
+            let message = outputFeedbackMessage
             AppLogger.shared.error(category: "ui", message)
             statusMessage = message
             lastError = message
@@ -847,22 +862,24 @@ final class OrbisonicViewModel: ObservableObject {
 
     func startOtherInputPipe() {
         cancelDiagnosticsForMusicAction()
-        sourceMode = .blackHoleOtherInput
+        sourceMode = .aux
         currentFileURL = nil
         roonNowPlaying = nil
         roonSignalPath = nil
         refreshRoutesIfNeeded(force: true)
+        selectExpectedLoopbackInputIfAvailable(for: .aux)
 
-        guard inputRoute.isAvailable else {
-            let message = "No Orbisonic live input route is available. Choose BlackHole, a mic, or another input in the app."
+        guard inputRoute.isAuxLoopback else {
+            let message = missingLoopbackMessage(for: .aux)
             AppLogger.shared.error(category: "ui", message)
             statusMessage = message
             lastError = message
+            liveMonitorState = .unavailable(message)
             return
         }
 
-        guard !outputRoute.isBlackHole else {
-            let message = "Set macOS Sound Output to a monitor or renderer target before starting. Output is currently BlackHole."
+        guard !outputRoute.routeRisk.blocksLiveMonitoring else {
+            let message = outputFeedbackMessage
             AppLogger.shared.error(category: "ui", message)
             statusMessage = message
             lastError = message
@@ -894,6 +911,7 @@ final class OrbisonicViewModel: ObservableObject {
             monitorMeterStore.reset()
             updateRendererMeters(from: Array(repeating: 0, count: liveSource.layout.channelCount))
             isPlaying = true
+            liveMonitorState = .monitoring
             lastHeartbeatSecond = -1
             lastLiveMeterLogSecond = -1
             lastLiveBufferLogSecond = -1
@@ -903,18 +921,19 @@ final class OrbisonicViewModel: ObservableObject {
             liveBufferStatus = "Priming live buffer."
             refreshRoonNowPlayingIfNeeded(force: true)
 
-            if sourceMode == .roonBlackHole, inputRoute.isBlackHole {
+            if sourceMode == .roon, inputRoute.isRoonLoopback {
                 statusMessage = "Capturing Roon and rendering to \(routeDisplayName)."
             } else {
-                statusMessage = "Capturing \(inputRoute.deviceName) and rendering to \(routeDisplayName). System input remains \(systemInputRoute.displayName)."
+                statusMessage = "Capturing Aux and rendering to \(routeDisplayName). Source playback stays in the source app."
             }
 
             AppLogger.shared.notice(
                 category: "live-input",
-                "Live input active reason=\(reason) input=\(inputRoute.deviceName) activeChannels=\(requestedChannelCount)"
+                "Live input active source=\(sourceMode.rawValue) reason=\(reason) input=\(inputRoute.deviceName) uid=\(inputRoute.uid) activeChannels=\(requestedChannelCount)"
             )
         } catch {
-            AppLogger.shared.error(category: "ui", "Roon pipe failed: \(error.localizedDescription)")
+            liveMonitorState = .error(error.localizedDescription)
+            AppLogger.shared.error(category: "ui", "Live monitor failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
         }
     }
@@ -922,18 +941,22 @@ final class OrbisonicViewModel: ObservableObject {
     func togglePlayback() {
         cancelDiagnosticsForMusicAction()
 
-        if sourceMode == .roonBlackHole {
-            if isPlaying {
-                stop()
+        if sourceMode == .roon {
+            if liveMonitorState.isMuted {
+                resumeLiveMonitor()
+            } else if isPlaying {
+                muteLiveMonitor()
             } else {
                 startRoonPipe()
             }
             return
         }
 
-        if sourceMode == .blackHoleOtherInput {
-            if isPlaying {
-                stop()
+        if sourceMode == .aux {
+            if liveMonitorState.isMuted {
+                resumeLiveMonitor()
+            } else if isPlaying {
+                muteLiveMonitor()
             } else {
                 startOtherInputPipe()
             }
@@ -975,6 +998,51 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    func startSelectedLiveMonitor() {
+        switch sourceMode {
+        case .roon:
+            startRoonPipe()
+        case .aux:
+            startOtherInputPipe()
+        case .filePlayback, .testTone:
+            togglePlayback()
+        }
+    }
+
+    func muteLiveMonitor() {
+        guard sourceMode.isLiveInput, isPlaying else { return }
+
+        engine.setLiveInputMuted(true)
+        liveMonitorState = .muted
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
+        statusMessage = "\(sourceMode.rawValue) monitor muted. Input metering remains active."
+        AppLogger.shared.notice(category: "live-input", "Muted live monitor source=\(sourceMode.rawValue)")
+    }
+
+    func resumeLiveMonitor() {
+        guard sourceMode.isLiveInput else { return }
+
+        if !isPlaying {
+            startSelectedLiveMonitor()
+            return
+        }
+
+        engine.setLiveInputMuted(false)
+        liveMonitorState = .monitoring
+        statusMessage = "\(sourceMode.rawValue) monitor resumed."
+        AppLogger.shared.notice(category: "live-input", "Resumed live monitor source=\(sourceMode.rawValue)")
+    }
+
+    func stopSelectedLiveMonitor() {
+        guard sourceMode.isLiveInput else {
+            stop()
+            return
+        }
+
+        stop()
+    }
+
     func stop() {
         testToneStopTask?.cancel()
         testToneStopTask = nil
@@ -983,6 +1051,7 @@ final class OrbisonicViewModel: ObservableObject {
         diagnosticReturnContext = nil
         engine.stop()
         isPlaying = false
+        liveMonitorState = .stopped
         isTestTonePlaying = false
         isDiagnosticSequencePlaying = false
         activeDiagnosticPoint = nil
@@ -1177,7 +1246,7 @@ final class OrbisonicViewModel: ObservableObject {
                 statusMessage = "Diagnostics stopped, but music could not resume."
             }
 
-        case .roonBlackHole:
+        case .roon:
             guard context.wasPlaying else {
                 statusMessage = "Diagnostics stopped. Roon route is ready."
                 return
@@ -1188,7 +1257,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .testTone:
             statusMessage = "Diagnostics stopped. Test tone source is ready."
 
-        case .blackHoleOtherInput:
+        case .aux:
             guard context.wasPlaying else {
                 statusMessage = "Diagnostics stopped. Live input route is ready."
                 return
@@ -1371,27 +1440,27 @@ final class OrbisonicViewModel: ObservableObject {
 
     var sourceFlowTitle: String {
         switch sourceMode {
-        case .roonBlackHole:
+        case .roon:
             return "Roon"
         case .testTone:
             return "Test Tone"
         case .filePlayback:
-            return sourceMetadata?.fileName ?? "Local Player"
-        case .blackHoleOtherInput:
-            return inputRoute.isBlackHole ? "BlackHole Input" : "Other Input"
+            return sourceMetadata?.fileName ?? "Local Files"
+        case .aux:
+            return "Aux"
         }
     }
 
     var sourceFlowDetail: String {
-        if sourceMode == .roonBlackHole {
+        if sourceMode == .roon {
             if let roonNowPlaying {
                 return "\(roonNowPlaying.titleLine) • \(liveSignalStatus) • \(liveBufferStatus)"
             }
             return "\(liveSignalStatus) • \(liveBufferStatus)"
         }
 
-        if sourceMode == .blackHoleOtherInput {
-            let routeText = inputRoute.isAvailable ? inputRoute.detail : "No selected input."
+        if sourceMode == .aux {
+            let routeText = inputRoute.isAvailable ? inputRoute.detail : missingLoopbackMessage(for: .aux)
             return "\(routeText) • \(liveSignalStatus) • \(liveBufferStatus)"
         }
 
@@ -1415,7 +1484,7 @@ final class OrbisonicViewModel: ObservableObject {
             return "Waiting For Render Input"
         }
 
-        if sourceMode == .roonBlackHole {
+        if sourceMode == .roon {
             return "\(metadata.layoutName) live -> binaural spatial render"
         }
 
@@ -1434,7 +1503,7 @@ final class OrbisonicViewModel: ObservableObject {
             if sourceMode == .testTone {
                 return "Synthetic source for monitor and renderer checks."
             }
-            return sourceMode.isLiveInput ? inputRoute.roonReadiness : "No source loaded."
+            return sourceMode.isLiveInput ? liveInputReadinessText : "No source loaded."
         }
 
         let objectText = metadata.channelCount == 1
@@ -1464,7 +1533,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var inputNowText: String {
-        inputRoute.isAvailable ? "\(inputRoute.displayName) • \(inputRoute.detail)" : inputRoute.roonReadiness
+        inputRoute.isAvailable ? "\(inputRoute.displayName) • \(inputRoute.detail)" : liveInputReadinessText
     }
 
     var systemInputNowText: String {
@@ -1473,6 +1542,48 @@ final class OrbisonicViewModel: ObservableObject {
 
     var roonZoneText: String {
         "Roon"
+    }
+
+    var liveInputReadinessText: String {
+        if let expectedLoopback = sourceMode.expectedLoopback {
+            return inputRoute.isAvailable
+                ? "\(expectedLoopback.displayName) ready."
+                : missingLoopbackMessage(for: sourceMode)
+        }
+
+        return inputRoute.roonReadiness
+    }
+
+    var selectedSourceDeviceStatusText: String {
+        guard let expectedLoopback = sourceMode.expectedLoopback else {
+            return sourceMetadata?.fileName ?? "No local file loaded."
+        }
+
+        if inputRoute.uid == expectedLoopback.deviceUID {
+            return "\(expectedLoopback.displayName) • \(inputRoute.detail)"
+        }
+
+        return missingLoopbackMessage(for: sourceMode)
+    }
+
+    var outputSafetyText: String {
+        if DanteSafetyPolicy.requiresHighRateChannelWarning(
+            outputChannelCount: rendererScene.outputSpeakers.count,
+            sampleRate: outputRoute.nominalSampleRate
+        ) {
+            return "Dante Virtual Soundcard Pro supports only 16x16 channels at 176.4/192 kHz."
+        }
+
+        switch outputRoute.routeRisk {
+        case .safe:
+            return "Safe output route."
+        case .feedbackLoop(let name):
+            return "Blocked: \(name) would feed Orbisonic back into an input loopback."
+        case .virtualOutput(let name):
+            return "Virtual output: verify \(name) is the intended renderer target."
+        case .unavailable:
+            return "No verified output route."
+        }
     }
 
     var availableLiveChannelCounts: [Int] {
@@ -1516,22 +1627,28 @@ final class OrbisonicViewModel: ObservableObject {
 
     private var liveInputSourceName: String {
         switch sourceMode {
-        case .roonBlackHole:
+        case .roon:
             return "Roon"
-        case .blackHoleOtherInput:
-            return inputRoute.isBlackHole ? "BlackHole Input" : "\(inputRoute.deviceName) Input"
+        case .aux:
+            return "Aux"
         case .filePlayback:
-            return "Local Player"
+            return "Local Files"
         case .testTone:
             return "Test Tone"
         }
     }
 
     private var liveInputSignalName: String {
-        inputRoute.isBlackHole ? "BlackHole" : inputRoute.deviceName
+        if sourceMode == .roon {
+            return OrbisonicLoopbackDevice.roonInput.displayName
+        }
+        if sourceMode == .aux {
+            return OrbisonicLoopbackDevice.auxCable.displayName
+        }
+        return inputRoute.deviceName
     }
 
-    private var roonBlackHoleSampleRateMismatchText: String? {
+    private var roonLoopbackSampleRateMismatchText: String? {
         guard let roonRate = roonNowPlaying?.outputSampleRate, inputRoute.nominalSampleRate > 0 else {
             return nil
         }
@@ -1540,12 +1657,12 @@ final class OrbisonicViewModel: ObservableObject {
             return nil
         }
 
-        return "Roon is streaming \(formatSampleRate(roonRate)) but BlackHole input is \(formatSampleRate(inputRoute.nominalSampleRate)). Set BlackHole 64ch input and output to the same rate in Audio MIDI Setup, then restart the Roon pipe."
+        return "Roon is streaming \(formatSampleRate(roonRate)) but \(liveInputSignalName) is \(formatSampleRate(inputRoute.nominalSampleRate)). Set the Roon output and Orbisonic loopback to the same rate, then restart monitoring."
     }
 
-    private var roonBlackHoleSampleRateMismatch: Double? {
+    private var roonLoopbackSampleRateMismatch: Double? {
         guard let roonRate = roonNowPlaying?.outputSampleRate,
-              inputRoute.isBlackHole,
+              inputRoute.isRoonLoopback || inputRoute.isBlackHole,
               inputRoute.nominalSampleRate > 0,
               abs(roonRate - inputRoute.nominalSampleRate) > 1
         else { return nil }
@@ -1565,7 +1682,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func preferredLiveChannelCount() -> Int {
         let available = max(min(inputRoute.inputChannelCount, OrbisonicAudioLimits.maxSourceChannelCount), 1)
 
-        if inputRoute.isBlackHole, activeLiveChannelCount <= 1, available >= 8 {
+        if inputRoute.isOrbisonicLoopback, activeLiveChannelCount <= 1, available >= 8 {
             return 8
         }
 
@@ -1573,22 +1690,58 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func selectPreferredBlackHoleInputIfAvailable() -> Bool {
-        guard let blackHoleRoute = availableInputRoutes.first(where: \.isBlackHole) else {
+    private func selectExpectedLoopbackInputIfAvailable(for mode: SourceMode) -> Bool {
+        guard let route = expectedLoopbackRoute(for: mode) else {
             return false
         }
 
-        if inputRoute.deviceID != blackHoleRoute.deviceID {
-            selectInputRoute(blackHoleRoute)
+        if inputRoute.deviceID != route.deviceID {
+            inputRoute = route
+            applyLiveChannelDefaults(for: route)
+            AppLogger.shared.notice(
+                category: "route",
+                "Selected expected source input source=\(mode.rawValue) device=\(route.deviceName) uid=\(route.uid)"
+            )
         }
 
         return true
+    }
+
+    private func expectedLoopbackRoute(for mode: SourceMode) -> InputRouteInfo? {
+        guard let expectedLoopback = mode.expectedLoopback else { return nil }
+        return availableInputRoutes.first { $0.uid == expectedLoopback.deviceUID }
+    }
+
+    private func missingLoopbackMessage(for mode: SourceMode) -> String {
+        guard let expectedLoopback = mode.expectedLoopback else {
+            return "No live input route is required for \(mode.rawValue)."
+        }
+
+        return "\(expectedLoopback.displayName) is not available. Install Orbisonic Inputs, then restart Core Audio or reboot."
+    }
+
+    private var outputFeedbackMessage: String {
+        switch outputRoute.routeRisk {
+        case .feedbackLoop(let name):
+            return "Set macOS Sound Output to a monitor or renderer target before monitoring. Output is currently \(name), which would feed Orbisonic back into a loopback input."
+        case .virtualOutput(let name):
+            return "Output is currently the virtual device \(name). Verify it is the intended renderer target before monitoring."
+        case .safe:
+            return "Output route is safe."
+        case .unavailable:
+            return "No output route is available."
+        }
     }
 
     private func resolvedSelectedInputRoute(
         from routes: [InputRouteInfo],
         systemInput: InputRouteInfo
     ) -> InputRouteInfo {
+        if let expectedLoopback = sourceMode.expectedLoopback,
+           let sourceRoute = routes.first(where: { $0.uid == expectedLoopback.deviceUID }) {
+            return sourceRoute
+        }
+
         if let selectedInputDeviceUID,
            let persistedRoute = routes.first(where: { $0.uid == selectedInputDeviceUID }) {
             return persistedRoute
@@ -1597,10 +1750,6 @@ final class OrbisonicViewModel: ObservableObject {
         if inputRoute.isAvailable,
            let existingRoute = routes.first(where: { $0.uid == inputRoute.uid || $0.deviceID == inputRoute.deviceID }) {
             return existingRoute
-        }
-
-        if let blackHoleRoute = routes.first(where: \.isBlackHole) {
-            return blackHoleRoute
         }
 
         if systemInput.isAvailable,
@@ -1618,7 +1767,7 @@ final class OrbisonicViewModel: ObservableObject {
             activeLiveChannelCount = available
         }
 
-        if route.isBlackHole, activeLiveChannelCount <= 1, available >= 8 {
+        if route.isOrbisonicLoopback, activeLiveChannelCount <= 1, available >= 8 {
             activeLiveChannelCount = 8
         }
     }
@@ -1686,7 +1835,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func refreshTransport() {
         refreshRoutesIfNeeded()
 
-        if sourceMode == .roonBlackHole {
+        if sourceMode == .roon {
             refreshRoonNowPlayingIfNeeded()
             repairBlackHoleSampleRateIfNeeded()
         }
@@ -1705,7 +1854,7 @@ final class OrbisonicViewModel: ObservableObject {
             let levels = engine.channelMeterLevels()
             meterStore.update(with: levels)
             updateMonitorMeters()
-            updateRendererMeters(from: levels)
+            updateRendererMeters(from: liveMonitorState.isMuted ? [] : levels)
 
             let wholeSecond = Int(nextTime.rounded(.down))
             updateLiveBufferStatus(elapsedSecond: wholeSecond)
@@ -1815,9 +1964,12 @@ final class OrbisonicViewModel: ObservableObject {
             )
 
             if sourceMode.isLiveInput, isPlaying, previousInputRoute.deviceID != nextInputRoute.deviceID {
-                if sourceMode == .roonBlackHole, !nextInputRoute.isBlackHole {
+                if sourceMode == .roon, !nextInputRoute.isRoonLoopback {
                     stop()
-                    statusMessage = "Live input stopped because the selected BlackHole route is unavailable. The macOS system input is still \(systemInputRoute.displayName)."
+                    statusMessage = "Live input stopped because Orbisonic Roon Input is unavailable. The macOS system input is still \(systemInputRoute.displayName)."
+                } else if sourceMode == .aux, !nextInputRoute.isAuxLoopback {
+                    stop()
+                    statusMessage = "Live input stopped because Orbisonic Aux Cable is unavailable."
                 } else if nextInputRoute.isAvailable {
                     startLiveInputForCurrentRoute(reason: "selected input route changed")
                 } else {
@@ -1827,9 +1979,9 @@ final class OrbisonicViewModel: ObservableObject {
             }
         }
 
-        if sourceMode.isLiveInput, isPlaying, outputRoute.isBlackHole {
+        if sourceMode.isLiveInput, isPlaying, outputRoute.routeRisk.blocksLiveMonitoring {
             stop()
-            let message = "Live input stopped because macOS output changed to BlackHole. Set output to a monitor or renderer target, then start the route again."
+            let message = "Live input stopped because macOS output changed to a loopback input. Set output to a monitor or renderer target, then start the route again."
             AppLogger.shared.error(category: "route", message)
             statusMessage = message
             lastError = message
@@ -1978,7 +2130,10 @@ final class OrbisonicViewModel: ObservableObject {
 
         if signalPresent {
             liveSignalStatus = "Signal present from \(liveInputSignalName)."
-            if lastLiveSignalPresent != true {
+            if !liveMonitorState.isMuted {
+                liveMonitorState = .monitoring
+            }
+            if lastLiveSignalPresent != true && !liveMonitorState.isMuted {
                 statusMessage = "Live signal detected from \(liveInputSignalName); rendering to \(routeDisplayName)."
                 AppLogger.shared.notice(
                     category: "live-input",
@@ -1994,14 +2149,18 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
-        if sourceMode == .roonBlackHole, let mismatchText = roonBlackHoleSampleRateMismatchText {
-            liveSignalStatus = "BlackHole is silent. \(mismatchText)"
-        } else if sourceMode == .roonBlackHole, roonNowPlaying?.state.caseInsensitiveCompare("PAUSED") == .orderedSame {
-            liveSignalStatus = "BlackHole is silent because Roon is paused."
-        } else if sourceMode == .roonBlackHole {
-            liveSignalStatus = "BlackHole is silent. Select the BlackHole 64ch zone in Roon and start playback."
+        if sourceMode == .roon, let mismatchText = roonLoopbackSampleRateMismatchText {
+            liveSignalStatus = "\(liveInputSignalName) is silent. \(mismatchText)"
+        } else if sourceMode == .roon, roonNowPlaying?.state.caseInsensitiveCompare("PAUSED") == .orderedSame {
+            liveSignalStatus = "\(liveInputSignalName) is silent because Roon is paused."
+        } else if sourceMode == .roon {
+            liveSignalStatus = "\(liveInputSignalName) is silent. Select Orbisonic Roon Input in Roon and start playback."
         } else {
-            liveSignalStatus = "\(liveInputSignalName) is silent. Start the source or choose another Orbisonic input."
+            liveSignalStatus = "\(liveInputSignalName) is silent. Start the source or route it to Orbisonic Aux Cable."
+        }
+
+        if !liveMonitorState.isMuted {
+            liveMonitorState = .silent
         }
 
         if lastLiveSignalPresent != false {
@@ -2019,16 +2178,17 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func repairBlackHoleSampleRateIfNeeded(force: Bool = false) {
-        guard sourceMode == .roonBlackHole,
-              let targetSampleRate = roonBlackHoleSampleRateMismatch
+        guard sourceMode == .roon,
+              inputRoute.isBlackHole,
+              let targetSampleRate = roonLoopbackSampleRateMismatch
         else { return }
 
         let now = Date()
-        guard force || now.timeIntervalSince(lastBlackHoleSampleRateRepairTime) >= 8 else {
+        guard force || now.timeIntervalSince(lastLegacyLoopbackSampleRateRepairTime) >= 8 else {
             return
         }
 
-        lastBlackHoleSampleRateRepairTime = now
+        lastLegacyLoopbackSampleRateRepairTime = now
         let wasPlaying = isPlaying
         if wasPlaying {
             engine.stop()
@@ -2044,7 +2204,7 @@ final class OrbisonicViewModel: ObservableObject {
         if changed {
             statusMessage = "Aligned BlackHole to \(formatSampleRate(targetSampleRate)); restarting the Roon pipe."
         } else {
-            statusMessage = "BlackHole is \(formatSampleRate(inputRoute.nominalSampleRate)) while Roon is \(formatSampleRate(targetSampleRate)). Set BlackHole 64ch to \(formatSampleRate(targetSampleRate)) in Audio MIDI Setup if capture stays silent."
+            statusMessage = "Legacy loopback is \(formatSampleRate(inputRoute.nominalSampleRate)) while Roon is \(formatSampleRate(targetSampleRate)). Set the loopback to \(formatSampleRate(targetSampleRate)) in Audio MIDI Setup if capture stays silent."
         }
 
         if wasPlaying {
@@ -2057,7 +2217,7 @@ final class OrbisonicViewModel: ObservableObject {
         guard force || now.timeIntervalSince(lastRoonNowPlayingRefreshTime) >= 1.0 else { return }
         lastRoonNowPlayingRefreshTime = now
 
-        guard sourceMode == .roonBlackHole else { return }
+        guard sourceMode == .roon else { return }
 
         guard let next = roonNowPlayingReader.readLatest() else {
             roonNowPlayingStatus = "No Roon playback line found in RoonServer log yet."

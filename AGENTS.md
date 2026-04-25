@@ -46,16 +46,17 @@ If the app is already running, quit and reopen it before judging UI/audio behavi
 
 - The audio path is the most important part of this app. Prefer correctness, stability, and low-risk architecture over quick UI-visible fixes.
 - Do not mask live audio failures with buffering tricks. If the input is all zeros, diagnose routing/sample-rate/source-device problems.
-- The Roon live path captures the app-selected input device, expected to be `BlackHole 64ch`, without requiring macOS Sound Input to switch away from the user's mic.
-- macOS presents all input-device capture as "Microphone" permission, including BlackHole. That prompt is expected and does not by itself mean the physical mic is selected.
+- The Roon live path captures the app-selected input device, expected to be `Orbisonic Roon Input`, without requiring macOS Sound Input to switch away from the user's mic.
+- The Aux live path captures `Orbisonic Aux Cable` for general system/app audio.
+- macOS presents all input-device capture as "Microphone" permission, including Orbisonic loopback devices. That prompt is expected and does not by itself mean the physical mic is selected.
 - Local file playback and Roon live capture are separate paths. Do not assume a fix in one path fixes the other.
-- For Roon/BlackHole problems, inspect `~/Library/Logs/Orbisonic/orbisonic.log` and compare:
+- For Roon/live-loopback problems, inspect `~/Library/Logs/Orbisonic/orbisonic.log` and compare:
   - Roon output sample rate
-  - BlackHole nominal sample rate
+  - Orbisonic Roon Input nominal sample rate
   - input route name/channel count
   - live meter peak
   - buffer underflow/drop counters
-- Roon logs may show playback while BlackHole capture is silent. Treat this as a routing or device-rate problem, not automatically as an engine/render problem.
+- Roon logs may show playback while loopback capture is silent. Treat this as a routing or device-rate problem, not automatically as an engine/render problem.
 
 ## Roon Data
 
@@ -93,7 +94,7 @@ Future direction:
 - `Sources/Orbisonic/ContentView.swift`: SwiftUI shell and tabs.
 - `Sources/Orbisonic/OrbisonicViewModel.swift`: app state, Roon status, routing, playlist behavior.
 - `Sources/Orbisonic/OrbisonicEngine.swift`: AVAudioEngine graph and playback/live input.
-- `Sources/Orbisonic/LiveAudioBridge.swift`: live BlackHole capture bridge and buffer status.
+- `Sources/Orbisonic/LiveAudioBridge.swift`: live loopback capture bridge and buffer status.
 - `Sources/Orbisonic/RoonNowPlayingMonitor.swift`: current Roon log metadata parser.
 - `Sources/Orbisonic/BlackHoleRouteRepair.swift`: BlackHole mute/volume/sample-rate repair.
 - `Sources/Orbisonic/OutputRouteMonitor.swift`: Core Audio route discovery.

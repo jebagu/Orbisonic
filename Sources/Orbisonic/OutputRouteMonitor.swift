@@ -3,17 +3,21 @@ import Foundation
 
 struct OutputRouteInfo: Equatable {
     let deviceID: AudioDeviceID
+    let uid: String
     let deviceName: String
     let manufacturer: String
     let transportName: String
     let outputChannelCount: Int
+    let nominalSampleRate: Double
 
     static let unavailable = OutputRouteInfo(
         deviceID: 0,
+        uid: "",
         deviceName: "No Active Output",
         manufacturer: "",
         transportName: "Unknown",
-        outputChannelCount: 0
+        outputChannelCount: 0,
+        nominalSampleRate: 0
     )
 
     var isAvailable: Bool {
@@ -22,6 +26,28 @@ struct OutputRouteInfo: Equatable {
 
     var isBlackHole: Bool {
         normalized(deviceName).contains("blackhole") || normalized(manufacturer).contains("existential")
+    }
+
+    var isOrbisonicLoopback: Bool {
+        OrbisonicLoopbackDevice.allCases.contains { $0.deviceUID == uid }
+    }
+
+    var routeRisk: OutputRouteRisk {
+        guard isAvailable else { return .unavailable }
+
+        if let loopback = OrbisonicLoopbackDevice.allCases.first(where: { $0.deviceUID == uid }) {
+            return .feedbackLoop(loopback.displayName)
+        }
+
+        if isBlackHole {
+            return .feedbackLoop(deviceName)
+        }
+
+        if transportName == "Virtual" {
+            return .virtualOutput(deviceName)
+        }
+
+        return .safe
     }
 
     var isHeadphones: Bool {
@@ -35,6 +61,9 @@ struct OutputRouteInfo: Equatable {
     var targetName: String {
         if isBlackHole {
             return "BlackHole Virtual Route"
+        }
+        if isOrbisonicLoopback {
+            return "Orbisonic Loopback"
         }
         if isHeadphones {
             return "Headphones"
@@ -63,7 +92,8 @@ struct OutputRouteInfo: Equatable {
         }
 
         if outputChannelCount > 0 {
-            return "\(transportName) • \(outputChannelCount) ch"
+            let rateText = nominalSampleRate > 0 ? String(format: "%.1f kHz", nominalSampleRate / 1_000) : "unknown rate"
+            return "\(transportName) • \(outputChannelCount) ch • \(rateText)"
         }
         return transportName
     }
@@ -71,6 +101,9 @@ struct OutputRouteInfo: Equatable {
     var targetDetail: String {
         if isBlackHole {
             return "Virtual loopback is the active macOS target, so the app is feeding BlackHole right now."
+        }
+        if isOrbisonicLoopback {
+            return "Orbisonic is pointed at one of its input loopbacks. Choose a monitor or renderer output."
         }
         if isHeadphones {
             return "Current route looks headphone-safe for the binaural render."
@@ -120,7 +153,43 @@ struct InputRouteInfo: Equatable, Identifiable {
     }
 
     var isBlackHole: Bool {
-        normalized(deviceName).contains("blackhole") || normalized(manufacturer).contains("existential")
+        role == .legacyBlackHole
+    }
+
+    var isRoonLoopback: Bool {
+        role == .roonLoopback
+    }
+
+    var isAuxLoopback: Bool {
+        role == .auxLoopback
+    }
+
+    var isOrbisonicLoopback: Bool {
+        isRoonLoopback || isAuxLoopback
+    }
+
+    var role: InputDeviceRole {
+        if !isAvailable {
+            return .unavailable
+        }
+
+        if uid == OrbisonicLoopbackDevice.roonInput.deviceUID {
+            return .roonLoopback
+        }
+
+        if uid == OrbisonicLoopbackDevice.auxCable.deviceUID {
+            return .auxLoopback
+        }
+
+        if normalized(deviceName).contains("blackhole") || normalized(manufacturer).contains("existential") {
+            return .legacyBlackHole
+        }
+
+        if transportName == "Virtual" {
+            return .otherVirtualInput
+        }
+
+        return .physicalInput
     }
 
     var displayName: String {
@@ -137,11 +206,11 @@ struct InputRouteInfo: Equatable, Identifiable {
     }
 
     var roonReadiness: String {
-        if isBlackHole {
-            return "Ready for Roon via BlackHole. The system mic can stay selected in macOS."
+        if isRoonLoopback {
+            return "Ready for Roon through Orbisonic Roon Input. The system mic can stay selected in macOS."
         }
         if isAvailable {
-            return "Selected input is \(deviceName). Choose BlackHole 64ch for Roon capture."
+            return "Selected input is \(deviceName). Choose Orbisonic Roon Input for Roon capture."
         }
         return "No selected input route is available for live capture."
     }
@@ -159,6 +228,11 @@ enum OutputRouteMonitor {
 
         return OutputRouteInfo(
             deviceID: deviceID,
+            uid: stringProperty(
+                objectID: deviceID,
+                selector: kAudioDevicePropertyDeviceUID,
+                defaultValue: ""
+            ),
             deviceName: stringProperty(
                 objectID: deviceID,
                 selector: kAudioObjectPropertyName,
@@ -173,7 +247,8 @@ enum OutputRouteMonitor {
             outputChannelCount: channelCount(
                 of: deviceID,
                 scope: kAudioDevicePropertyScopeOutput
-            )
+            ),
+            nominalSampleRate: nominalSampleRate(of: deviceID)
         )
     }
 

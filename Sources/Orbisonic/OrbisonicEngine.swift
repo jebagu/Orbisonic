@@ -26,6 +26,7 @@ final class OrbisonicEngine {
     private var livePipe: LiveAudioPipe?
     private var liveCapture: LiveInputCapture?
     private var liveStartDate: Date?
+    private var liveInputMuted = false
     private let monitorMeterLock = NSLock()
     private var monitorMeterLevelSnapshot: [Float] = []
     private var currentStartFrame: AVAudioFramePosition = 0
@@ -125,12 +126,17 @@ final class OrbisonicEngine {
         livePipe = pipe
         liveCapture = capture
         liveInputSource = liveSource
+        liveInputMuted = false
         loadedFile = nil
         currentStartFrame = 0
 
         sourceNodes = layout.channels.enumerated().map { index, _ in
-            AVAudioSourceNode { [weak pipe] _, _, frameCount, audioBufferList in
-                pipe?.render(channelIndex: index, audioBufferList: audioBufferList, frameCount: frameCount) ?? noErr
+            AVAudioSourceNode { [weak self, weak pipe] _, _, frameCount, audioBufferList in
+                let status = pipe?.render(channelIndex: index, audioBufferList: audioBufferList, frameCount: frameCount) ?? noErr
+                if self?.liveInputMuted == true {
+                    Self.clear(audioBufferList: audioBufferList, frameCount: Int(frameCount))
+                }
+                return status
             }
         }
 
@@ -200,6 +206,12 @@ final class OrbisonicEngine {
         playerNodes.forEach { $0.pause() }
         state = .paused
         AppLogger.shared.notice(category: "transport", "Paused playback at frame=\(currentStartFrame) time=\(formatTime(currentTime())).")
+    }
+
+    func setLiveInputMuted(_ muted: Bool) {
+        guard liveInputSource != nil else { return }
+        liveInputMuted = muted
+        AppLogger.shared.notice(category: "live-input", "Live input mute=\(muted)")
     }
 
     func stop() {
@@ -524,6 +536,7 @@ final class OrbisonicEngine {
         livePipe = nil
         liveInputSource = nil
         liveStartDate = nil
+        liveInputMuted = false
         detachSourceNodes()
         AppLogger.shared.notice(category: "live-input", "Stopped live input.")
         stopEngineIfRunning(reason: "live input stop")
@@ -657,6 +670,19 @@ final class OrbisonicEngine {
         let rms = sqrtf(energy / Float(frameCount))
         let db = 20 * log10f(max(rms, 0.000_01))
         return min(max((db + 60) / 60, 0), 1)
+    }
+
+    private static func clear(audioBufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
+        guard frameCount > 0 else { return }
+
+        for buffer in UnsafeMutableAudioBufferListPointer(audioBufferList) {
+            guard let rawData = buffer.mData else { continue }
+            let sampleCount = min(
+                Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride,
+                frameCount
+            )
+            rawData.assumingMemoryBound(to: Float.self).initialize(repeating: 0, count: sampleCount)
+        }
     }
 }
 

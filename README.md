@@ -7,7 +7,7 @@ It is intended to be a simple, reliable dashboard and renderer: a way to open mu
 ## What It Does
 
 - Opens local audio files and playlists, including `.wav`, `.wave`, `.aif`, `.aiff`, `.caf`, `.flac`, `.m4a`, and `.mp3`
-- Accepts live input from Roon and other external players through a virtual multichannel sound card
+- Accepts live input from Roon and other external players through the dedicated Orbisonic virtual loopback inputs
 - Routes each source channel into the renderer as a spatial input source
 - Supports up to 64 source channels per file or live input route in this prototype build
 - Builds a Sonic Sphere renderer scene with a 30.1 output topology by default
@@ -40,7 +40,7 @@ Named layout handling currently includes:
 - Hexagonal, octagonal, and other discrete speaker layouts represented as channel beds
 - Arbitrary discrete layouts up to 64 source channels
 
-For channel counts outside the named surround layouts, Orbisonic falls back to an N-channel discrete layout. This prototype intentionally caps source files and live input requests at 64 channels, matching BlackHole 64ch and avoiding accidental allocation of impractically large audio files. Local file playback still depends on what `AVAudioFile` and Core Audio can decode and expose from the source file, along with memory and the selected input/output hardware.
+For channel counts outside the named surround layouts, Orbisonic falls back to an N-channel discrete layout. This prototype intentionally caps source files and live input requests at 64 channels, matching the Orbisonic loopback input driver limit and avoiding accidental allocation of impractically large audio files. Local file playback still depends on what `AVAudioFile` and Core Audio can decode and expose from the source file, along with memory and the selected input/output hardware.
 
 ## Sonic Sphere Renderer
 
@@ -52,7 +52,7 @@ Orbisonic also keeps a binaural headphone/monitor path available for setup, chec
 
 - macOS 14 or newer
 - Xcode or the Xcode command line tools with Swift 5.10 or newer
-- BlackHole 64ch installed as the virtual loopback input for Roon and other external music players
+- Orbisonic Inputs installed, providing `Orbisonic Roon Input` and `Orbisonic Aux Cable`
 - AirPods or another headphone output for binaural monitoring
 - A Core Audio output route for the Sonic Sphere speaker system
 
@@ -64,7 +64,15 @@ swift build
 swift run
 ```
 
-For live player capture, route the external player into BlackHole 64ch and select that device as Orbisonic's App Input. macOS may present this as a microphone permission prompt because app-level audio input devices share the same privacy gate.
+## Installer
+
+The packaged app installer is:
+
+- `installer/Orbisonic-0.1.0.pkg`
+
+It installs `Orbisonic.app` into `/Applications`. The installer does not install the Orbisonic virtual loopback inputs; install Orbisonic Inputs separately for Roon and Aux live capture. Roon itself is optional and is needed only if you want Roon playback.
+
+For live player capture, route Roon to `Orbisonic Roon Input` and route general app audio to `Orbisonic Aux Cable`. macOS may present this as a microphone permission prompt because app-level audio input devices share the same privacy gate.
 
 ## Head Tracking Note
 
