@@ -2,17 +2,23 @@
 
 ## Scope
 
-- The canonical project root is `this repository`.
-- If a Codex thread or inherited environment starts in `older Orbisonic prototype workspace`, treat that as stale launch context. Switch all active Orbisonic work to `this repository`.
-- Work only in `this repository` unless the user explicitly says otherwise.
+- The canonical project root is this repository root.
+- If a Codex thread or inherited environment starts in an older Orbisonic prototype workspace, treat that as stale launch context. Switch all active Orbisonic work to this repository.
+- Work only in this repository unless the user explicitly says otherwise.
 - Do not use, inspect, or ask about the old `etheric` workspace or archived `OrbisonicBridge` folders for active Orbisonic work unless the user explicitly asks for old context.
 - Orbisonic is a native Swift/macOS app. Do not treat the old `etheric` web app or the earlier `OrbisonicBridge` prototype as the active product.
 - `Orbisonic.app` is the user-facing double-clickable app bundle in the project root.
 - Sonic Sphere is the physical spatial audio system. Orbisonic is the software tool for interfacing with it.
 
+## Privacy Hygiene
+
+- Do not add real names, local usernames, machine-specific absolute paths, or personal folders such as Desktop, Downloads, or Documents to repo-tracked files.
+- Use repo-relative paths, app-managed runtime paths, or generic placeholders for source provenance and setup notes.
+- Before committing, search for accidental personal identifiers and local absolute paths.
+
 ## Design Reference
 
-- For UI, branding, icon, and visual-system work, use the shared style guide at `adjacent Orbisonic app-family design language document`.
+- For UI, branding, icon, and visual-system work, use the adjacent Orbisonic app-family design language document when it is available.
 - Treat that style guide as the Orbisonic app-family source of truth before making visual design decisions.
 - Keep the DomeLab-inspired visual language: dark technical glass UI, compact labels, cyan accents, restrained dashboard density.
 
