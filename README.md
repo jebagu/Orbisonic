@@ -48,15 +48,23 @@ The default renderer preset is `Sonic Sphere 30.1 Default`: 30 full-range spatia
 
 Orbisonic also keeps a binaural headphone/monitor path available for setup, checking, and AirPods-oriented listening. The Sonic Sphere renderer is the primary system target; the headphone path is a monitoring and preview surface.
 
+## Requirements
+
+- macOS 14 or newer
+- Xcode or the Xcode command line tools with Swift 5.10 or newer
+- BlackHole 64ch installed as the virtual loopback input for Roon and other external music players
+- AirPods or another headphone output for binaural monitoring
+- A Core Audio output route for the Sonic Sphere speaker system
+
 ## Run It
 
 ```bash
-cd "this repository"
+cd Orbisonic
 swift build
 swift run
 ```
 
-For live player capture, route the external player into a virtual multichannel sound card and select that device as Orbisonic's App Input. macOS may present this as a microphone permission prompt because app-level audio input devices share the same privacy gate.
+For live player capture, route the external player into BlackHole 64ch and select that device as Orbisonic's App Input. macOS may present this as a microphone permission prompt because app-level audio input devices share the same privacy gate.
 
 ## Head Tracking Note
 
