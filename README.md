@@ -8,6 +8,7 @@ It is intended to be a simple, reliable dashboard and renderer: a way to open mu
 
 - Opens local audio files and playlists, including `.wav`, `.wave`, `.aif`, `.aiff`, `.caf`, `.flac`, `.m4a`, and `.mp3`
 - Accepts live input from Roon and other external players through the dedicated Orbisonic virtual loopback inputs
+- Controls Roon transport through the optional local Orbisonic Roon Bridge helper
 - Routes each source channel into the renderer as a spatial input source
 - Supports up to 64 source channels per file or live input route in this prototype build
 - Builds a Sonic Sphere renderer scene with a 30.1 output topology by default
@@ -73,6 +74,18 @@ The packaged app installer is:
 It installs `Orbisonic.app` into `/Applications`. The installer does not install the Orbisonic virtual loopback inputs; install Orbisonic Inputs separately for Roon and Aux live capture. Roon itself is optional and is needed only if you want Roon playback.
 
 For live player capture, route Roon to `Orbisonic Roon Input` and route general app audio to `Orbisonic Aux Cable`. macOS may present this as a microphone permission prompt because app-level audio input devices share the same privacy gate.
+
+## Roon Transport Control
+
+Orbisonic can control Roon play, pause, stop, previous, and next through a local helper that registers as a Roon extension.
+
+Install the helper dependencies once:
+
+```sh
+scripts/install-roon-bridge.sh
+```
+
+Then open Orbisonic, choose `Roon`, and enable `Orbisonic Roon Bridge` in Roon under Settings > Extensions. Roon gives the helper a local authorization token; no separate Roon API sign-in is required beyond the normal Roon Server account authorization.
 
 ## Head Tracking Note
 

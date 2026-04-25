@@ -1,0 +1,13 @@
+{
+  "name": "orbisonic-roon-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Roon transport bridge for Orbisonic.",
+  "main": "bridge.js",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "node-roon-api": "github:RoonLabs/node-roon-api",
+    "node-roon-api-status": "github:RoonLabs/node-roon-api-status",
+    "node-roon-api-transport": "github:RoonLabs/node-roon-api-transport"
+  }
+}

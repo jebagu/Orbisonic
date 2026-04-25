@@ -134,10 +134,17 @@ struct RoonSignalPath: Equatable {
     }
 }
 
+struct RoonLogSnapshot: Equatable {
+    let nowPlaying: RoonNowPlaying?
+    let signalPath: RoonSignalPath?
+}
+
 final class RoonNowPlayingReader {
     static var defaultLogPath: String {
         "\(NSHomeDirectory())/Library/RoonServer/Logs/RoonServer_log.txt"
     }
+
+    private static let defaultTailByteCount: UInt64 = 256 * 1_024
 
     private let logPath: String
 
@@ -146,7 +153,7 @@ final class RoonNowPlayingReader {
     }
 
     func readLatest() -> RoonNowPlaying? {
-        guard let content = try? String(contentsOfFile: logPath, encoding: .utf8) else {
+        guard let content = readRecentContent() else {
             return nil
         }
 
@@ -154,11 +161,46 @@ final class RoonNowPlayingReader {
     }
 
     func readLatestSignalPath() -> RoonSignalPath? {
-        guard let content = try? String(contentsOfFile: logPath, encoding: .utf8) else {
+        guard let content = readRecentContent() else {
             return nil
         }
 
         return Self.parseLatestSignalPath(in: content)
+    }
+
+    func readLatestSnapshot() -> RoonLogSnapshot? {
+        guard let content = readRecentContent() else {
+            return nil
+        }
+
+        let snapshot = RoonLogSnapshot(
+            nowPlaying: Self.parseLatest(in: content),
+            signalPath: Self.parseLatestSignalPath(in: content)
+        )
+
+        return snapshot.nowPlaying == nil && snapshot.signalPath == nil ? nil : snapshot
+    }
+
+    private func readRecentContent(maxBytes: UInt64 = defaultTailByteCount) -> String? {
+        let url = URL(fileURLWithPath: logPath)
+
+        guard let fileHandle = try? FileHandle(forReadingFrom: url) else {
+            return nil
+        }
+        defer {
+            try? fileHandle.close()
+        }
+
+        let fileSize = (try? fileHandle.seekToEnd()) ?? 0
+        let offset = fileSize > maxBytes ? fileSize - maxBytes : 0
+        try? fileHandle.seek(toOffset: offset)
+
+        let data = fileHandle.readDataToEndOfFile()
+        guard !data.isEmpty else {
+            return nil
+        }
+
+        return String(decoding: data, as: UTF8.self)
     }
 
     static func parseLatest(in content: String) -> RoonNowPlaying? {

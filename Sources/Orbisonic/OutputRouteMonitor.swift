@@ -1,7 +1,7 @@
 import CoreAudio
 import Foundation
 
-struct OutputRouteInfo: Equatable {
+struct OutputRouteInfo: Equatable, Identifiable {
     let deviceID: AudioDeviceID
     let uid: String
     let deviceName: String
@@ -20,8 +20,12 @@ struct OutputRouteInfo: Equatable {
         nominalSampleRate: 0
     )
 
+    var id: String {
+        uid.isEmpty ? "\(deviceID)" : uid
+    }
+
     var isAvailable: Bool {
-        deviceID != 0
+        deviceID != 0 && outputChannelCount > 0
     }
 
     var isBlackHole: Bool {
@@ -225,6 +229,29 @@ enum OutputRouteMonitor {
         guard let deviceID = defaultOutputDeviceID() else {
             return .unavailable
         }
+
+        return outputRoute(deviceID: deviceID) ?? .unavailable
+    }
+
+    static func availableOutputRoutes() -> [OutputRouteInfo] {
+        deviceIDs()
+            .compactMap(outputRoute(deviceID:))
+            .filter(\.isAvailable)
+            .sorted { lhs, rhs in
+                if lhs.routeRisk.blocksLiveMonitoring != rhs.routeRisk.blocksLiveMonitoring {
+                    return !lhs.routeRisk.blocksLiveMonitoring
+                }
+                return lhs.deviceName.localizedStandardCompare(rhs.deviceName) == .orderedAscending
+            }
+    }
+
+    static func outputRoute(uid: String) -> OutputRouteInfo? {
+        guard !uid.isEmpty else { return nil }
+        return availableOutputRoutes().first { $0.uid == uid }
+    }
+
+    static func outputRoute(deviceID: AudioDeviceID) -> OutputRouteInfo? {
+        guard deviceID != 0 else { return nil }
 
         return OutputRouteInfo(
             deviceID: deviceID,

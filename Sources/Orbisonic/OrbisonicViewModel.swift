@@ -25,6 +25,29 @@ private struct DiagnosticReturnContext {
     let hadSource: Bool
 }
 
+private enum DiagnosticChannelWalkKind {
+    case monitor
+    case renderer
+
+    var title: String {
+        switch self {
+        case .monitor:
+            "Monitor Channel Walk"
+        case .renderer:
+            "Output To Renderer Channel Walk"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .monitor:
+            "Monitor"
+        case .renderer:
+            "Renderer"
+        }
+    }
+}
+
 @MainActor
 final class ChannelMeterStore: ObservableObject {
     @Published private(set) var channelMeters: [ChannelMeter] = []
@@ -65,6 +88,9 @@ final class ChannelMeterStore: ObservableObject {
 @MainActor
 final class OrbisonicViewModel: ObservableObject {
     private static let selectedInputDeviceUIDKey = "Orbisonic.selectedInputDeviceUID"
+    private static let selectedOutputDeviceUIDKey = "Orbisonic.selectedOutputDeviceUID"
+    private static let roonLogRefreshInterval: TimeInterval = 5.0
+    private static let roonBridgeRefreshInterval: TimeInterval = 2.0
 
     @Published var preset: SpatialPreset = .defaultPreset {
         didSet {
@@ -109,6 +135,8 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var currentFileURL: URL?
     @Published var lastError: String?
     @Published private(set) var outputRoute: OutputRouteInfo = .unavailable
+    @Published private(set) var systemOutputRoute: OutputRouteInfo = .unavailable
+    @Published private(set) var availableOutputRoutes: [OutputRouteInfo] = []
     @Published private(set) var inputRoute: InputRouteInfo = .unavailable
     @Published private(set) var systemInputRoute: InputRouteInfo = .unavailable
     @Published private(set) var availableInputRoutes: [InputRouteInfo] = []
@@ -121,11 +149,15 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var isTestTonePlaying = false
     @Published var testToneStatus = "No diagnostic tone playing."
     @Published var activeDiagnosticPoint: TestTonePipelinePoint?
+    @Published var activeDiagnosticChannelIndex: Int?
+    @Published var activeDiagnosticChannelCount = 0
+    @Published var activeDiagnosticWalkTitle = ""
     @Published var diagnosticSequencePosition = 0
     @Published var isDiagnosticSequencePlaying = false
     @Published private(set) var roonNowPlaying: RoonNowPlaying?
     @Published private(set) var roonNowPlayingStatus = "Roon metadata not requested yet."
     @Published private(set) var roonSignalPath: RoonSignalPath?
+    @Published private(set) var roonBridgeSnapshot: RoonBridgeSnapshot = .unavailable
     @Published private(set) var localMusicSettings = LocalMusicSettings()
     @Published private(set) var localMusicTracks: [LocalMusicTrack] = []
     @Published private(set) var localMusicPlaylists: [LocalMusicPlaylist] = []
@@ -145,6 +177,7 @@ final class OrbisonicViewModel: ObservableObject {
     private let localMusicLibrary = LocalMusicLibrary()
     private let rendererPresetStore = RendererPresetStore()
     private let roonNowPlayingReader = RoonNowPlayingReader()
+    private let roonBridgeClient = RoonBridgeClient()
     private var refreshTimer: Timer?
     private var lastHeartbeatSecond: Int = -1
     private var lastLiveMeterLogSecond: Int = -1
@@ -157,8 +190,13 @@ final class OrbisonicViewModel: ObservableObject {
     private var localMusicScanTask: Task<Void, Never>?
     private var lastRouteRefreshTime = Date.distantPast
     private var lastRoonNowPlayingRefreshTime = Date.distantPast
+    private var lastRoonBridgeRefreshTime = Date.distantPast
     private var lastLegacyLoopbackSampleRateRepairTime = Date.distantPast
+    private var isRoonLogRefreshInFlight = false
+    private var isRoonBridgeRefreshInFlight = false
+    private var lastLoggedRoonBridgeStatus: String?
     private var selectedInputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedInputDeviceUIDKey)
+    private var selectedOutputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedOutputDeviceUIDKey)
     private var suppressTuningPublish = false
     private var suppressRendererPublish = false
 
@@ -232,6 +270,7 @@ final class OrbisonicViewModel: ObservableObject {
             currentFileURL = nil
             roonNowPlayingStatus = "Roon metadata not requested yet."
             roonSignalPath = nil
+            refreshRoonBridgeIfNeeded(force: true)
             if selectExpectedLoopbackInputIfAvailable(for: .roon) {
                 liveMonitorState = .stopped
                 statusMessage = "Roon is selected. Monitor Roon when the source is playing."
@@ -303,6 +342,26 @@ final class OrbisonicViewModel: ObservableObject {
         } else if sourceMode.isLiveInput {
             statusMessage = "Orbisonic input set to \(route.deviceName). macOS system input is still \(systemInputRoute.displayName)."
         }
+    }
+
+    func selectSystemMonitorOutput() {
+        selectedOutputDeviceUID = nil
+        UserDefaults.standard.removeObject(forKey: Self.selectedOutputDeviceUIDKey)
+        refreshRoutesIfNeeded(force: true)
+        applySelectedMonitorOutput(outputRoute, label: "System Default")
+    }
+
+    func selectMonitorOutputRoute(_ route: OutputRouteInfo) {
+        guard route.isAvailable else { return }
+
+        selectedOutputDeviceUID = route.uid
+        if route.uid.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.selectedOutputDeviceUIDKey)
+        } else {
+            UserDefaults.standard.set(route.uid, forKey: Self.selectedOutputDeviceUIDKey)
+        }
+
+        applySelectedMonitorOutput(route, label: route.deviceName)
     }
 
     func chooseWatchFolder() {
@@ -834,6 +893,7 @@ final class OrbisonicViewModel: ObservableObject {
         currentFileURL = nil
         refreshRoutesIfNeeded(force: true)
         refreshRoonNowPlayingIfNeeded(force: true)
+        refreshRoonBridgeIfNeeded(force: true)
         selectExpectedLoopbackInputIfAvailable(for: .roon)
 
         guard inputRoute.isRoonLoopback else {
@@ -998,6 +1058,54 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    var roonTransportStatusText: String {
+        roonBridgeSnapshot.statusText
+    }
+
+    var roonTransportCompactStatusText: String {
+        roonBridgeSnapshot.compactStatusText
+    }
+
+    var roonTransportTitleText: String? {
+        roonBridgeSnapshot.selectedZone?.titleText
+    }
+
+    var roonTransportSubtitleText: String? {
+        roonBridgeSnapshot.selectedZone?.subtitleText
+    }
+
+    var isRoonTransportPlaying: Bool {
+        roonBridgeSnapshot.selectedZone?.isPlaying == true
+    }
+
+    func canSendRoonTransport(_ control: RoonBridgeControl) -> Bool {
+        guard sourceMode == .roon,
+              roonBridgeSnapshot.isReadyForTransport,
+              let selectedZone = roonBridgeSnapshot.selectedZone
+        else {
+            return false
+        }
+
+        return selectedZone.allows(control)
+    }
+
+    func toggleRoonTransport() {
+        let control: RoonBridgeControl = isRoonTransportPlaying ? .pause : .play
+        sendRoonTransport(control)
+    }
+
+    func stopRoonTransport() {
+        sendRoonTransport(.stop)
+    }
+
+    func playPreviousRoonTrack() {
+        sendRoonTransport(.previous)
+    }
+
+    func playNextRoonTrack() {
+        sendRoonTransport(.next)
+    }
+
     func startSelectedLiveMonitor() {
         switch sourceMode {
         case .roon:
@@ -1055,6 +1163,9 @@ final class OrbisonicViewModel: ObservableObject {
         isTestTonePlaying = false
         isDiagnosticSequencePlaying = false
         activeDiagnosticPoint = nil
+        activeDiagnosticChannelIndex = nil
+        activeDiagnosticChannelCount = 0
+        activeDiagnosticWalkTitle = ""
         diagnosticSequencePosition = 0
         currentTime = 0
         scrubProgress = 0
@@ -1080,6 +1191,10 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var activeDiagnosticText: String {
+        if let activeDiagnosticChannelIndex {
+            return "\(activeDiagnosticWalkTitle) \(activeDiagnosticChannelIndex + 1) / \(activeDiagnosticChannelCount)"
+        }
+
         if let activeDiagnosticPoint {
             return "\(diagnosticSequencePosition) / \(diagnosticToneSequence.count): \(activeDiagnosticPoint.rawValue)"
         }
@@ -1087,7 +1202,27 @@ final class OrbisonicViewModel: ObservableObject {
         return isDiagnosticSequencePlaying ? "Starting diagnostics..." : "Ready."
     }
 
+    var monitorChannelWalkCount: Int {
+        2
+    }
+
+    var rendererOutputChannelWalkCount: Int {
+        max(rendererScene.outputSpeakers.count, rendererPreset.outputTopology.fullRangeCount + rendererPreset.outputTopology.lfeCount)
+    }
+
+    func startMonitorChannelWalk() {
+        startDiagnosticChannelWalk(kind: .monitor)
+    }
+
+    func startRendererOutputChannelWalk() {
+        startDiagnosticChannelWalk(kind: .renderer)
+    }
+
     func startDiagnosticChannelWalk() {
+        startMonitorChannelWalk()
+    }
+
+    private func startDiagnosticChannelWalk(kind: DiagnosticChannelWalkKind) {
         refreshRoutesIfNeeded(force: true)
 
         guard !outputRoute.isBlackHole else {
@@ -1114,21 +1249,26 @@ final class OrbisonicViewModel: ObservableObject {
         isTestTonePlaying = true
         isDiagnosticSequencePlaying = true
         activeDiagnosticPoint = nil
+        activeDiagnosticChannelIndex = nil
+        activeDiagnosticWalkTitle = kind.title
+        activeDiagnosticChannelCount = kind == .monitor ? monitorChannelWalkCount : rendererOutputChannelWalkCount
         diagnosticSequencePosition = 0
-        testToneStatus = "Starting channel walk."
-        statusMessage = "Running diagnostic channel walk through \(routeDisplayName)."
+        testToneStatus = "Starting \(kind.shortTitle.lowercased()) channel walk."
+        statusMessage = "Running \(kind.shortTitle.lowercased()) channel walk through \(routeDisplayName)."
 
         AppLogger.shared.notice(
             category: "diagnostics",
-            "Started diagnostic channel walk output=\(outputRoute.deviceName) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
+            "Started \(kind.title) output=\(outputRoute.deviceName) channels=\(activeDiagnosticChannelCount) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
         )
 
         diagnosticSequenceTask = Task { [weak self] in
-            let points = TestTonePipelinePoint.channelWalkPoints
+            let total = await MainActor.run {
+                self?.activeDiagnosticChannelCount ?? 0
+            }
 
-            for (index, point) in points.enumerated() {
+            for index in 0..<total {
                 let shouldContinue = await MainActor.run {
-                    self?.playDiagnosticPoint(point, index: index, total: points.count) ?? false
+                    self?.playDiagnosticChannel(kind: kind, index: index, total: total) ?? false
                 }
 
                 guard shouldContinue else { return }
@@ -1150,33 +1290,44 @@ final class OrbisonicViewModel: ObservableObject {
         finishDiagnosticChannelWalk(restoreMusic: true, automatic: false)
     }
 
-    private func playDiagnosticPoint(
-        _ point: TestTonePipelinePoint,
+    private func playDiagnosticChannel(
+        kind: DiagnosticChannelWalkKind,
         index: Int,
         total: Int
     ) -> Bool {
         guard isDiagnosticSequencePlaying else { return false }
 
         do {
-            try engine.playTestTone(point)
-            activeDiagnosticPoint = point
+            try engine.playDiagnosticChannelTone(channelIndex: index, channelCount: total)
+            activeDiagnosticPoint = nil
+            activeDiagnosticChannelIndex = index
+            activeDiagnosticChannelCount = total
+            activeDiagnosticWalkTitle = kind.title
             diagnosticSequencePosition = index + 1
-            testToneStatus = "Playing \(point.rawValue) for 1.5 seconds."
-            statusMessage = "\(point.pipelineDescription). Listen on \(routeDisplayName)."
+            testToneStatus = "Playing \(kind.shortTitle.lowercased()) channel \(index + 1) of \(total)."
+            statusMessage = "\(kind.shortTitle) channel \(index + 1) is active on \(routeDisplayName)."
 
-            let channels = point.meterChannels
-            meterStore.configure(channels: channels)
-            meterStore.update(with: Array(repeating: 0.82, count: channels.count))
-            updateMonitorMeters()
-            updateRendererMeters(from: Array(repeating: 0.82, count: rendererScene.matrix.inputCount))
+            meterStore.reset()
+            switch kind {
+            case .monitor:
+                let channels = SurroundLayoutDetector.fallbackLayout(for: total).channels
+                monitorMeterStore.configureIfNeeded(channels: channels)
+                monitorMeterStore.update(with: activeLevel(index: index, count: total))
+                rendererMeterStore.reset()
+            case .renderer:
+                let channels = rendererMeterChannels()
+                rendererMeterStore.configureIfNeeded(channels: channels)
+                rendererMeterStore.update(with: activeLevel(index: index, count: channels.count))
+                monitorMeterStore.reset()
+            }
 
             AppLogger.shared.notice(
                 category: "diagnostics",
-                "Diagnostic point \(index + 1)/\(total) point=\(point.rawValue) route=\(point.pipelineDescription)"
+                "\(kind.title) channel \(index + 1)/\(total) output=\(outputRoute.deviceName)"
             )
             return true
         } catch {
-            AppLogger.shared.error(category: "diagnostics", "Diagnostic point failed: \(error.localizedDescription)")
+            AppLogger.shared.error(category: "diagnostics", "\(kind.title) failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
             finishDiagnosticChannelWalk(restoreMusic: true, automatic: false)
             return false
@@ -1193,6 +1344,9 @@ final class OrbisonicViewModel: ObservableObject {
         isTestTonePlaying = false
         isDiagnosticSequencePlaying = false
         activeDiagnosticPoint = nil
+        activeDiagnosticChannelIndex = nil
+        activeDiagnosticChannelCount = 0
+        activeDiagnosticWalkTitle = ""
         diagnosticSequencePosition = 0
         meterStore.reset()
         monitorMeterStore.reset()
@@ -1532,6 +1686,14 @@ final class OrbisonicViewModel: ObservableObject {
         outputRoute.isAvailable ? "\(outputRoute.deviceName) • \(outputRoute.routeDetail)" : "No verified macOS output"
     }
 
+    var monitorOutputSelectionText: String {
+        selectedOutputDeviceUID == nil ? "System Default" : outputRoute.deviceName
+    }
+
+    var systemOutputNowText: String {
+        systemOutputRoute.isAvailable ? "\(systemOutputRoute.deviceName) • \(systemOutputRoute.routeDetail)" : "No verified system output"
+    }
+
     var inputNowText: String {
         inputRoute.isAvailable ? "\(inputRoute.displayName) • \(inputRoute.detail)" : liveInputReadinessText
     }
@@ -1733,6 +1895,48 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func applySelectedMonitorOutput(_ route: OutputRouteInfo, label: String) {
+        guard route.isAvailable else {
+            statusMessage = "No output device is available for monitoring."
+            return
+        }
+
+        if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
+            stop()
+        }
+
+        do {
+            try engine.setOutputDevice(route.deviceID)
+            outputRoute = route
+            configureMonitorMeters()
+            statusMessage = "Monitor output set to \(label)."
+            AppLogger.shared.notice(
+                category: "route",
+                "Selected monitor output label=\(label) device=\(route.deviceName) uid=\(route.uid) channels=\(route.outputChannelCount) sampleRate=\(formatSampleRate(route.nominalSampleRate))"
+            )
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = "Could not select \(label) for monitoring."
+            AppLogger.shared.error(category: "route", "Monitor output selection failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func resolvedSelectedOutputRoute(
+        from routes: [OutputRouteInfo],
+        systemOutput: OutputRouteInfo
+    ) -> OutputRouteInfo {
+        if let selectedOutputDeviceUID,
+           let selectedRoute = routes.first(where: { $0.uid == selectedOutputDeviceUID }) {
+            return selectedRoute
+        }
+
+        if systemOutput.isAvailable {
+            return systemOutput
+        }
+
+        return routes.first ?? .unavailable
+    }
+
     private func resolvedSelectedInputRoute(
         from routes: [InputRouteInfo],
         systemInput: InputRouteInfo
@@ -1837,6 +2041,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         if sourceMode == .roon {
             refreshRoonNowPlayingIfNeeded()
+            refreshRoonBridgeIfNeeded()
             repairBlackHoleSampleRateIfNeeded()
         }
 
@@ -1911,13 +2116,44 @@ final class OrbisonicViewModel: ObservableObject {
         guard force || now.timeIntervalSince(lastRouteRefreshTime) >= 1.0 else { return }
         lastRouteRefreshTime = now
 
-        let nextRoute = OutputRouteMonitor.currentRoute()
+        let nextSystemOutputRoute = OutputRouteMonitor.currentRoute()
+        if nextSystemOutputRoute != systemOutputRoute {
+            systemOutputRoute = nextSystemOutputRoute
+            AppLogger.shared.notice(
+                category: "route",
+                "System output route changed device=\(nextSystemOutputRoute.deviceName) transport=\(nextSystemOutputRoute.transportName) channels=\(nextSystemOutputRoute.outputChannelCount) target=\(nextSystemOutputRoute.targetName)"
+            )
+        }
+
+        let nextAvailableOutputRoutes = OutputRouteMonitor.availableOutputRoutes()
+        if nextAvailableOutputRoutes != availableOutputRoutes {
+            availableOutputRoutes = nextAvailableOutputRoutes
+            let outputNames = nextAvailableOutputRoutes.map(\.deviceName).joined(separator: ", ")
+            AppLogger.shared.notice(
+                category: "route",
+                "Available output routes changed count=\(nextAvailableOutputRoutes.count) devices=[\(outputNames)]"
+            )
+        }
+
+        let nextRoute = resolvedSelectedOutputRoute(
+            from: nextAvailableOutputRoutes,
+            systemOutput: nextSystemOutputRoute
+        )
         if nextRoute != outputRoute {
             outputRoute = nextRoute
             configureMonitorMeters()
+
+            if nextRoute.isAvailable, !isPlaying, !isTestTonePlaying, !isDiagnosticSequencePlaying {
+                do {
+                    try engine.setOutputDevice(nextRoute.deviceID)
+                } catch {
+                    AppLogger.shared.warning(category: "route", "Could not apply refreshed output device: \(error.localizedDescription)")
+                }
+            }
+
             AppLogger.shared.notice(
                 category: "route",
-                "Default output route changed device=\(nextRoute.deviceName) transport=\(nextRoute.transportName) channels=\(nextRoute.outputChannelCount) target=\(nextRoute.targetName)"
+                "Monitor output route changed device=\(nextRoute.deviceName) transport=\(nextRoute.transportName) channels=\(nextRoute.outputChannelCount) target=\(nextRoute.targetName)"
             )
 
             if isPlaying {
@@ -1925,7 +2161,7 @@ final class OrbisonicViewModel: ObservableObject {
             } else if let metadata = sourceMetadata {
                 statusMessage = "Loaded \(metadata.fileName). Current route: \(routeDisplayName)."
             } else if outputRoute.isAvailable {
-                statusMessage = "Load a surround file. Current macOS output: \(routeDisplayName)."
+                statusMessage = "Load a surround file. Current monitor output: \(routeDisplayName)."
             } else {
                 statusMessage = "Load a surround file. The active macOS output route will appear below."
             }
@@ -2028,13 +2264,12 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func configureMonitorMeters() {
-        let detectedCount = max(engine.monitorMeterChannelCount(), outputRoute.outputChannelCount, 2)
-        monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: detectedCount).channels)
+        monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
     }
 
     private func updateMonitorMeters() {
         let levels = engine.monitorMeterLevels()
-        let channelCount = max(levels.count, outputRoute.outputChannelCount, 2)
+        let channelCount = monitorChannelWalkCount
         let paddedLevels = padded(levels, count: channelCount)
         monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: channelCount).channels)
         monitorMeterStore.update(with: paddedLevels)
@@ -2095,6 +2330,11 @@ final class OrbisonicViewModel: ObservableObject {
         if levels.count == count { return levels }
         if levels.count > count { return Array(levels.prefix(count)) }
         return levels + Array(repeating: 0, count: count - levels.count)
+    }
+
+    private func activeLevel(index: Int, count: Int) -> [Float] {
+        guard count > 0 else { return [] }
+        return (0..<count).map { $0 == index ? 0.86 : 0 }
     }
 
     private var currentRendererLayout: SurroundLayout? {
@@ -2214,39 +2454,160 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func refreshRoonNowPlayingIfNeeded(force: Bool = false) {
         let now = Date()
-        guard force || now.timeIntervalSince(lastRoonNowPlayingRefreshTime) >= 1.0 else { return }
+        guard force || now.timeIntervalSince(lastRoonNowPlayingRefreshTime) >= Self.roonLogRefreshInterval else { return }
+        guard !isRoonLogRefreshInFlight else { return }
         lastRoonNowPlayingRefreshTime = now
 
         guard sourceMode == .roon else { return }
+        isRoonLogRefreshInFlight = true
+        let reader = roonNowPlayingReader
 
-        guard let next = roonNowPlayingReader.readLatest() else {
-            roonNowPlayingStatus = "No Roon playback line found in RoonServer log yet."
+        Task { @MainActor [weak self] in
+            let snapshot = await Task.detached(priority: .utility) {
+                reader.readLatestSnapshot()
+            }.value
+
+            guard let self else { return }
+            defer { isRoonLogRefreshInFlight = false }
+            guard sourceMode == .roon else { return }
+
+            applyRoonLogSnapshot(snapshot)
+        }
+    }
+
+    private func applyRoonLogSnapshot(_ snapshot: RoonLogSnapshot?) {
+        guard let snapshot else {
+            roonNowPlayingStatus = roonBridgeSnapshot.isReadyForTransport
+                ? "Roon API connected. Signal-path log has not updated yet."
+                : "No Roon playback line found in RoonServer log yet."
             return
         }
 
-        if next != roonNowPlaying {
-            roonNowPlaying = next
-            AppLogger.shared.notice(
-                category: "roon-metadata",
-                "Now playing zone=\(next.zoneName) state=\(next.state) title=\(next.titleLine) format=\(next.qualityFormat) progress=\(next.positionText)/\(next.durationText)"
-            )
+        if let next = snapshot.nowPlaying {
+            if next != roonNowPlaying {
+                roonNowPlaying = next
+                AppLogger.shared.notice(
+                    category: "roon-metadata",
+                    "Now playing zone=\(next.zoneName) state=\(next.state) title=\(next.titleLine) format=\(next.qualityFormat) progress=\(next.positionText)/\(next.durationText)"
+                )
+            }
+
+            roonNowPlayingStatus = "\(next.updatedText) • \(roonZoneText)"
+        } else if roonBridgeSnapshot.isReadyForTransport {
+            roonNowPlayingStatus = "Roon API connected. Waiting for signal-path log details."
+        } else {
+            roonNowPlayingStatus = "No Roon playback line found in RoonServer log yet."
         }
 
-        if let signalPath = roonNowPlayingReader.readLatestSignalPath(), signalPath != roonSignalPath {
-            roonSignalPath = signalPath
-            let level: AppLogLevel = signalPath.isDownmixingToStereo ? .warning : .notice
-            AppLogger.shared.log(
-                level,
-                category: "roon-metadata",
-                "Signal path sourceChannels=\(signalPath.sourceChannelText) sourceFormat=\(signalPath.sourceFormat) channelMapping=\(signalPath.channelMapping) device=\(signalPath.device) output=\(signalPath.output)"
-            )
+        guard let signalPath = snapshot.signalPath, signalPath != roonSignalPath else {
+            return
+        }
 
-            if signalPath.isDownmixingToStereo {
-                statusMessage = "Roon is downmixing quad to stereo before BlackHole. Change the BlackHole zone channel layout in Roon."
+        roonSignalPath = signalPath
+        let level: AppLogLevel = signalPath.isDownmixingToStereo ? .warning : .notice
+        AppLogger.shared.log(
+            level,
+            category: "roon-metadata",
+            "Signal path sourceChannels=\(signalPath.sourceChannelText) sourceFormat=\(signalPath.sourceFormat) channelMapping=\(signalPath.channelMapping) device=\(signalPath.device) output=\(signalPath.output)"
+        )
+
+        if signalPath.isDownmixingToStereo {
+            statusMessage = "Roon is downmixing quad to stereo before BlackHole. Change the BlackHole zone channel layout in Roon."
+        }
+    }
+
+    private func refreshRoonBridgeIfNeeded(force: Bool = false) {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastRoonBridgeRefreshTime) >= Self.roonBridgeRefreshInterval else { return }
+        guard !isRoonBridgeRefreshInFlight else { return }
+        lastRoonBridgeRefreshTime = now
+        isRoonBridgeRefreshInFlight = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { isRoonBridgeRefreshInFlight = false }
+
+            do {
+                let snapshot = try await roonBridgeClient.refreshStartingIfNeeded()
+                applyRoonBridgeSnapshot(snapshot)
+            } catch {
+                applyRoonBridgeError(error)
             }
         }
+    }
 
-        roonNowPlayingStatus = "\(next.updatedText) • \(roonZoneText)"
+    private func sendRoonTransport(_ control: RoonBridgeControl) {
+        guard sourceMode == .roon else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                let response = try await roonBridgeClient.sendStartingIfNeeded(control)
+                if let snapshot = response.state {
+                    applyRoonBridgeSnapshot(snapshot)
+                } else {
+                    refreshRoonBridgeIfNeeded(force: true)
+                }
+                statusMessage = response.message ?? "Sent \(control.rawValue) to Roon."
+                AppLogger.shared.notice(category: "roon-bridge", "Sent transport control=\(control.rawValue)")
+            } catch {
+                applyRoonBridgeError(error)
+                statusMessage = error.localizedDescription
+                lastError = error.localizedDescription
+                AppLogger.shared.error(category: "roon-bridge", "Transport control failed control=\(control.rawValue) error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func applyRoonBridgeSnapshot(_ snapshot: RoonBridgeSnapshot) {
+        if snapshot != roonBridgeSnapshot {
+            roonBridgeSnapshot = snapshot
+            let logStatus = [
+                snapshot.bridge.state,
+                snapshot.selectedZoneId ?? "no-zone",
+                snapshot.statusText,
+                snapshot.selectedZone?.titleText ?? ""
+            ].joined(separator: "|")
+
+            if logStatus != lastLoggedRoonBridgeStatus {
+                lastLoggedRoonBridgeStatus = logStatus
+                AppLogger.shared.notice(
+                    category: "roon-bridge",
+                    "State=\(snapshot.bridge.state) status=\(snapshot.statusText)"
+                )
+            }
+        }
+    }
+
+    private func applyRoonBridgeError(_ error: Error) {
+        let bridgeState: String
+        if case RoonBridgeClientError.missingDependencies = error {
+            bridgeState = "missing_dependencies"
+        } else if case RoonBridgeClientError.missingNodeRuntime = error {
+            bridgeState = "missing_node"
+        } else {
+            bridgeState = "offline"
+        }
+
+        let snapshot = RoonBridgeSnapshot(
+            ok: false,
+            updatedAt: nil,
+            bridge: RoonBridgeInfo(
+                state: bridgeState,
+                message: error.localizedDescription,
+                zoneHint: "Orbisonic Roon Input"
+            ),
+            core: nil,
+            selectedZoneId: nil,
+            selectedZone: nil,
+            zones: []
+        )
+
+        if snapshot != roonBridgeSnapshot {
+            roonBridgeSnapshot = snapshot
+            AppLogger.shared.warning(category: "roon-bridge", error.localizedDescription)
+        }
     }
 
     private func applyPreset(_ preset: SpatialPreset, pushToEngine: Bool = true) {

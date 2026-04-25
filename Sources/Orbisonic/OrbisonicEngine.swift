@@ -8,6 +8,26 @@ enum TransportState: String {
     case paused
 }
 
+enum OutputDeviceSelectionError: LocalizedError {
+    case invalidDevice
+    case outputAudioUnitUnavailable
+    case setDeviceFailed(OSStatus)
+    case invalidDiagnosticChannel(Int, Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidDevice:
+            "No valid output device was selected."
+        case .outputAudioUnitUnavailable:
+            "The output audio unit is not available yet."
+        case .setDeviceFailed(let status):
+            "Could not select that output device. Core Audio returned \(status)."
+        case .invalidDiagnosticChannel(let index, let count):
+            "Diagnostic channel \(index + 1) is outside the available \(count)-channel range."
+        }
+    }
+}
+
 final class OrbisonicEngine {
     var onPlaybackEnded: (() -> Void)?
 
@@ -214,6 +234,37 @@ final class OrbisonicEngine {
         AppLogger.shared.notice(category: "live-input", "Live input mute=\(muted)")
     }
 
+    func setOutputDevice(_ deviceID: AudioDeviceID) throws {
+        guard deviceID != 0 else {
+            throw OutputDeviceSelectionError.invalidDevice
+        }
+
+        guard let audioUnit = engine.outputNode.audioUnit else {
+            throw OutputDeviceSelectionError.outputAudioUnitUnavailable
+        }
+
+        if engine.isRunning {
+            engine.stop()
+            resetMonitorMeterLevels()
+        }
+
+        var selectedDeviceID = deviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &selectedDeviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+
+        guard status == noErr else {
+            throw OutputDeviceSelectionError.setDeviceFailed(status)
+        }
+
+        AppLogger.shared.notice(category: "engine", "Selected output device id=\(deviceID).")
+    }
+
     func stop() {
         playerNodes.forEach { $0.stop() }
         if liveInputSource != nil {
@@ -268,6 +319,47 @@ final class OrbisonicEngine {
         AppLogger.shared.notice(
             category: "diagnostics",
             "Started test tone point=\(point.rawValue) frequency=\(point.frequency)Hz route=\(point.pipelineDescription)"
+        )
+    }
+
+    func playDiagnosticChannelTone(channelIndex: Int, channelCount: Int) throws {
+        guard channelCount > 0, channelIndex >= 0, channelIndex < channelCount else {
+            throw OutputDeviceSelectionError.invalidDiagnosticChannel(channelIndex, channelCount)
+        }
+
+        playerNodes.forEach { $0.stop() }
+        if liveInputSource != nil {
+            stopLiveInput()
+        }
+        stopTestTone()
+
+        let sampleRate = preferredOutputSampleRate()
+        guard let channelFormat = AVAudioFormat(
+            standardFormatWithSampleRate: sampleRate,
+            channels: AVAudioChannelCount(channelCount)
+        ) else {
+            throw LiveInputError.monoFormatCreationFailed(sampleRate)
+        }
+
+        let node = makeChannelToneNode(
+            channelIndex: channelIndex,
+            frequency: 440 + Double(channelIndex % 12) * 18,
+            sampleRate: sampleRate,
+            gain: 0.14
+        )
+
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode, format: channelFormat)
+        testToneNodes = [node]
+
+        if !engine.isRunning {
+            try engine.start()
+            AppLogger.shared.notice(category: "engine", "AVAudioEngine started for channel diagnostic tone.")
+        }
+
+        AppLogger.shared.notice(
+            category: "diagnostics",
+            "Started channel diagnostic tone channel=\(channelIndex + 1)/\(channelCount) frequency=\(440 + Double(channelIndex % 12) * 18)Hz"
         )
     }
 
@@ -506,6 +598,31 @@ final class OrbisonicEngine {
                 for buffer in buffers {
                     guard let rawData = buffer.mData else { continue }
                     rawData.assumingMemoryBound(to: Float.self)[frame] = sample
+                }
+            }
+
+            return noErr
+        }
+    }
+
+    private func makeChannelToneNode(
+        channelIndex: Int,
+        frequency: Double,
+        sampleRate: Double,
+        gain: Float
+    ) -> AVAudioSourceNode {
+        let tone = SineToneState(frequency: frequency, sampleRate: sampleRate, gain: gain)
+
+        return AVAudioSourceNode { _, _, frameCount, audioBufferList in
+            let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let frames = Int(frameCount)
+
+            for frame in 0..<frames {
+                let sample = tone.nextSample()
+
+                for (bufferIndex, buffer) in buffers.enumerated() {
+                    guard let rawData = buffer.mData else { continue }
+                    rawData.assumingMemoryBound(to: Float.self)[frame] = bufferIndex == channelIndex ? sample : 0
                 }
             }
 

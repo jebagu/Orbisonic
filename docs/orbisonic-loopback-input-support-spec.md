@@ -212,10 +212,10 @@ Primary controls in the Now Playing card:
 
 Playback controls:
 
-- Play/pause, next, previous, queue controls, and scrubber should be disabled or hidden for the first implementation.
-- If controls remain visible for layout stability, they must be visibly disabled with tooltip/help text: `Playback is controlled in Roon.`
+- Play/pause, stop, next, and previous should be enabled only when the local Orbisonic Roon Bridge reports a paired, controllable Roon zone.
+- Queue controls and scrubber should stay disabled unless a future Roon queue/seek workflow is explicitly implemented.
 - Roon metadata can show title, artist, zone, format, source channel mapping, and upstream paused state.
-- If the future Roon API bridge is present, Roon transport may be promoted from disabled to active only when the bridge reports a controllable zone ID.
+- If the Roon API bridge is missing, unpaired, or has no controllable zone, transport controls must be visibly disabled and the UI should show the bridge status.
 
 ### Aux Controls
 
@@ -854,7 +854,7 @@ plutil -lint Orbisonic.app/Contents/Info.plist
 - Roon uses `audio.orbisonic.rooninput.device` by UID.
 - Aux uses `audio.orbisonic.auxcable.device` by UID.
 - Local Files remains app-owned playback.
-- Roon and Aux do not show active app-owned play/pause/scrub/queue controls.
+- Roon may show active play/pause/stop/previous/next only through the Orbisonic Roon Bridge. Aux does not show app-owned transport controls.
 - Roon and Aux support monitor, mute, resume monitor, and stop monitor.
 - Muting a live source does not stop input metering.
 - Stopping a live source releases capture.

@@ -3,11 +3,13 @@ import SwiftUI
 
 private enum StageTab: String, CaseIterable, Identifiable {
     case input = "Input"
-    case outputVU = "Output"
+    case routing = "Routing"
+    case output = "Output"
     case renderer = "Renderer"
     case sceneTuning = "Scene Tuning"
     case localMusic = "Local Playlist"
     case diagnostics = "Diagnostics"
+    case settings = "Settings"
 
     var id: String { rawValue }
 }
@@ -16,7 +18,6 @@ private enum LocalMusicPanel: String, CaseIterable, Identifiable {
     case music = "Music"
     case playlists = "Playlists"
     case queue = "Session Queue"
-    case settings = "Settings"
 
     var id: String { rawValue }
 }
@@ -102,7 +103,7 @@ struct ContentView: View {
     @AppStorage("Orbisonic.hasConfirmedLoopbackSetup") private var hasConfirmedLoopbackSetup = false
     @State private var selectedStageTab: StageTab = .input
     @State private var selectedLocalMusicPanel: LocalMusicPanel = .music
-    @State private var selectedVUMeterStyle: VUMeterVisualStyle = .hexFlicker
+    @State private var selectedVUMeterStyle: VUMeterVisualStyle = .squarePulse
     @State private var showsLoopbackSetupDialog = false
 
     var body: some View {
@@ -203,9 +204,11 @@ struct ContentView: View {
     private var selectedStageContent: some View {
         switch selectedStageTab {
         case .input:
+            tabPage { inputTab }
+        case .routing:
             tabPage { routingTab }
-        case .outputVU:
-            tabPage { outputVUTab }
+        case .output:
+            tabPage { outputTab }
         case .renderer:
             tabPage { rendererTab }
         case .sceneTuning:
@@ -214,6 +217,8 @@ struct ContentView: View {
             localMusicTab
         case .diagnostics:
             tabPage { diagnosticsTab }
+        case .settings:
+            tabPage { settingsTab }
         }
     }
 
@@ -242,16 +247,21 @@ struct ContentView: View {
         )
     }
 
-    private var routingTab: some View {
+    private var inputTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             settingsPanel(title: "Source Selector") {
                 sourceModeSelector
                 routingPrimaryControls
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
 
+    private var routingTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
             routingFlowGraphic
 
-            inputMeters
+            routingCompactMeters
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
@@ -277,7 +287,6 @@ struct ContentView: View {
 
             infoRow(title: "Device", value: model.selectedSourceDeviceStatusText)
             infoRow(title: "Status", value: model.liveSignalStatus)
-            channelCountMenu
 
         case .filePlayback:
             EmptyView()
@@ -313,31 +322,6 @@ struct ContentView: View {
 
     private var primarySourceModes: [SourceMode] {
         SourceMode.musicInputs
-    }
-
-    private var channelCountMenu: some View {
-        Menu {
-            ForEach(model.availableLiveChannelCounts, id: \.self) { count in
-                Button("\(count) ch") {
-                    model.activeLiveChannelCount = count
-                }
-            }
-        } label: {
-            HStack {
-                Text("CHANNELS")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(LabTheme.textSoft)
-                Spacer()
-                Text("\(model.activeLiveChannelCount) ch")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(LabTheme.text)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(LabTheme.cyan)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(LabButtonStyle())
     }
 
     private var inputDeviceMenu: some View {
@@ -555,14 +539,43 @@ struct ContentView: View {
         )
     }
 
-    private var outputVUTab: some View {
+    private var routingCompactMeters: some View {
+        HStack(alignment: .top, spacing: 12) {
+            CompactSquareVUMeterPanel(
+                title: "Input",
+                subtitle: inputVUMeterSubtitle,
+                accent: LabTheme.cyan,
+                meterStore: model.meterStore
+            )
+
+            CompactSquareVUMeterPanel(
+                title: "Monitor",
+                subtitle: monitorVUMeterSubtitle,
+                accent: LabTheme.blue,
+                meterStore: model.monitorMeterStore
+            )
+
+            CompactSquareVUMeterPanel(
+                title: "Renderer",
+                subtitle: rendererVUMeterSubtitle,
+                accent: LabTheme.amber,
+                meterStore: model.rendererMeterStore
+            )
+        }
+    }
+
+    private var outputTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
                 settingsPanel(title: "Output 1: Monitor") {
+                    monitorOutputMenu
                     infoRow(title: "Output", value: model.outputNowText)
+                    infoRow(title: "Selection", value: model.monitorOutputSelectionText)
+                    infoRow(title: "System", value: model.systemOutputNowText)
                     infoRow(title: "Target", value: model.targetFlowTitle)
                     infoRow(title: "Detail", value: model.targetFlowDetail)
                 }
+                .frame(maxWidth: .infinity, minHeight: 236, alignment: .topLeading)
 
                 settingsPanel(title: "Output 2: Renderer") {
                     infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
@@ -570,19 +583,43 @@ struct ContentView: View {
                     infoRow(title: "Renderer", value: model.rendererText)
                     infoRow(title: "Safety", value: model.outputSafetyText)
                 }
+                .frame(maxWidth: .infinity, minHeight: 236, alignment: .topLeading)
             }
-
-            outputMeters
-            DenseVUMeterPanel(
-                title: "Renderer",
-                subtitle: rendererVUMeterSubtitle,
-                style: selectedVUMeterStyle,
-                meterStore: model.rendererMeterStore,
-                minHeight: 220
-            )
-            signalFlowPanel
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var monitorOutputMenu: some View {
+        Menu {
+            Button("System Default") {
+                model.selectSystemMonitorOutput()
+            }
+
+            Divider()
+
+            ForEach(model.availableOutputRoutes) { route in
+                Button(route.deviceName) {
+                    model.selectMonitorOutputRoute(route)
+                }
+            }
+        } label: {
+            HStack {
+                Text("MONITOR")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft)
+                Spacer()
+                Text(model.monitorOutputSelectionText)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(LabTheme.cyan)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(LabButtonStyle(isActive: true))
     }
 
     private var vuMeterTab: some View {
@@ -798,7 +835,7 @@ struct ContentView: View {
 
     private var headerCard: some View {
         card {
-            Text("Orbisonic")
+            Text("Orbisonic 1.0")
                 .font(.system(size: 18, weight: .heavy))
                 .foregroundStyle(LabTheme.text)
                 .lineLimit(1)
@@ -875,6 +912,10 @@ struct ContentView: View {
     }
 
     private var nowPlayingTitle: String {
+        if model.sourceMode == .roon, let title = model.roonTransportTitleText, !title.isEmpty {
+            return title
+        }
+
         if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roon {
             return nowPlaying.title
         }
@@ -899,6 +940,10 @@ struct ContentView: View {
     }
 
     private var nowPlayingSubtitle: String {
+        if model.sourceMode == .roon, let subtitle = model.roonTransportSubtitleText, !subtitle.isEmpty {
+            return subtitle
+        }
+
         if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roon {
             return nowPlaying.artist.isEmpty ? "Roon" : nowPlaying.artist
         }
@@ -926,7 +971,7 @@ struct ContentView: View {
         card {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 10) {
-                    Text("Now Playing")
+                    Text("Player")
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(LabTheme.text)
                     Spacer()
@@ -974,7 +1019,9 @@ struct ContentView: View {
                     .buttonStyle(LabButtonStyle())
                 }
 
-                if model.sourceMode == .filePlayback {
+                if model.sourceMode == .roon {
+                    roonTransportControls
+                } else if model.sourceMode == .filePlayback {
                     localMusicNowPlayingControls
                 }
 
@@ -1000,6 +1047,7 @@ struct ContentView: View {
                 if model.sourceMode == .roon {
                     if let nowPlaying = model.roonNowPlaying {
                         VStack(alignment: .leading, spacing: 8) {
+                            transportRow(title: "Roon API", value: model.roonTransportStatusText)
                             transportRow(title: "Format", value: nowPlaying.tidyFormatText)
                             if let signalPath = model.roonSignalPath {
                                 transportRow(title: "Source Channels", value: signalPath.sourceChannelText)
@@ -1008,11 +1056,14 @@ struct ContentView: View {
                             transportRow(title: "Zone", value: model.roonZoneText)
                         }
                     } else {
-                        Text(model.roonNowPlayingStatus)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(LabTheme.textSoft)
-                            .lineLimit(2)
-                            .frame(minHeight: 36, alignment: .topLeading)
+                        VStack(alignment: .leading, spacing: 8) {
+                            transportRow(title: "Roon API", value: model.roonTransportStatusText)
+                            Text(model.roonNowPlayingStatus)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(LabTheme.textSoft)
+                                .lineLimit(2)
+                                .frame(minHeight: 36, alignment: .topLeading)
+                        }
                     }
                 } else if model.sourceMode == .aux {
                     VStack(alignment: .leading, spacing: 8) {
@@ -1111,6 +1162,64 @@ struct ContentView: View {
         .disabled(model.localMusicTracks.isEmpty)
     }
 
+    private var roonTransportControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                roonTransportButton(
+                    systemImage: "backward.fill",
+                    help: "Previous in Roon",
+                    control: .previous,
+                    action: model.playPreviousRoonTrack
+                )
+
+                roonTransportButton(
+                    systemImage: model.isRoonTransportPlaying ? "pause.fill" : "play.fill",
+                    help: model.isRoonTransportPlaying ? "Pause Roon" : "Play Roon",
+                    control: model.isRoonTransportPlaying ? .pause : .play,
+                    isActive: model.isRoonTransportPlaying,
+                    action: model.toggleRoonTransport
+                )
+
+                roonTransportButton(
+                    systemImage: "stop.fill",
+                    help: "Stop Roon",
+                    control: .stop,
+                    action: model.stopRoonTransport
+                )
+
+                roonTransportButton(
+                    systemImage: "forward.fill",
+                    help: "Next in Roon",
+                    control: .next,
+                    action: model.playNextRoonTrack
+                )
+            }
+
+            Text(model.roonTransportCompactStatusText)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(model.roonBridgeSnapshot.isReadyForTransport ? LabTheme.cyan : LabTheme.textSoft)
+                .lineLimit(1)
+                .frame(height: 14, alignment: .leading)
+        }
+    }
+
+    private func roonTransportButton(
+        systemImage: String,
+        help: String,
+        control: RoonBridgeControl,
+        isActive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .bold))
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(LabButtonStyle(isActive: isActive))
+        .disabled(!model.canSendRoonTransport(control))
+        .help(help)
+    }
+
     private var localMusicTab: some View {
         VStack(alignment: .leading, spacing: 14) {
             localMusicPanelSelector
@@ -1154,8 +1263,6 @@ struct ContentView: View {
             localMusicPlaylistsPanel
         case .queue:
             localMusicQueuePanel
-        case .settings:
-            settingsTab
         }
     }
 
@@ -1560,6 +1667,10 @@ struct ContentView: View {
                 infoRow(title: "Library DB", value: model.localMusicDatabasePath)
                 infoRow(title: "Art Cache", value: model.localMusicArtworkDirectoryPath)
             }
+
+            settingsPanel(title: "Meter Style") {
+                vuMeterStylePicker
+            }
         }
     }
 
@@ -1616,49 +1727,76 @@ struct ContentView: View {
     private var diagnosticsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Channel Walk") {
-                    Text("Plays each diagnostic point for 1.5 seconds. This bypasses Roon and BlackHole so you can verify the app-to-headphones path directly.")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .fixedSize(horizontal: false, vertical: true)
+                diagnosticWalkPanel(
+                    title: "Monitor Channel Walk",
+                    channelText: "\(model.monitorChannelWalkCount) ch",
+                    actionTitle: "Walk Monitor",
+                    action: model.startMonitorChannelWalk
+                )
 
-                    HStack(spacing: 10) {
-                        Button(action: model.startDiagnosticChannelWalk) {
-                            Label("Play Channel Walk", systemImage: "speaker.wave.3.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
-                        .disabled(model.isDiagnosticSequencePlaying)
-
-                        Button(action: model.stopDiagnosticsAndReturnToMusic) {
-                            Label("Stop & Return", systemImage: "arrow.uturn.backward.circle.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle())
-                        .disabled(!model.isDiagnosticSequencePlaying)
-                    }
-
-                    infoRow(title: "Now Playing", value: model.activeDiagnosticText)
-                    infoRow(title: "Output", value: model.outputNowText)
-                    infoRow(title: "Status", value: model.testToneStatus)
-                }
-
-                settingsPanel(title: "What This Proves") {
-                    infoRow(title: "Output Route", value: "If the first tone is silent, macOS output, headphone routing, or volume is wrong.")
-                    infoRow(title: "Renderer", value: "If direct output works but positioned tones fail, the spatial renderer path is wrong.")
-                    infoRow(title: "Roon Pipe", value: "If all tones work but Roon is silent, Roon is not feeding BlackHole.")
-                }
+                diagnosticWalkPanel(
+                    title: "Output To Renderer Channel Walk",
+                    channelText: "\(model.rendererOutputChannelWalkCount) ch",
+                    actionTitle: "Walk Renderer",
+                    action: model.startRendererOutputChannelWalk
+                )
             }
-
-            settingsPanel(title: "Meter Style") {
-                vuMeterStylePicker
-            }
-
-            diagnosticChannelGrid
-            stageMeters
-            signalFlowPanel
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func diagnosticWalkPanel(
+        title: String,
+        channelText: String,
+        actionTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        settingsPanel(title: title) {
+            HStack(spacing: 10) {
+                Button(action: action) {
+                    Label(actionTitle, systemImage: "speaker.wave.3.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
+                .disabled(model.isDiagnosticSequencePlaying)
+
+                Button(action: model.stopDiagnosticsAndReturnToMusic) {
+                    Image(systemName: "stop.fill")
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(LabButtonStyle())
+                .disabled(!model.isDiagnosticSequencePlaying)
+                .help("Stop and return to the previous source")
+            }
+
+            HStack(spacing: 12) {
+                Text(channelText)
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(LabTheme.cyan)
+                    .frame(width: 72, height: 30)
+                    .background(
+                        RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                            .fill(LabTheme.cyan.opacity(0.10))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                                    .stroke(LabTheme.cyan.opacity(0.38), lineWidth: 1)
+                            )
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.activeDiagnosticText)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(LabTheme.text)
+                        .lineLimit(1)
+                    Text(model.testToneStatus)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .lineLimit(2)
+                }
+            }
+
+            infoRow(title: "Output", value: model.outputNowText)
+        }
     }
 
     private func tabPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -1670,124 +1808,12 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var diagnosticChannelGrid: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
-            alignment: .leading,
-            spacing: 12
-        ) {
-            ForEach(Array(model.diagnosticToneSequence.enumerated()), id: \.element.id) { index, point in
-                diagnosticPointCard(index: index + 1, point: point)
-            }
-        }
-    }
-
-    private func diagnosticPointCard(index: Int, point: TestTonePipelinePoint) -> some View {
-        let isActive = model.activeDiagnosticPoint?.id == point.id
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("\(index)")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(isActive ? LabTheme.bg : LabTheme.textSoft)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                            .fill(isActive ? LabTheme.amber : LabTheme.panelSoft)
-                    )
-
-                Spacer()
-
-                Circle()
-                    .fill(isActive ? LabTheme.amber : LabTheme.line)
-                    .frame(width: 10, height: 10)
-            }
-
-            Text(point.rawValue)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(LabTheme.text)
-
-            Text(point.pipelineDescription)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(LabTheme.textSoft)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                .fill(isActive ? LabTheme.amber.opacity(0.12) : LabTheme.panelSoft)
-                .overlay(
-                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                        .stroke(isActive ? LabTheme.amber.opacity(0.65) : LabTheme.line, lineWidth: 1)
-                )
-        )
-    }
-
     private var outputChannelText: String {
         guard let metadata = model.sourceMetadata else {
             return "No source loaded"
         }
 
         return "\(metadata.channelCount) (\(metadata.channelSummary))"
-    }
-
-    private var inputMeters: some View {
-        LiveSurroundVUView(
-            title: "Input",
-            subtitle: model.sourceMode.isLiveInput ? model.inputRoute.displayName : model.loadedFileName,
-            meterStore: model.meterStore
-        )
-    }
-
-    private var outputMeters: some View {
-        LiveSurroundVUView(
-            title: "Output",
-            subtitle: outputChannelText,
-            meterStore: model.meterStore
-        )
-    }
-
-    private var stageMeters: some View {
-        LiveSurroundVUView(
-            title: "Diagnostic",
-            subtitle: model.activeDiagnosticText,
-            meterStore: model.meterStore
-        )
-    }
-
-    private var signalFlowPanel: some View {
-        HStack(alignment: .center, spacing: 12) {
-            flowCard(
-                step: "Source",
-                title: model.sourceFlowTitle,
-                detail: model.sourceFlowDetail
-            )
-
-            flowArrow
-
-            flowCard(
-                step: "Render",
-                title: model.renderFlowTitle,
-                detail: model.renderFlowDetail
-            )
-
-            flowArrow
-
-            flowCard(
-                step: "Route",
-                title: model.routeFlowTitle,
-                detail: model.routeFlowDetail
-            )
-
-            flowArrow
-
-            flowCard(
-                step: "Target",
-                title: model.targetFlowTitle,
-                detail: model.targetFlowDetail
-            )
-        }
     }
 
     private var flowArrow: some View {
@@ -1888,41 +1914,87 @@ struct ContentView: View {
         )
     }
 
-    private func flowCard(
-        step: String,
-        title: String,
-        detail: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 10) {
-                Text(step.uppercased())
-                    .font(.system(size: 11, weight: .bold))
+}
+
+private struct CompactSquareVUMeterPanel: View {
+    let title: String
+    let subtitle: String
+    let accent: Color
+    @ObservedObject var meterStore: ChannelMeterStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+
+                Text(subtitle)
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(LabTheme.textSoft)
-                Spacer(minLength: 0)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            Text(title)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(LabTheme.text)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .frame(height: 36, alignment: .bottomLeading)
-            Text(detail)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(LabTheme.textSoft)
-                .lineLimit(3)
-                .truncationMode(.tail)
-                .frame(height: 42, alignment: .topLeading)
+            .frame(height: 18, alignment: .leading)
+
+            TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { context in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(sortedMeters, id: \.id) { meter in
+                            compactSquare(meter: meter, date: context.date)
+                        }
+                    }
+                    .padding(.horizontal, 1)
+                    .padding(.vertical, 2)
+                }
+                .frame(height: 42)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 106, alignment: .leading)
-        .padding(16)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                .fill(LabTheme.panelSoft)
+                .fill(Color.black.opacity(0.16))
                 .overlay(
                     RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
                         .stroke(LabTheme.line, lineWidth: 1)
                 )
         )
+    }
+
+    private var sortedMeters: [ChannelMeter] {
+        meterStore.channelMeters.sorted { lhs, rhs in
+            if lhs.channel.role.displayOrder == rhs.channel.role.displayOrder {
+                return lhs.channel.index < rhs.channel.index
+            }
+            return lhs.channel.role.displayOrder < rhs.channel.role.displayOrder
+        }
+    }
+
+    private func compactSquare(meter: ChannelMeter, date: Date) -> some View {
+        let level = max(0, min(CGFloat(meter.level), 1))
+        let phase = CGFloat((sin(date.timeIntervalSinceReferenceDate * 8 + Double(meter.channel.index) * 0.31) + 1) / 2)
+        let pulse = 1 + level * (0.10 + phase * 0.16)
+
+        return VStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(accent.opacity(0.12 + Double(level) * 0.78))
+                .frame(width: 16, height: 16)
+                .scaleEffect(pulse)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .stroke(level > 0.02 ? accent.opacity(0.72) : LabTheme.line, lineWidth: 1)
+                )
+                .shadow(color: accent.opacity(Double(level) * 0.38), radius: 4, x: 0, y: 0)
+
+            Text(meter.channel.shortLabel)
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .foregroundStyle(level > 0.02 ? LabTheme.text : LabTheme.textSoft)
+                .lineLimit(1)
+                .frame(width: 24)
+        }
+        .frame(width: 24)
     }
 }
 
