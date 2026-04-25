@@ -2,16 +2,21 @@ import XCTest
 @testable import Orbisonic
 
 final class RendererModuleTests: XCTestCase {
-    func testRendererModelHandlesTwoHundredFiftySixDiscreteInputChannels() {
-        let layout = SurroundLayoutDetector.fallbackLayout(for: 256)
-        XCTAssertEqual(layout.name, "256-Channel Discrete")
-        XCTAssertEqual(layout.channelCount, 256)
+    func testRendererModelHandlesMaximumSupportedDiscreteInputChannels() {
+        let layout = SurroundLayoutDetector.fallbackLayout(for: OrbisonicAudioLimits.maxSourceChannelCount)
+        XCTAssertEqual(layout.name, "64-Channel Discrete")
+        XCTAssertEqual(layout.channelCount, OrbisonicAudioLimits.maxSourceChannelCount)
 
         let scene = RendererMatrixBuilder.sceneModel(for: layout, preset: .sonicSphere30Point1)
-        XCTAssertEqual(scene.inputSpeakers.count, 256)
-        XCTAssertEqual(scene.matrix.inputCount, 256)
+        XCTAssertEqual(scene.inputSpeakers.count, OrbisonicAudioLimits.maxSourceChannelCount)
+        XCTAssertEqual(scene.matrix.inputCount, OrbisonicAudioLimits.maxSourceChannelCount)
         XCTAssertEqual(scene.matrix.outputCount, 31)
         XCTAssertTrue(scene.matrix.gains.allSatisfy { $0.count == 31 })
+    }
+
+    func testSourceChannelPolicyRejectsSixtyFiveChannels() {
+        XCTAssertTrue(OrbisonicAudioLimits.supportsSourceChannelCount(64))
+        XCTAssertFalse(OrbisonicAudioLimits.supportsSourceChannelCount(65))
     }
 
     func testDefaultPresetBuildsThirtyPointOneSpeakerTopology() {

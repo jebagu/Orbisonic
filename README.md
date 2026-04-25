@@ -9,6 +9,7 @@ It is intended to be a simple, reliable dashboard and renderer: a way to open mu
 - Opens local audio files and playlists, including `.wav`, `.wave`, `.aif`, `.aiff`, `.caf`, `.flac`, `.m4a`, and `.mp3`
 - Accepts live input from Roon and other external players through a virtual multichannel sound card
 - Routes each source channel into the renderer as a spatial input source
+- Supports up to 64 source channels per file or live input route in this prototype build
 - Builds a Sonic Sphere renderer scene with a 30.1 output topology by default
 - Renders channel-bed and discrete multichannel sources for the Sonic Sphere
 - Provides a binaural headphone and monitor path aimed at AirPods and other headphone outputs
@@ -37,9 +38,9 @@ Named layout handling currently includes:
 - 9.1.4
 - 9.1.6
 - Hexagonal, octagonal, and other discrete speaker layouts represented as channel beds
-- Arbitrary N-channel discrete layouts
+- Arbitrary discrete layouts up to 64 source channels
 
-For channel counts outside the named surround layouts, Orbisonic falls back to an N-channel discrete layout. The renderer model is tested with 256 discrete input channels feeding the Sonic Sphere matrix. Local file playback still depends on what `AVAudioFile` and Core Audio can decode and expose from the source file, along with memory and the selected input/output hardware.
+For channel counts outside the named surround layouts, Orbisonic falls back to an N-channel discrete layout. This prototype intentionally caps source files and live input requests at 64 channels, matching BlackHole 64ch and avoiding accidental allocation of impractically large audio files. Local file playback still depends on what `AVAudioFile` and Core Audio can decode and expose from the source file, along with memory and the selected input/output hardware.
 
 ## Sonic Sphere Renderer
 

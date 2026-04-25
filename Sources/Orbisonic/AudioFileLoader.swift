@@ -18,7 +18,7 @@ struct LoadedAudioFile {
 }
 
 enum AudioFileLoaderError: LocalizedError {
-    case unsupportedChannelCount(UInt32)
+    case unsupportedChannelCount(UInt32, maxSupported: Int)
     case fileTooLarge
     case sourceBufferAllocationFailed
     case layoutCreationFailed(UInt32)
@@ -31,8 +31,10 @@ enum AudioFileLoaderError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedChannelCount(let count):
-            "Expected at least 1 channel, but got \(count)."
+        case .unsupportedChannelCount(let count, let maxSupported):
+            count == 0
+                ? "Expected at least 1 channel, but got 0."
+                : "Orbisonic supports up to \(maxSupported) source channels in this build. This file has \(count) channels."
         case .fileTooLarge:
             "This build reads the file into memory and the file is too large for that path."
         case .sourceBufferAllocationFailed:
@@ -63,8 +65,11 @@ final class AudioFileLoader {
         let inputFormat = file.processingFormat
         let channelCount = inputFormat.channelCount
 
-        guard channelCount > 0 else {
-            throw AudioFileLoaderError.unsupportedChannelCount(channelCount)
+        guard OrbisonicAudioLimits.supportsSourceChannelCount(Int(channelCount)) else {
+            throw AudioFileLoaderError.unsupportedChannelCount(
+                channelCount,
+                maxSupported: OrbisonicAudioLimits.maxSourceChannelCount
+            )
         }
 
         guard file.length <= AVAudioFramePosition(UInt32.max) else {

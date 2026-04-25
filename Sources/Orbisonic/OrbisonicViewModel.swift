@@ -1476,7 +1476,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var availableLiveChannelCounts: [Int] {
-        let available = inputRoute.inputChannelCount
+        let available = min(inputRoute.inputChannelCount, OrbisonicAudioLimits.maxSourceChannelCount)
         guard available > 0 else {
             return [2, 4, 6, 8]
         }
@@ -1563,7 +1563,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func preferredLiveChannelCount() -> Int {
-        let available = max(inputRoute.inputChannelCount, 1)
+        let available = max(min(inputRoute.inputChannelCount, OrbisonicAudioLimits.maxSourceChannelCount), 1)
 
         if inputRoute.isBlackHole, activeLiveChannelCount <= 1, available >= 8 {
             return 8
@@ -1612,7 +1612,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func applyLiveChannelDefaults(for route: InputRouteInfo) {
-        let available = max(route.inputChannelCount, 1)
+        let available = max(min(route.inputChannelCount, OrbisonicAudioLimits.maxSourceChannelCount), 1)
 
         if activeLiveChannelCount > available {
             activeLiveChannelCount = available

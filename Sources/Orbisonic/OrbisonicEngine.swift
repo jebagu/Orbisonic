@@ -83,10 +83,14 @@ final class OrbisonicEngine {
             throw LiveInputError.noInputChannels
         }
 
-        guard requestedChannelCount > 0, requestedChannelCount <= Int(availableChannels) else {
+        guard requestedChannelCount > 0,
+              requestedChannelCount <= Int(availableChannels),
+              OrbisonicAudioLimits.supportsSourceChannelCount(requestedChannelCount)
+        else {
             throw LiveInputError.unsupportedChannelRequest(
                 requested: requestedChannelCount,
-                available: availableChannels
+                available: availableChannels,
+                maxSupported: OrbisonicAudioLimits.maxSourceChannelCount
             )
         }
 

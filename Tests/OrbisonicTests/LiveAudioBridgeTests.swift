@@ -2,6 +2,35 @@ import XCTest
 @testable import Orbisonic
 
 final class LiveAudioBridgeTests: XCTestCase {
+    func testLiveInputRejectsRequestsAboveSourceChannelLimit() {
+        let engine = OrbisonicEngine()
+        let route = InputRouteInfo(
+            deviceID: 1,
+            uid: "test-128-channel-input",
+            deviceName: "Test 128 Channel Input",
+            manufacturer: "Test",
+            transportName: "Virtual",
+            inputChannelCount: 128,
+            nominalSampleRate: 48_000
+        )
+
+        XCTAssertThrowsError(
+            try engine.startLiveInput(
+                activeChannelCount: OrbisonicAudioLimits.maxSourceChannelCount + 1,
+                inputRoute: route
+            )
+        ) { error in
+            guard case LiveInputError.unsupportedChannelRequest(let requested, let available, let maxSupported) = error else {
+                XCTFail("Expected unsupported channel request, got \(error)")
+                return
+            }
+
+            XCTAssertEqual(requested, 65)
+            XCTAssertEqual(available, 128)
+            XCTAssertEqual(maxSupported, 64)
+        }
+    }
+
     func testRingBufferPrimesBeforeReading() {
         let ring = LiveChannelRingBuffer(capacity: 16, targetLatencyFrames: 4, highWaterFrames: 8)
         var output = Array(repeating: Float(-1), count: 2)

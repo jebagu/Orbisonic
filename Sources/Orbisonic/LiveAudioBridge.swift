@@ -14,7 +14,7 @@ enum LiveInputError: LocalizedError {
     case inputAudioUnitConfigurationFailed(deviceName: String, operation: String, status: OSStatus)
     case inputAudioUnitStartFailed(deviceName: String, status: OSStatus)
     case noInputChannels
-    case unsupportedChannelRequest(requested: Int, available: UInt32)
+    case unsupportedChannelRequest(requested: Int, available: UInt32, maxSupported: Int)
     case monoFormatCreationFailed(Double)
 
     var errorDescription: String? {
@@ -31,8 +31,10 @@ enum LiveInputError: LocalizedError {
             "Unable to start live capture from \(deviceName). Core Audio returned \(status)."
         case .noInputChannels:
             "The selected input device has no input channels."
-        case .unsupportedChannelRequest(let requested, let available):
-            "Requested \(requested) live input channels, but the selected input device exposes \(available)."
+        case .unsupportedChannelRequest(let requested, let available, let maxSupported):
+            requested > maxSupported
+                ? "Orbisonic supports up to \(maxSupported) live input channels in this build. Requested \(requested) channels."
+                : "Requested \(requested) live input channels, but the selected input device exposes \(available)."
         case .monoFormatCreationFailed(let sampleRate):
             "Unable to create a live mono render format at \(sampleRate) Hz."
         }
@@ -56,7 +58,10 @@ final class LiveInputCapture {
     ) throws {
         self.inputRoute = inputRoute
         self.activeChannelCount = activeChannelCount
-        self.captureChannelCount = max(inputRoute.inputChannelCount, activeChannelCount, 1)
+        self.captureChannelCount = min(
+            max(inputRoute.inputChannelCount, activeChannelCount, 1),
+            OrbisonicAudioLimits.maxSourceChannelCount
+        )
         self.sampleRate = sampleRate
         self.pipe = pipe
 
