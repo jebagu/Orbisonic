@@ -15,7 +15,7 @@ It is intended to be a simple, reliable dashboard and renderer: a way to open mu
 - Renders channel-bed and discrete multichannel sources for the Sonic Sphere
 - Provides a binaural headphone and monitor path aimed at AirPods and other headphone outputs
 - Includes Apple spatial-audio/head-tracking hooks where the output route, OS, and app signing entitlements allow them
-- Shows live source, monitor, and renderer activity with dense VU meters
+- Shows live source, monitor, and renderer activity with compact routing VU meters
 - Provides local queue controls, route diagnostics, renderer preset controls, and channel-walk test tones
 
 ## Surround And Channel Support
@@ -53,7 +53,7 @@ Orbisonic also keeps a binaural headphone/monitor path available for setup, chec
 
 - macOS 14 or newer
 - Xcode or the Xcode command line tools with Swift 5.10 or newer
-- Orbisonic Inputs installed, providing `Orbisonic Roon Input` and `Orbisonic Aux Cable`
+- Orbisonic Inputs installed from the separate virtual loopback inputs package, providing `Orbisonic Roon Input` and `Orbisonic Aux Cable`
 - AirPods or another headphone output for binaural monitoring
 - A Core Audio output route for the Sonic Sphere speaker system
 
@@ -69,9 +69,9 @@ swift run
 
 The packaged app installer is:
 
-- `installer/Orbisonic-0.1.0.pkg`
+- `installer/Orbisonic-1.0.pkg`
 
-It installs `Orbisonic.app` into `/Applications`. The installer does not install the Orbisonic virtual loopback inputs; install Orbisonic Inputs separately for Roon and Aux live capture. Roon itself is optional and is needed only if you want Roon playback.
+It installs `Orbisonic.app` into `/Applications`. This app installer does not install the Orbisonic virtual loopback inputs. Install the separate Orbisonic Inputs package as well if you want Roon and Aux live capture through `Orbisonic Roon Input` and `Orbisonic Aux Cable`. Roon itself is optional and is needed only if you want Roon playback.
 
 For live player capture, route Roon to `Orbisonic Roon Input` and route general app audio to `Orbisonic Aux Cable`. macOS may present this as a microphone permission prompt because app-level audio input devices share the same privacy gate.
 

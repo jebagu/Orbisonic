@@ -26,6 +26,7 @@ fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle_path/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle_path/Contents/Info.plist"
 
+xattr -cr "$bundle_path"
 codesign --force --deep --sign - "$bundle_path"
 codesign --verify --deep --strict --verbose=2 "$bundle_path"
 plutil -lint "$bundle_path/Contents/Info.plist"
