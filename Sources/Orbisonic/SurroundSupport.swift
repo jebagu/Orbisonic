@@ -211,6 +211,40 @@ struct AudioSourceMetadata {
     let sampleRate: Double
     let bitDepth: UInt32
     let duration: TimeInterval
+    let title: String?
+    let album: String?
+    let artist: String?
+    let formatNote: String?
+
+    init(
+        fileName: String,
+        containerName: String,
+        codecName: String,
+        layoutName: String,
+        channelSummary: String,
+        channelCount: Int,
+        sampleRate: Double,
+        bitDepth: UInt32,
+        duration: TimeInterval,
+        title: String? = nil,
+        album: String? = nil,
+        artist: String? = nil,
+        formatNote: String? = nil
+    ) {
+        self.fileName = fileName
+        self.containerName = containerName
+        self.codecName = codecName
+        self.layoutName = layoutName
+        self.channelSummary = channelSummary
+        self.channelCount = channelCount
+        self.sampleRate = sampleRate
+        self.bitDepth = bitDepth
+        self.duration = duration
+        self.title = title
+        self.album = album
+        self.artist = artist
+        self.formatNote = formatNote
+    }
 
     var sampleRateText: String {
         if sampleRate >= 1_000 {
@@ -236,6 +270,20 @@ struct AudioSourceMetadata {
     }
 }
 
+struct AudioSourceTags: Equatable, Sendable {
+    var title: String?
+    var album: String?
+    var artist: String?
+
+    static let empty = AudioSourceTags()
+
+    var isEmpty: Bool {
+        title?.trimmedNilIfBlank == nil
+            && album?.trimmedNilIfBlank == nil
+            && artist?.trimmedNilIfBlank == nil
+    }
+}
+
 enum SpatialPreset: String, CaseIterable, Identifiable {
     case studioWide = "Studio Wide"
     case immersiveWrap = "Immersive Wrap"
@@ -249,22 +297,19 @@ enum SpatialPreset: String, CaseIterable, Identifiable {
             SpatialTuning(
                 preset: self,
                 frontAngle: 34,
-                rearAngle: 112,
-                headTrackingEnabled: true
+                rearAngle: 112
             )
         case .immersiveWrap:
             SpatialTuning(
                 preset: self,
                 frontAngle: 40,
-                rearAngle: 132,
-                headTrackingEnabled: true
+                rearAngle: 132
             )
         case .diamond:
             SpatialTuning(
                 preset: self,
                 frontAngle: 45,
-                rearAngle: 145,
-                headTrackingEnabled: true
+                rearAngle: 145
             )
         }
     }
@@ -502,21 +547,47 @@ struct SurroundLayoutDetector {
 }
 
 struct AudioMetadataBuilder {
-    static func build(for file: AVAudioFile, layout: SurroundLayout, duration: TimeInterval) -> AudioSourceMetadata {
+    static func build(
+        for file: AVAudioFile,
+        layout: SurroundLayout,
+        duration: TimeInterval,
+        sourceURL: URL? = nil,
+        containerName: String? = nil,
+        codecName: String? = nil,
+        bitDepth: UInt32? = nil,
+        tags: AudioSourceTags = .empty
+    ) -> AudioSourceMetadata {
         let streamDescription = file.fileFormat.streamDescription.pointee
-        let codec = codecName(for: streamDescription.mFormatID)
-        let container = file.url.pathExtension.isEmpty ? "Unknown" : file.url.pathExtension.uppercased()
+        let metadataURL = sourceURL ?? file.url
+        let baseCodec = codecName ?? self.codecName(for: streamDescription.mFormatID)
+        let compressedInfo = codecName == nil ? CompressedAudioProbe().probeIfAvailable(url: metadataURL) : nil
+        let codec = Self.displayCodecName(baseCodec: baseCodec, streamInfo: compressedInfo, layout: layout)
+        let formatNote = Self.formatNote(baseCodec: baseCodec, streamInfo: compressedInfo)
+        let container = containerName ?? (metadataURL.pathExtension.isEmpty ? "Unknown" : metadataURL.pathExtension.uppercased())
 
         return AudioSourceMetadata(
-            fileName: file.url.lastPathComponent,
+            fileName: metadataURL.lastPathComponent,
             containerName: container,
             codecName: codec,
             layoutName: layout.name,
             channelSummary: layout.channelSummary,
             channelCount: layout.channelCount,
             sampleRate: file.fileFormat.sampleRate,
-            bitDepth: streamDescription.mBitsPerChannel,
-            duration: duration
+            bitDepth: bitDepth ?? streamDescription.mBitsPerChannel,
+            duration: duration,
+            title: tags.title?.trimmedNilIfBlank,
+            album: tags.album?.trimmedNilIfBlank,
+            artist: tags.artist?.trimmedNilIfBlank,
+            formatNote: formatNote
+        )
+    }
+
+    static func tags(for url: URL) -> AudioSourceTags {
+        let metadata = AVURLAsset(url: url).commonMetadata
+        return AudioSourceTags(
+            title: metadataString(for: .commonKeyTitle, in: metadata),
+            album: metadataString(for: .commonKeyAlbumName, in: metadata),
+            artist: metadataString(for: .commonKeyArtist, in: metadata)
         )
     }
 
@@ -541,6 +612,21 @@ struct AudioMetadataBuilder {
         }
     }
 
+    private static func displayCodecName(
+        baseCodec: String,
+        streamInfo: CompressedAudioStreamInfo?,
+        layout: SurroundLayout
+    ) -> String {
+        guard baseCodec == "E-AC-3" else { return baseCodec }
+        guard streamInfo?.hasDolbyAtmos == true else { return baseCodec }
+        return "\(baseCodec) \(layout.name.replacingOccurrences(of: " Surround", with: "")) bed"
+    }
+
+    private static func formatNote(baseCodec: String, streamInfo: CompressedAudioStreamInfo?) -> String? {
+        guard baseCodec == "E-AC-3", streamInfo?.hasDolbyAtmos == true else { return nil }
+        return "Dolby Atmos metadata present; Orbisonic is using the decoded channel bed, not object rendering."
+    }
+
     private static func fourCCString(from formatID: AudioFormatID) -> String {
         let value = CFSwapInt32HostToBig(formatID)
         let scalar0 = UnicodeScalar((value >> 24) & 0xFF)
@@ -552,5 +638,12 @@ struct AudioMetadataBuilder {
         let text = String(characters)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Format \(formatID)" : trimmed
+    }
+
+    private static func metadataString(for key: AVMetadataKey, in metadata: [AVMetadataItem]) -> String? {
+        AVMetadataItem.metadataItems(from: metadata, withKey: key, keySpace: .common)
+            .first?
+            .stringValue?
+            .trimmedNilIfBlank
     }
 }

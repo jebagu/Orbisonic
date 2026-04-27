@@ -369,6 +369,16 @@ final class RoonBridgeClient {
         }
     }
 
+    func imageURL(for imageKey: String) -> URL? {
+        guard !imageKey.isEmpty,
+              let encoded = imageKey.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else {
+            return nil
+        }
+
+        return endpoint("/image/\(encoded)")
+    }
+
     private func endpoint(_ path: String) -> URL {
         URL(string: "http://127.0.0.1:\(port)\(path)")!
     }

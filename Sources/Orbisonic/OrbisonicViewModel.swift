@@ -18,6 +18,92 @@ enum PlaylistSortMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum RendererMeterDisplayModel {
+    static func channels(for scene: RendererSceneModel) -> [SurroundChannel] {
+        var lfeCount = 0
+
+        return SonicSphereTopology.outputSpeakers(for: scene.preset, includeLFE: true).enumerated().map { offset, speaker in
+            let role: SurroundChannelRole
+            if speaker.isLFE {
+                role = lfeCount == 0 ? .lfe : .lfe2
+                lfeCount += 1
+            } else {
+                role = .discrete(offset)
+            }
+
+            return SurroundChannel(index: offset, role: role)
+        }
+    }
+
+    static func levels(for scene: RendererSceneModel, sourceLevels: [Float]) -> [Float] {
+        let channels = channels(for: scene)
+        guard !channels.isEmpty else {
+            return Array(repeating: 0, count: channels.count)
+        }
+
+        let levels = RendererMeterLevelModel.outputLevels(
+            sourceLevels: sourceLevels,
+            matrix: scene.matrix
+        )
+        return padded(levels, count: channels.count)
+    }
+
+    private static func padded(_ levels: [Float], count: Int) -> [Float] {
+        guard count > 0 else { return [] }
+        if levels.count == count { return levels }
+        if levels.count > count { return Array(levels.prefix(count)) }
+        return levels + Array(repeating: 0, count: count - levels.count)
+    }
+}
+
+enum LiveChannelCountPolicy {
+    static let roonSupportedCounts = [2, 4, 6, 8]
+
+    static func availableCounts(sourceMode: SourceMode, availableInputChannels: Int) -> [Int] {
+        if let fixedCount = sourceMode.fixedLiveChannelCount {
+            return [fixedCount]
+        }
+
+        if sourceMode == .roon {
+            let available = min(max(availableInputChannels, 0), roonSupportedCounts.last ?? 8)
+            let supported = roonSupportedCounts.filter { $0 <= available }
+            return supported.isEmpty ? [2] : supported
+        }
+
+        let available = min(max(availableInputChannels, 0), OrbisonicAudioLimits.maxSourceChannelCount)
+        guard available > 0 else {
+            return [2, 4, 6, 8]
+        }
+
+        let supported = RendererRenderMode.supportedInputCounts.filter { $0 <= available }
+        if supported.contains(available) {
+            return supported
+        }
+
+        return supported.isEmpty ? [min(available, 2)] : supported
+    }
+
+    static func preferredCount(sourceMode: SourceMode, availableInputChannels: Int, activeCount: Int) -> Int {
+        if let fixedCount = sourceMode.fixedLiveChannelCount {
+            return fixedCount
+        }
+
+        let available = availableCounts(sourceMode: sourceMode, availableInputChannels: availableInputChannels)
+        if available.contains(activeCount) {
+            return activeCount
+        }
+
+        return available.contains(2) ? 2 : (available.first ?? 2)
+    }
+}
+
+struct SpotifySourceHealthLine: Identifiable, Equatable {
+    let title: String
+    let value: String
+
+    var id: String { title }
+}
+
 private struct DiagnosticReturnContext {
     let sourceMode: SourceMode
     let wasPlaying: Bool
@@ -34,7 +120,7 @@ private enum DiagnosticChannelWalkKind {
         case .monitor:
             "Monitor Channel Walk"
         case .renderer:
-            "Output To Renderer Channel Walk"
+            "Renderer Channel Walk"
         }
     }
 
@@ -85,12 +171,45 @@ final class ChannelMeterStore: ObservableObject {
     }
 }
 
+private enum OutputPurpose: Equatable {
+    case monitor
+    case renderer
+
+    var title: String {
+        switch self {
+        case .monitor:
+            "Monitor"
+        case .renderer:
+            "Renderer"
+        }
+    }
+
+    var lowerTitle: String {
+        title.lowercased()
+    }
+}
+
 @MainActor
 final class OrbisonicViewModel: ObservableObject {
     private static let selectedInputDeviceUIDKey = "Orbisonic.selectedInputDeviceUID"
-    private static let selectedOutputDeviceUIDKey = "Orbisonic.selectedOutputDeviceUID"
+    private static let selectedMonitorOutputModeKey = "Orbisonic.selectedMonitorOutputMode"
+    private static let selectedRendererOutputModeKey = "Orbisonic.selectedRendererOutputMode"
+    private static let rendererRenderModeKey = "Orbisonic.rendererRenderMode"
+    private static let rendererAlwaysMonoKey = "Orbisonic.rendererAlwaysMono"
+    private static let rendererTwoChannelPreferenceKey = "Orbisonic.rendererTwoChannelPreference"
+    private static let legacySelectedOutputDeviceUIDKey = "Orbisonic.selectedOutputDeviceUID"
     private static let roonLogRefreshInterval: TimeInterval = 5.0
     private static let roonBridgeRefreshInterval: TimeInterval = 2.0
+    private static let spotifyNowPlayingRefreshInterval: TimeInterval = 0.5
+    private static let spotifyConnectRestartDebounce: TimeInterval = 8.0
+    private static let webControlTokenKey = "Orbisonic.webControlToken"
+    private static let localMusicSortModeKey = "Orbisonic.localMusicSortMode"
+    private static let rendererOptionsKey = "Orbisonic.rendererOptions"
+    private static let frontAngleKey = "Orbisonic.frontAngle"
+    private static let rearAngleKey = "Orbisonic.rearAngle"
+    private static let sphereOutputVolumeKey = "Orbisonic.sphereOutputVolumePercent"
+    private static let sphereOutputSafetyLimitKey = "Orbisonic.sphereOutputSafetyLimitPercent"
+    private static let diagnosticSpeakerChannelCount = 31
 
     @Published var preset: SpatialPreset = .defaultPreset {
         didSet {
@@ -100,27 +219,60 @@ final class OrbisonicViewModel: ObservableObject {
 
     @Published private(set) var rendererPresets: [RendererPreset] = [.sonicSphere30Point1]
     @Published private(set) var rendererPreset: RendererPreset = .sonicSphere30Point1
-    @Published var rendererBedRadius: Double = RendererPreset.sonicSphere30Point1.inputGeometry.bedRadius {
+    @Published private(set) var rendererRenderMode: RendererRenderMode = OrbisonicViewModel.loadRendererRenderMode()
+    @Published var rendererAlwaysMono: Bool = OrbisonicViewModel.loadBool(
+        key: OrbisonicViewModel.rendererAlwaysMonoKey,
+        defaultValue: false
+    ) {
         didSet {
-            guard !suppressRendererPublish else { return }
-            updateRendererBedRadius(rendererBedRadius)
+            UserDefaults.standard.set(rendererAlwaysMono, forKey: Self.rendererAlwaysMonoKey)
+            applyRendererModePolicyChange(reason: "always mono changed")
         }
     }
+    @Published var rendererTwoChannelPreference: RendererTwoChannelPreference = OrbisonicViewModel.loadRendererTwoChannelPreference() {
+        didSet {
+            UserDefaults.standard.set(rendererTwoChannelPreference.rawValue, forKey: Self.rendererTwoChannelPreferenceKey)
+            applyRendererModePolicyChange(reason: "two-channel preference changed")
+        }
+    }
+    @Published var rendererSeamSupportGain = RendererPreset.sonicSphere30Point1.options.seamSupportGain { didSet { publishRendererOptions() } }
+    @Published var rendererUpperBiasDbPerUnitZ = RendererPreset.sonicSphere30Point1.options.upperBiasDbPerUnitZ { didSet { publishRendererOptions() } }
+    @Published var rendererStereoRearFill = RendererPreset.sonicSphere30Point1.options.stereoRearFill { didSet { publishRendererOptions() } }
+    @Published var rendererCenterSideSupportGain = RendererPreset.sonicSphere30Point1.options.centerSideSupportGain { didSet { publishRendererOptions() } }
+    @Published var rendererAdjacentBleed = RendererPreset.sonicSphere30Point1.options.adjacentBleed { didSet { publishRendererOptions() } }
+    @Published var rendererMaxSingleSpeakerPowerShare = RendererPreset.sonicSphere30Point1.options.maxSingleSpeakerPowerShare { didSet { publishRendererOptions() } }
+    @Published var rendererRenderedOutputTrimDb = RendererPreset.sonicSphere30Point1.options.renderedOutputTrimDb { didSet { publishRendererOptions() } }
+    @Published var rendererLfeTrimDb = RendererPreset.sonicSphere30Point1.options.lfeTrimDb { didSet { publishRendererOptions() } }
+    @Published var rendererAuroLowerUpperBiasDbPerUnitZ = RendererPreset.sonicSphere30Point1.options.defaultUpperBiasDbPerUnitZ { didSet { publishRendererOptions() } }
+    @Published var rendererAuroHeightUpperBiasDbPerUnitZ = RendererPreset.sonicSphere30Point1.options.heightUpperBiasDbPerUnitZ { didSet { publishRendererOptions() } }
+    @Published var rendererAuroHeightMaxSingleSpeakerPowerShare = RendererPreset.sonicSphere30Point1.options.heightMaxSingleSpeakerPowerShare { didSet { publishRendererOptions() } }
+    @Published var rendererAuroTopMaxSingleSpeakerPowerShare = RendererPreset.sonicSphere30Point1.options.topMaxSingleSpeakerPowerShare { didSet { publishRendererOptions() } }
+    @Published var rendererFiveOneChannelOrder = RendererPreset.sonicSphere30Point1.options.fiveOneChannelOrder { didSet { publishRendererOptions() } }
     @Published private(set) var rendererScene: RendererSceneModel = .empty
     @Published private(set) var rendererPresetStatus = "Renderer presets have not loaded yet."
     @Published private(set) var rendererPresetDirectoryText = ""
     @Published private(set) var rendererPresetIsDirty = false
 
-    @Published var frontAngle: Double = SpatialTuning.default.frontAngle {
-        didSet { if !suppressTuningPublish { publishTuning() } }
+    @Published var frontAngle: Double = OrbisonicViewModel.loadDouble(
+        key: OrbisonicViewModel.frontAngleKey,
+        defaultValue: SpatialTuning.default.frontAngle
+    ) {
+        didSet {
+            guard !suppressTuningPublish else { return }
+            persistDouble(frontAngle, key: Self.frontAngleKey, category: "tuning", name: "Front Angle")
+            publishTuning()
+        }
     }
 
-    @Published var rearAngle: Double = SpatialTuning.default.rearAngle {
-        didSet { if !suppressTuningPublish { publishTuning() } }
-    }
-
-    @Published var headTrackingEnabled: Bool = SpatialTuning.default.headTrackingEnabled {
-        didSet { if !suppressTuningPublish { publishTuning() } }
+    @Published var rearAngle: Double = OrbisonicViewModel.loadDouble(
+        key: OrbisonicViewModel.rearAngleKey,
+        defaultValue: SpatialTuning.default.rearAngle
+    ) {
+        didSet {
+            guard !suppressTuningPublish else { return }
+            persistDouble(rearAngle, key: Self.rearAngleKey, category: "tuning", name: "Rear Angle")
+            publishTuning()
+        }
     }
 
     @Published var isPlaying = false
@@ -133,8 +285,17 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var statusMessage = "Load a surround file. The active macOS output route will appear below."
     @Published var loadedFileName = "No file loaded"
     @Published private(set) var currentFileURL: URL?
-    @Published var lastError: String?
+    @Published var lastError: String? {
+        didSet {
+            if let lastError {
+                controlLastError = lastError
+            }
+        }
+    }
+    @Published private(set) var controlLastError: String?
     @Published private(set) var outputRoute: OutputRouteInfo = .unavailable
+    @Published private(set) var monitorOutputRoute: OutputRouteInfo = .unavailable
+    @Published private(set) var rendererOutputRoute: OutputRouteInfo = .unavailable
     @Published private(set) var systemOutputRoute: OutputRouteInfo = .unavailable
     @Published private(set) var availableOutputRoutes: [OutputRouteInfo] = []
     @Published private(set) var inputRoute: InputRouteInfo = .unavailable
@@ -142,12 +303,15 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var availableInputRoutes: [InputRouteInfo] = []
     @Published var sourceMode: SourceMode = .filePlayback
     @Published private(set) var liveMonitorState: LiveMonitorState = .stopped
-    @Published var activeLiveChannelCount = 8
+    @Published var activeLiveChannelCount = 2
     @Published var liveSignalStatus = "No live input."
     @Published var liveBufferStatus = "No live buffer."
     @Published var selectedTestTonePoint: TestTonePipelinePoint = .directOutput
     @Published var isTestTonePlaying = false
-    @Published var testToneStatus = "No diagnostic tone playing."
+    @Published var testToneStatus = ""
+    @Published private(set) var isDiagnosticTransitioning = false
+    @Published private(set) var selectedDiagnosticSpeakerChannel = 1
+    @Published var diagnosticWalkStatus = "Ready."
     @Published var activeDiagnosticPoint: TestTonePipelinePoint?
     @Published var activeDiagnosticChannelIndex: Int?
     @Published var activeDiagnosticChannelCount = 0
@@ -158,17 +322,42 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var roonNowPlayingStatus = "Roon metadata not requested yet."
     @Published private(set) var roonSignalPath: RoonSignalPath?
     @Published private(set) var roonBridgeSnapshot: RoonBridgeSnapshot = .unavailable
+    @Published private(set) var spotifyReceiverStatus: SpotifyReceiverStatus = .notStarted
+    @Published private(set) var spotifyNowPlaying: SpotifyNowPlaying?
     @Published private(set) var localMusicSettings = LocalMusicSettings()
     @Published private(set) var localMusicTracks: [LocalMusicTrack] = []
     @Published private(set) var localMusicPlaylists: [LocalMusicPlaylist] = []
     @Published var selectedLocalMusicTrackID: String?
     @Published var selectedLocalMusicPlaylistID: String?
     @Published var localMusicSearchText = ""
-    @Published var localMusicSortMode: PlaylistSortMode = .name
+    @Published var localMusicSortMode: PlaylistSortMode = OrbisonicViewModel.loadLocalMusicSortMode() {
+        didSet {
+            UserDefaults.standard.set(localMusicSortMode.rawValue, forKey: Self.localMusicSortModeKey)
+            AppLogger.shared.notice(category: "local-music", "Sort mode set to \(localMusicSortMode.rawValue)")
+        }
+    }
     @Published private(set) var sessionQueue: [LocalMusicTrack] = []
     @Published private(set) var sessionQueueIndex: Int?
     @Published private(set) var selectedSessionQueueIndex: Int?
     @Published var isShuffleEnabled = false
+    @Published private(set) var webServerStatus = "Web server starting."
+    @Published private(set) var webPublicPageURL = ""
+    @Published private(set) var webControlPageURL = ""
+    @Published var sphereOutputVolumePercent: Double = OrbisonicViewModel.loadDouble(
+        key: OrbisonicViewModel.sphereOutputVolumeKey,
+        defaultValue: 100
+    ) {
+        didSet { updateSphereOutputVolume(settingName: "Sphere Volume", key: Self.sphereOutputVolumeKey) }
+    }
+    @Published var sphereOutputSafetyLimitPercent: Double = OrbisonicViewModel.loadDouble(
+        key: OrbisonicViewModel.sphereOutputSafetyLimitKey,
+        defaultValue: 100
+    ) {
+        didSet { updateSphereOutputVolume(settingName: "Max Output Safety Limit", key: Self.sphereOutputSafetyLimitKey) }
+    }
+    @Published private(set) var isRoonTransportCommandInFlight = false
+    @Published private(set) var isLiveMonitorTransitioning = false
+    @Published private(set) var isLocalFileLoading = false
 
     let meterStore = ChannelMeterStore()
     let monitorMeterStore = ChannelMeterStore()
@@ -179,6 +368,9 @@ final class OrbisonicViewModel: ObservableObject {
     private let rendererPresetStore = RendererPresetStore()
     private let roonNowPlayingReader = RoonNowPlayingReader()
     private let roonBridgeClient = RoonBridgeClient()
+    private let spotifyReceiverClient = SpotifyReceiverClient()
+    private var webServer: OrbisonicWebServer?
+    private var webControlToken = OrbisonicViewModel.loadOrCreateWebControlToken()
     private var refreshTimer: Timer?
     private var lastHeartbeatSecond: Int = -1
     private var lastLiveMeterLogSecond: Int = -1
@@ -188,16 +380,21 @@ final class OrbisonicViewModel: ObservableObject {
     private var testToneStopTask: Task<Void, Never>?
     private var diagnosticSequenceTask: Task<Void, Never>?
     private var diagnosticReturnContext: DiagnosticReturnContext?
+    private var rendererDiagnosticsUsingMonitorPreview = false
+    private var rendererDiagnosticsMonitorDownmixAvailable = false
     private var localMusicScanTask: Task<Void, Never>?
     private var lastRouteRefreshTime = Date.distantPast
     private var lastRoonNowPlayingRefreshTime = Date.distantPast
     private var lastRoonBridgeRefreshTime = Date.distantPast
+    private var lastSpotifyNowPlayingRefreshTime = Date.distantPast
+    private var lastSpotifyConnectRefreshTime = Date.distantPast
     private var lastLegacyLoopbackSampleRateRepairTime = Date.distantPast
     private var isRoonLogRefreshInFlight = false
     private var isRoonBridgeRefreshInFlight = false
     private var lastLoggedRoonBridgeStatus: String?
     private var selectedInputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedInputDeviceUIDKey)
-    private var selectedOutputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedOutputDeviceUIDKey)
+    private var monitorOutputSelection = OrbisonicViewModel.loadMonitorOutputSelection()
+    private var rendererOutputSelection = OrbisonicViewModel.loadRendererOutputSelection()
     private var suppressTuningPublish = false
     private var suppressRendererPublish = false
 
@@ -207,13 +404,20 @@ final class OrbisonicViewModel: ObservableObject {
         engine.onPlaybackEnded = { [weak self] in
             self?.handlePlaybackEnded()
         }
+        applyEffectiveOutputVolume(log: false)
 
         applyPreset(.defaultPreset, pushToEngine: false)
         loadRendererPresets()
+        restorePersistedRendererOptions()
         loadLocalMusicDatabase()
         refreshRoutesIfNeeded(force: true)
         configureMonitorMeters()
         configureRendererMeters()
+        refreshWebPageURLs()
+        webServer = OrbisonicWebServer(model: self, controlToken: webControlToken) { [weak self] status in
+            self?.webServerStatus = status
+        }
+        webServer?.start()
 
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
             Task { @MainActor [weak self] in
@@ -224,11 +428,232 @@ final class OrbisonicViewModel: ObservableObject {
         refreshTimer = timer
     }
 
+    private static func loadMonitorOutputSelection() -> OutputSelectionMode {
+        let defaults = UserDefaults.standard
+        if let stored = defaults.string(forKey: selectedMonitorOutputModeKey) {
+            return OutputSelectionMode(storedValue: stored, defaultMode: .systemDefault)
+        }
+
+        if let legacyUID = defaults.string(forKey: legacySelectedOutputDeviceUIDKey), !legacyUID.isEmpty {
+            return .device(legacyUID)
+        }
+
+        return .systemDefault
+    }
+
+    private static func loadRendererOutputSelection() -> OutputSelectionMode {
+        let storedSelection = OutputSelectionMode(
+            storedValue: UserDefaults.standard.string(forKey: selectedRendererOutputModeKey),
+            defaultMode: .none
+        )
+
+        if case .device = storedSelection {
+            return storedSelection
+        }
+
+        return .none
+    }
+
+    private static func loadRendererRenderMode() -> RendererRenderMode {
+        guard let storedValue = UserDefaults.standard.string(forKey: rendererRenderModeKey),
+              let mode = RendererRenderMode(rawValue: storedValue)
+        else {
+            return .automatic
+        }
+
+        return mode
+    }
+
+    private static func loadRendererTwoChannelPreference() -> RendererTwoChannelPreference {
+        guard let storedValue = UserDefaults.standard.string(forKey: rendererTwoChannelPreferenceKey),
+              let preference = RendererTwoChannelPreference(rawValue: storedValue)
+        else {
+            return .automatic
+        }
+
+        return preference
+    }
+
+    private static func loadLocalMusicSortMode() -> PlaylistSortMode {
+        guard let storedValue = UserDefaults.standard.string(forKey: localMusicSortModeKey),
+              let mode = PlaylistSortMode(rawValue: storedValue)
+        else {
+            return .album
+        }
+
+        return mode
+    }
+
+    private static func loadDouble(key: String, defaultValue: Double) -> Double {
+        guard UserDefaults.standard.object(forKey: key) != nil else {
+            return defaultValue
+        }
+
+        return UserDefaults.standard.double(forKey: key)
+    }
+
+    private static func loadBool(key: String, defaultValue: Bool) -> Bool {
+        guard UserDefaults.standard.object(forKey: key) != nil else {
+            return defaultValue
+        }
+
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    private static func loadOrCreateWebControlToken() -> String {
+        if let existing = UserDefaults.standard.string(forKey: webControlTokenKey),
+           existing.count >= 32 {
+            return existing
+        }
+
+        let token = generateWebControlToken()
+        UserDefaults.standard.set(token, forKey: webControlTokenKey)
+        return token
+    }
+
+    private static func generateWebControlToken() -> String {
+        (0..<3).map { _ in UUID().uuidString.replacingOccurrences(of: "-", with: "") }.joined()
+    }
+
+    private func persistMonitorOutputSelection() {
+        UserDefaults.standard.set(monitorOutputSelection.storedValue, forKey: Self.selectedMonitorOutputModeKey)
+        UserDefaults.standard.removeObject(forKey: Self.legacySelectedOutputDeviceUIDKey)
+    }
+
+    private func persistRendererOutputSelection() {
+        UserDefaults.standard.set(rendererOutputSelection.storedValue, forKey: Self.selectedRendererOutputModeKey)
+    }
+
+    private func persistRendererRenderMode() {
+        UserDefaults.standard.set(rendererRenderMode.rawValue, forKey: Self.rendererRenderModeKey)
+    }
+
+    private func persistDouble(_ value: Double, key: String, category: String, name: String) {
+        UserDefaults.standard.set(value, forKey: key)
+        AppLogger.shared.info(category: category, "\(name) set to \(String(format: "%.3f", value))")
+    }
+
     deinit {
         testToneStopTask?.cancel()
         diagnosticSequenceTask?.cancel()
         localMusicScanTask?.cancel()
+        webServer?.stop()
         refreshTimer?.invalidate()
+    }
+
+    func refreshWebPageURLs() {
+        let urls = OrbisonicWebServer.urlSet(controlToken: webControlToken)
+        webPublicPageURL = urls.publicURL
+        webControlPageURL = urls.controlURL
+    }
+
+    var webControlTokenForLocalServer: String {
+        webControlToken
+    }
+
+    func copyWebURLToPasteboard(_ url: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        statusMessage = "Copied web URL to clipboard."
+    }
+
+    var effectiveSphereOutputVolumePercent: Double {
+        min(Self.clampedPercent(sphereOutputVolumePercent), Self.clampedPercent(sphereOutputSafetyLimitPercent))
+    }
+
+    var sphereOutputVolumeText: String {
+        sphereRequestedOutputVolumeText
+    }
+
+    var sphereRequestedOutputVolumeText: String {
+        "\(Int(Self.clampedPercent(sphereOutputVolumePercent).rounded()))"
+    }
+
+    var sphereMaxOutputVolumeText: String {
+        "\(Int(Self.clampedPercent(sphereOutputSafetyLimitPercent).rounded()))"
+    }
+
+    var sphereEffectiveOutputVolumeText: String {
+        "\(Int(effectiveSphereOutputVolumePercent.rounded()))"
+    }
+
+    var sphereOutputVolumeValue: Int { Int(Self.clampedPercent(sphereOutputVolumePercent).rounded()) }
+    var sphereMaxOutputVolumeValue: Int { Int(Self.clampedPercent(sphereOutputSafetyLimitPercent).rounded()) }
+    var sphereEffectiveOutputVolumeValue: Int { Int(effectiveSphereOutputVolumePercent.rounded()) }
+
+    private static func clampedPercent(_ value: Double) -> Double {
+        min(max(value, 0), 100)
+    }
+
+    private func updateSphereOutputVolume(settingName: String, key: String) {
+        let currentValue = key == Self.sphereOutputVolumeKey ? sphereOutputVolumePercent : sphereOutputSafetyLimitPercent
+        let clamped = Self.clampedPercent(currentValue)
+        if currentValue != clamped {
+            if key == Self.sphereOutputVolumeKey {
+                sphereOutputVolumePercent = clamped
+            } else {
+                sphereOutputSafetyLimitPercent = clamped
+            }
+            return
+        }
+
+        persistDouble(clamped, key: key, category: "renderer", name: settingName)
+        applyEffectiveOutputVolume(log: true)
+    }
+
+    func setSphereOutputVolume(_ value: Double) {
+        sphereOutputVolumePercent = Self.clampedPercent(value)
+    }
+
+    private func applyEffectiveOutputVolume(log: Bool) {
+        let effective = Float(effectiveSphereOutputVolumePercent / 100.0)
+        engine.setOutputVolume(effective)
+        if log {
+            AppLogger.shared.notice(
+                category: "renderer",
+                "Effective sphere output volume=\(Int(effectiveSphereOutputVolumePercent.rounded()))% requested=\(Int(sphereOutputVolumePercent.rounded()))% safetyLimit=\(Int(sphereOutputSafetyLimitPercent.rounded()))%"
+            )
+        }
+    }
+
+    func resetWebControlToken() {
+        let token = Self.generateWebControlToken()
+        webControlToken = token
+        UserDefaults.standard.set(token, forKey: Self.webControlTokenKey)
+        refreshWebPageURLs()
+        webServer?.updateControlToken(token)
+        statusMessage = "Reset control token. Old control URLs no longer work."
+    }
+
+    func saveDiagnosticBundle() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        let filename = "Orbisonic-Log-\(formatter.string(from: Date())).txt"
+
+        let panel = NSSavePanel()
+        panel.title = "Export Orbisonic Log"
+        panel.nameFieldStringValue = filename
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        if let desktopURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first {
+            panel.directoryURL = desktopURL
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            statusMessage = "Diagnostic export canceled."
+            return
+        }
+
+        do {
+            try diagnosticReportText().write(to: url, atomically: true, encoding: .utf8)
+            statusMessage = "Exported log to \(url.lastPathComponent)."
+            AppLogger.shared.notice(category: "diagnostics", "Exported diagnostic bundle path=\(redactedPath(url.path))")
+        } catch {
+            let message = "Could not save diagnostics: \(error.localizedDescription)"
+            statusMessage = message
+            lastError = message
+            AppLogger.shared.error(category: "diagnostics", message)
+        }
     }
 
     func openFile() {
@@ -236,7 +661,7 @@ final class OrbisonicViewModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.audio]
+        panel.allowedContentTypes = [.audio] + ["mkv", "mka"].compactMap { UTType(filenameExtension: $0) }
 
         guard panel.runModal() == .OK, let url = panel.url else {
             AppLogger.shared.debug(category: "ui", "Open file panel dismissed.")
@@ -248,10 +673,96 @@ final class OrbisonicViewModel: ObservableObject {
         loadFile(url: url, autoplay: false)
     }
 
+    private func diagnosticReportText() -> String {
+        let logText = (try? String(contentsOf: AppLogger.logFileURL, encoding: .utf8)) ?? "Log file unavailable."
+        let redactedControlURL = redactSensitiveText(webControlPageURL)
+        let redactedLog = redactSensitiveText(logText)
+
+        let rows: [String] = [
+            "Orbisonic Diagnostics",
+            "Generated: \(ISO8601DateFormatter().string(from: Date()))",
+            "",
+            "Build",
+            "Version: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")",
+            "Build: \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev")",
+            "Executable: \(redactedPath(Bundle.main.executableURL?.path ?? "unknown"))",
+            "",
+            "Machine And Web",
+            "Host: \(Host.current().localizedName ?? "unknown")",
+            "Web Host: \(webHostText)",
+            "Public URL: \(redactedPath(webPublicPageURL))",
+            "Control URL: \(redactedPath(redactedControlURL))",
+            "Web Status: \(webServerStatus)",
+            "",
+            "Player",
+            "Source: \(sourceMode.rawValue)",
+            "Status: \(statusMessage)",
+            "Loaded: \(redactedPath(loadedFileName))",
+            "Playing: \(isPlaying)",
+            "Time: \(formattedCurrentTime()) / \(formattedDuration())",
+            "",
+            "Routes",
+            "Input: \(inputNowText)",
+            "System Input: \(systemInputNowText)",
+            "Monitor Output: \(monitorOutputSelectionText) | \(monitorOutputNowText) | \(monitorOutputStatusText)",
+            "Renderer Output: \(rendererOutputSelectionText) | \(rendererOutputNowText) | \(rendererOutputStatusText)",
+            "System Output: \(systemOutputNowText)",
+            "",
+            "Renderer",
+            "Mode: \(rendererRenderMode.displayName)",
+            "Scene: \(rendererSceneOutputText)",
+            "Sphere Volume: \(sphereRequestedOutputVolumeText)",
+            "Safety Limit: \(sphereMaxOutputVolumeText)",
+            "Effective Volume: \(sphereEffectiveOutputVolumeText)",
+            "Tuning: seam=\(rendererSeamSupportGain), upperBias=\(rendererUpperBiasDbPerUnitZ), rearFill=\(rendererStereoRearFill), centerSide=\(rendererCenterSideSupportGain), adjacentBleed=\(rendererAdjacentBleed), maxShare=\(rendererMaxSingleSpeakerPowerShare), trim=\(rendererRenderedOutputTrimDb), lfe=\(rendererLfeTrimDb)",
+            "",
+            "Local Music",
+            "Sort: \(localMusicSortMode.rawValue)",
+            "Tracks: \(localMusicTracks.count)",
+            "Playlists: \(localMusicPlaylists.count)",
+            "Watch Folders: \(localMusicSettings.watchFolderPaths.map(redactedPath).joined(separator: ", "))",
+            "M3U Playlists: \(localMusicSettings.m3uPlaylistPaths.map(redactedPath).joined(separator: ", "))",
+            "",
+            "Diagnostics",
+            "Tone: \(testToneStatus.isEmpty ? "None" : testToneStatus)",
+            "Walk: \(diagnosticWalkStatus)",
+            "Active: \(activeDiagnosticText)",
+            "Selected Speaker Channel: \(selectedDiagnosticSpeakerChannel)",
+            "",
+            "Log",
+            redactedLog
+        ]
+
+        return rows.joined(separator: "\n")
+    }
+
+    private var webHostText: String {
+        if let host = URLComponents(string: webPublicPageURL).flatMap(\.host), !host.isEmpty {
+            return host
+        }
+        return "unknown"
+    }
+
+    private func redactSensitiveText(_ value: String) -> String {
+        let tokenPattern = #"(#token=)[A-Za-z0-9_-]+"#
+        let tokenRedacted = value.replacingOccurrences(
+            of: tokenPattern,
+            with: "$1REDACTED",
+            options: .regularExpression
+        )
+        return redactedPath(tokenRedacted)
+    }
+
+    private func redactedPath(_ value: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        guard !home.isEmpty else { return value }
+        return value.replacingOccurrences(of: home, with: "~")
+    }
+
     func selectSourceMode(_ mode: SourceMode) {
         guard mode != sourceMode else { return }
 
-        if sourceMode.isLiveInput {
+        if sourceMode.stopsLiveCaptureWhenSwitching(to: mode) {
             stopLiveMonitorForSourceSwitch(to: mode)
         } else if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
             stop()
@@ -261,6 +772,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         switch mode {
         case .filePlayback:
+            spotifyNowPlaying = nil
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
@@ -270,6 +782,7 @@ final class OrbisonicViewModel: ObservableObject {
                 ? "Open a local multichannel file or scan watch folders in Settings."
                 : "Local player source is ready."
         case .roon:
+            spotifyNowPlaying = nil
             currentFileURL = nil
             clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata not requested yet."
@@ -283,7 +796,25 @@ final class OrbisonicViewModel: ObservableObject {
                 liveMonitorState = .unavailable(message)
                 statusMessage = message
             }
+        case .spotify:
+            currentFileURL = nil
+            clearLoadedSourceSnapshot()
+            roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
+            roonSignalPath = nil
+            roonNowPlaying = nil
+            activeLiveChannelCount = SourceMode.spotify.fixedLiveChannelCount ?? 2
+            refreshSpotifyConnectServerIfNeeded(reason: "source selected", force: true)
+            refreshSpotifyNowPlayingIfNeeded(force: true)
+            if selectExpectedLoopbackInputIfAvailable(for: .spotify) {
+                liveMonitorState = .stopped
+                statusMessage = "Spotify is selected. Monitor Spotify when the source is playing through Orbisonic Spotify Input."
+            } else {
+                let message = missingLoopbackMessage(for: .spotify)
+                liveMonitorState = .unavailable(message)
+                statusMessage = message
+            }
         case .testTone:
+            spotifyNowPlaying = nil
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
@@ -291,6 +822,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonSignalPath = nil
             statusMessage = "Test tone source is ready. Use Diagnostics to play the selected tone."
         case .aux:
+            spotifyNowPlaying = nil
             currentFileURL = nil
             clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
@@ -305,24 +837,18 @@ final class OrbisonicViewModel: ObservableObject {
                 statusMessage = message
             }
         }
+
+        resetRendererRequestToAutomatic(reason: "source changed to \(mode.rawValue)")
     }
 
     func selectInputRoute(_ route: InputRouteInfo) {
         guard route.isAvailable else { return }
 
-        if sourceMode == .roon, !route.isRoonLoopback {
+        if sourceMode.isLiveInput, !sourceMode.acceptsInputRoute(route) {
             if isPlaying {
                 stop()
             }
-            statusMessage = "Roon mode captures Orbisonic Roon Input only. Switch to Aux Cable to capture \(route.deviceName)."
-            return
-        }
-
-        if sourceMode == .aux, !route.isAuxLoopback {
-            if isPlaying {
-                stop()
-            }
-            statusMessage = "Aux Cable mode captures Orbisonic Aux Cable only."
+            statusMessage = inputSelectionBlockedMessage(for: route)
             return
         }
 
@@ -349,24 +875,66 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
-    func selectSystemMonitorOutput() {
-        selectedOutputDeviceUID = nil
-        UserDefaults.standard.removeObject(forKey: Self.selectedOutputDeviceUIDKey)
+    func selectNoMonitorOutput() {
+        monitorOutputSelection = .none
+        persistMonitorOutputSelection()
         refreshRoutesIfNeeded(force: true)
-        applySelectedMonitorOutput(outputRoute, label: "System Default")
+        if isDiagnosticSequencePlaying {
+            stop()
+        }
+        statusMessage = "Monitor output not set."
+    }
+
+    func selectSystemMonitorOutput() {
+        monitorOutputSelection = .systemDefault
+        persistMonitorOutputSelection()
+        refreshRoutesIfNeeded(force: true)
+        applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: "System Default")
     }
 
     func selectMonitorOutputRoute(_ route: OutputRouteInfo) {
         guard route.isAvailable else { return }
-
-        selectedOutputDeviceUID = route.uid
-        if route.uid.isEmpty {
-            UserDefaults.standard.removeObject(forKey: Self.selectedOutputDeviceUIDKey)
-        } else {
-            UserDefaults.standard.set(route.uid, forKey: Self.selectedOutputDeviceUIDKey)
+        guard route.isSelectableOutputTarget else {
+            let message = outputFeedbackMessage(for: route, purpose: .monitor)
+            AppLogger.shared.error(category: "route", message)
+            statusMessage = message
+            lastError = message
+            return
         }
 
-        applySelectedMonitorOutput(route, label: route.deviceName)
+        monitorOutputSelection = .device(route.uid)
+        persistMonitorOutputSelection()
+        refreshRoutesIfNeeded(force: true)
+        applyOutputRouteIfAvailable(route, purpose: .monitor, label: route.deviceName)
+    }
+
+    func selectNoRendererOutput() {
+        rendererOutputSelection = .none
+        persistRendererOutputSelection()
+        refreshRoutesIfNeeded(force: true)
+        configureMonitorMeters()
+        configureRendererMeters()
+        syncRendererAudioRouting()
+        if isDiagnosticSequencePlaying {
+            stop()
+        }
+        statusMessage = "Renderer output not set."
+    }
+
+    func selectRendererOutputRoute(_ route: OutputRouteInfo) {
+        guard route.isAvailable else { return }
+        guard route.isSelectableOutputTarget else {
+            let message = outputFeedbackMessage(for: route, purpose: .renderer)
+            AppLogger.shared.error(category: "route", message)
+            statusMessage = message
+            lastError = message
+            return
+        }
+
+        rendererOutputSelection = .device(route.uid)
+        persistRendererOutputSelection()
+        refreshRoutesIfNeeded(force: true)
+        applyOutputRouteIfAvailable(route, purpose: .renderer, label: route.deviceName)
     }
 
     func chooseWatchFolder() {
@@ -624,6 +1192,50 @@ final class OrbisonicViewModel: ObservableObject {
         statusMessage = "Added \(tracks.count) track\(tracks.count == 1 ? "" : "s") from \(playlist.name) to the session queue."
     }
 
+    func saveSessionQueueAsPlaylist(named rawName: String) {
+        guard !sessionQueue.isEmpty else {
+            statusMessage = "Session queue is empty."
+            return
+        }
+
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            let message = "Playlist name is required."
+            statusMessage = message
+            lastError = message
+            return
+        }
+
+        do {
+            let playlist = try localMusicLibrary.saveSessionPlaylist(
+                name: name,
+                tracks: sessionQueue
+            )
+            if !localMusicSettings.m3uPlaylistPaths.contains(playlist.path) {
+                localMusicSettings.m3uPlaylistPaths.append(playlist.path)
+            }
+            localMusicPlaylists.removeAll { $0.id == playlist.id }
+            localMusicPlaylists.append(playlist)
+            localMusicPlaylists.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            selectedLocalMusicPlaylistID = playlist.id
+            persistLocalMusicDatabase()
+            statusMessage = "Saved session queue as \(playlist.name)."
+            AppLogger.shared.notice(category: "local-music", "Saved session queue playlist tracks=\(sessionQueue.count) path=\(playlist.path)")
+        } catch {
+            let message = "Could not save session queue playlist: \(error.localizedDescription)"
+            statusMessage = message
+            lastError = message
+            AppLogger.shared.error(category: "local-music", message)
+        }
+    }
+
+    func clearSessionQueue() {
+        sessionQueue = []
+        sessionQueueIndex = nil
+        selectedSessionQueueIndex = nil
+        statusMessage = "Session queue cleared."
+    }
+
     func moveSessionQueueItemUp(_ index: Int) {
         moveSessionQueueItem(from: index, to: index - 1)
     }
@@ -719,9 +1331,34 @@ final class OrbisonicViewModel: ObservableObject {
         localMusicLibrary.artworkDirectoryPath
     }
 
+    var localMusicSavedPlaylistDirectoryPath: String {
+        localMusicLibrary.playlistDirectoryPath
+    }
+
     var localMusicArtworkStatusText: String {
         let count = localMusicTracks.filter { $0.artworkPath != nil }.count
         return "\(count) tracks with cached artwork."
+    }
+
+    var currentLocalArtworkURL: URL? {
+        guard let path = (currentQueueTrack ?? currentLocalMusicTrack ?? selectedLocalMusicTrack)?.artworkPath else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: path)
+    }
+
+    var roonArtworkURL: URL? {
+        guard let imageKey = roonBridgeSnapshot.selectedZone?.nowPlaying?.imageKey else {
+            return nil
+        }
+
+        return roonBridgeClient.imageURL(for: imageKey)
+    }
+
+    var spotifyArtworkURL: URL? {
+        guard let coverURL = spotifyNowPlaying?.coverURL else { return nil }
+        return URL(string: coverURL)
     }
 
     var visibleLocalMusicTracks: [LocalMusicTrack] {
@@ -765,6 +1402,9 @@ final class OrbisonicViewModel: ObservableObject {
     private func loadFile(url: URL, autoplay: Bool) -> Bool {
         cancelDiagnosticsForMusicAction()
         sourceMode = .filePlayback
+        isLocalFileLoading = true
+        statusMessage = "Loading \(url.lastPathComponent)..."
+        defer { isLocalFileLoading = false }
 
         do {
             let loaded = try engine.loadFile(url: url)
@@ -775,7 +1415,7 @@ final class OrbisonicViewModel: ObservableObject {
             }
             sourceMetadata = loaded.metadata
             loadedChannels = loaded.layout.channels
-            refreshRendererScene()
+            resetRendererRequestToAutomatic(reason: "new track")
             duration = loaded.duration
             currentTime = 0
             scrubProgress = 0
@@ -795,13 +1435,14 @@ final class OrbisonicViewModel: ObservableObject {
             roonSignalPath = nil
 
             if autoplay {
+                guard prepareOutputForMusicPlayback() else { return false }
                 try engine.play()
                 isPlaying = true
-                statusMessage = "Playing \(loaded.metadata.fileName) through \(routeDisplayName)."
-            } else if outputRoute.isAvailable {
-                statusMessage = "Loaded \(loaded.metadata.fileName). Ready to render through \(outputRoute.deviceName)."
+                statusMessage = "Playing \(loaded.metadata.fileName) through \(routeDisplayName) with \(rendererScene.renderMode.displayName)."
+            } else if rendererOutputRoute.isAvailable {
+                statusMessage = "Loaded \(loaded.metadata.fileName). Ready to render through \(rendererOutputRoute.deviceName)."
             } else {
-                statusMessage = "Loaded \(loaded.metadata.fileName). Verify the macOS output route before playback."
+                statusMessage = "Loaded \(loaded.metadata.fileName). Playback can use the monitor or current macOS output."
             }
 
             return true
@@ -958,19 +1599,39 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
-        guard !outputRoute.routeRisk.blocksLiveMonitoring else {
-            let message = outputFeedbackMessage
-            AppLogger.shared.error(category: "ui", message)
-            statusMessage = message
-            lastError = message
-            return
-        }
+        guard prepareOutputForMusicPlayback() else { return }
 
         repairBlackHoleSampleRateIfNeeded(force: true)
         BlackHoleRouteRepair.prepareInputDeviceForCapture(inputRoute, preferredSampleRate: roonNowPlaying?.outputSampleRate)
         refreshRoutesIfNeeded(force: true)
         startLiveInputForCurrentRoute(reason: "manual")
         refreshRoonNowPlayingIfNeeded(force: true)
+    }
+
+    func startSpotifyPipe() {
+        cancelDiagnosticsForMusicAction()
+        sourceMode = .spotify
+        currentFileURL = nil
+        roonNowPlaying = nil
+        roonSignalPath = nil
+        activeLiveChannelCount = SourceMode.spotify.fixedLiveChannelCount ?? 2
+        refreshRoutesIfNeeded(force: true)
+        selectExpectedLoopbackInputIfAvailable(for: .spotify)
+
+        guard inputRoute.isSpotifyLoopback else {
+            let message = missingLoopbackMessage(for: .spotify)
+            AppLogger.shared.error(category: "ui", message)
+            statusMessage = message
+            lastError = message
+            liveMonitorState = .unavailable(message)
+            return
+        }
+
+        guard prepareOutputForMusicPlayback() else { return }
+
+        refreshSpotifyConnectServerIfNeeded(reason: "manual spotify input", force: true)
+        refreshSpotifyNowPlayingIfNeeded(force: true)
+        startLiveInputForCurrentRoute(reason: "manual spotify input")
     }
 
     func startOtherInputPipe() {
@@ -991,25 +1652,42 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
-        guard !outputRoute.routeRisk.blocksLiveMonitoring else {
-            let message = outputFeedbackMessage
-            AppLogger.shared.error(category: "ui", message)
-            statusMessage = message
-            lastError = message
-            return
-        }
+        guard prepareOutputForMusicPlayback() else { return }
 
         startLiveInputForCurrentRoute(reason: "manual other input")
     }
 
-    private func startLiveInputForCurrentRoute(reason: String) {
+    private func startLiveInputForCurrentRoute(reason: String, resetRendererMode: Bool = true) {
+        guard recoverRoonMonoRouteIfNeeded(reason: reason) else { return }
+
         let requestedChannelCount = preferredLiveChannelCount()
+        if resetRendererMode {
+            resetRendererRequestToAutomatic(reason: "\(sourceMode.rawValue) input changed")
+        } else {
+            refreshRendererScene()
+        }
+        let liveLayout = SurroundLayoutDetector.fallbackLayout(for: requestedChannelCount)
+        let liveRendererMode = RendererModePolicy.effectiveRequestedMode(
+            requestedMode: rendererRenderMode,
+            inputChannelCount: requestedChannelCount,
+            alwaysMono: rendererAlwaysMono,
+            twoChannelPreference: rendererTwoChannelPreference
+        )
+        rendererScene = RendererMatrixBuilder.sceneModel(
+            for: liveLayout,
+            preset: rendererPreset,
+            renderMode: liveRendererMode
+        )
+        syncRendererAudioRouting()
 
         do {
             let liveSource = try engine.startLiveInput(
                 activeChannelCount: requestedChannelCount,
                 inputRoute: inputRoute,
-                sourceName: liveInputSourceName
+                sourceName: liveInputSourceName,
+                rendererMode: liveRendererMode,
+                rendererPreset: rendererPreset,
+                directRendererAudioEnabled: shouldUseDirectRendererAudio(scene: rendererScene)
             )
             loadedFileName = liveSource.metadata.fileName
             sourceMetadata = liveSource.metadata
@@ -1032,10 +1710,18 @@ final class OrbisonicViewModel: ObservableObject {
             lastLiveSignalPresent = nil
             liveSignalStatus = "Waiting for signal from \(liveInputSignalName)."
             liveBufferStatus = "Priming live buffer."
-            refreshRoonNowPlayingIfNeeded(force: true)
+            if sourceMode == .roon {
+                refreshRoonNowPlayingIfNeeded(force: true)
+            }
+            if sourceMode == .spotify {
+                refreshSpotifyNowPlayingIfNeeded(force: true)
+                refreshSpotifyConnectServerIfNeeded(reason: "monitor started")
+            }
 
             if sourceMode == .roon, inputRoute.isRoonLoopback {
                 statusMessage = "Capturing Roon and rendering to \(routeDisplayName)."
+            } else if sourceMode == .spotify, inputRoute.isSpotifyLoopback {
+                statusMessage = "Capturing Spotify from Orbisonic Spotify Input and rendering to \(routeDisplayName)."
             } else {
                 statusMessage = "Capturing Aux Cable and rendering to \(routeDisplayName). Source playback stays in the source app."
             }
@@ -1051,6 +1737,37 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func recoverRoonMonoRouteIfNeeded(reason: String) -> Bool {
+        guard sourceMode == .roon else { return true }
+
+        let isStaleMono = inputRoute.inputChannelCount == 1 || activeLiveChannelCount == 1
+        guard isStaleMono else { return true }
+
+        AppLogger.shared.warning(
+            category: "route",
+            "Recovering stale Roon mono route reason=\(reason) route=\(inputRoute.deviceName) channels=\(inputRoute.inputChannelCount) active=\(activeLiveChannelCount)"
+        )
+
+        refreshRoutesIfNeeded(force: true)
+        selectExpectedLoopbackInputIfAvailable(for: .roon)
+        activeLiveChannelCount = 2
+
+        guard inputRoute.isRoonLoopback, inputRoute.inputChannelCount >= 2 else {
+            let message = "Roon route recovery could not find a valid stereo-or-better Orbisonic Roon Input."
+            statusMessage = message
+            lastError = message
+            liveMonitorState = .unavailable(message)
+            AppLogger.shared.error(category: "route", message)
+            return false
+        }
+
+        AppLogger.shared.notice(
+            category: "route",
+            "Recovered Roon route input=\(inputRoute.deviceName) channels=\(inputRoute.inputChannelCount) active=2"
+        )
+        return true
+    }
+
     func togglePlayback() {
         cancelDiagnosticsForMusicAction()
 
@@ -1061,6 +1778,17 @@ final class OrbisonicViewModel: ObservableObject {
                 muteLiveMonitor()
             } else {
                 startRoonPipe()
+            }
+            return
+        }
+
+        if sourceMode == .spotify {
+            if liveMonitorState.isMuted {
+                resumeLiveMonitor()
+            } else if isPlaying {
+                muteLiveMonitor()
+            } else {
+                startSpotifyPipe()
             }
             return
         }
@@ -1095,15 +1823,14 @@ final class OrbisonicViewModel: ObservableObject {
             if isPlaying {
                 engine.pause()
                 isPlaying = false
+                reevaluateAutomaticRendererMode(reason: "pause")
                 statusMessage = "Paused."
             } else {
+                guard prepareOutputForMusicPlayback() else { return }
+                reevaluateAutomaticRendererMode(reason: "play")
                 try engine.play()
                 isPlaying = true
-                if headTrackingEnabled {
-                    statusMessage = "Playing through \(routeDisplayName) with head tracking requested."
-                } else {
-                    statusMessage = "Playing through \(routeDisplayName) with fixed spatial rendering."
-                }
+                statusMessage = "Playing through \(routeDisplayName) with \(rendererRenderMode.displayName)."
             }
         } catch {
             AppLogger.shared.error(category: "ui", "Playback toggle failed: \(error.localizedDescription)")
@@ -1146,6 +1873,25 @@ final class OrbisonicViewModel: ObservableObject {
         return selectedZone.allows(control)
     }
 
+    func openRoon() {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.roon.Roon") else {
+            statusMessage = "Open Roon and enable Orbisonic in Settings > Extensions."
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { [weak self] _, error in
+            Task { @MainActor [weak self] in
+                if let error {
+                    self?.statusMessage = "Could not open Roon: \(error.localizedDescription)"
+                    self?.lastError = error.localizedDescription
+                } else {
+                    self?.statusMessage = "Opening Roon."
+                }
+            }
+        }
+    }
+
     func toggleRoonTransport() {
         let control: RoonBridgeControl = isRoonTransportPlaying ? .pause : .play
         sendRoonTransport(control)
@@ -1164,9 +1910,15 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func startSelectedLiveMonitor() {
+        guard !isLiveMonitorTransitioning else { return }
+        isLiveMonitorTransitioning = true
+        defer { isLiveMonitorTransitioning = false }
+        statusMessage = "Starting \(sourceMode.rawValue) monitor..."
         switch sourceMode {
         case .roon:
             startRoonPipe()
+        case .spotify:
+            startSpotifyPipe()
         case .aux:
             startOtherInputPipe()
         case .filePlayback, .testTone:
@@ -1176,6 +1928,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     func muteLiveMonitor() {
         guard sourceMode.isLiveInput, isPlaying else { return }
+        guard !isLiveMonitorTransitioning else { return }
 
         engine.setLiveInputMuted(true)
         liveMonitorState = .muted
@@ -1187,6 +1940,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     func resumeLiveMonitor() {
         guard sourceMode.isLiveInput else { return }
+        guard !isLiveMonitorTransitioning else { return }
 
         if !isPlaying {
             startSelectedLiveMonitor()
@@ -1200,12 +1954,16 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func stopSelectedLiveMonitor() {
+        guard !isLiveMonitorTransitioning else { return }
+        isLiveMonitorTransitioning = true
+        defer { isLiveMonitorTransitioning = false }
         guard sourceMode.isLiveInput else {
             stop()
             return
         }
 
         let sourceName = sourceMode.rawValue
+        stopSpotifyReceiverIfNeeded()
         markLiveMonitorStopped(sourceName: sourceName)
         engine.stop()
         markLiveMonitorStopped(sourceName: sourceName)
@@ -1216,6 +1974,7 @@ final class OrbisonicViewModel: ObservableObject {
         guard sourceMode.isLiveInput else { return }
 
         let sourceName = sourceMode.rawValue
+        stopSpotifyReceiverIfNeeded()
         markLiveMonitorStopped(sourceName: sourceName)
         engine.stop()
         markLiveMonitorStopped(sourceName: sourceName)
@@ -1223,6 +1982,13 @@ final class OrbisonicViewModel: ObservableObject {
             category: "live-input",
             "Stopped live monitor source=\(sourceName) before selecting source=\(mode.rawValue)"
         )
+    }
+
+    private func stopSpotifyReceiverIfNeeded() {
+        guard sourceMode == .spotify else { return }
+        spotifyReceiverClient.stop()
+        spotifyReceiverStatus = .notStarted
+        spotifyNowPlaying = nil
     }
 
     private func markLiveMonitorStopped(sourceName: String) {
@@ -1258,15 +2024,19 @@ final class OrbisonicViewModel: ObservableObject {
         diagnosticSequenceTask?.cancel()
         diagnosticSequenceTask = nil
         diagnosticReturnContext = nil
+        stopSpotifyReceiverIfNeeded()
         engine.stop()
         isPlaying = false
         liveMonitorState = .stopped
         isTestTonePlaying = false
         isDiagnosticSequencePlaying = false
+        isDiagnosticTransitioning = false
         activeDiagnosticPoint = nil
         activeDiagnosticChannelIndex = nil
         activeDiagnosticChannelCount = 0
         activeDiagnosticWalkTitle = ""
+        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsMonitorDownmixAvailable = false
         diagnosticSequencePosition = 0
         currentTime = 0
         scrubProgress = 0
@@ -1280,10 +2050,12 @@ final class OrbisonicViewModel: ObservableObject {
         lastLiveSignalPresent = nil
         liveSignalStatus = "No live input."
         liveBufferStatus = "No live buffer."
-        testToneStatus = "No diagnostic tone playing."
+        testToneStatus = ""
+        diagnosticWalkStatus = "Ready."
         roonNowPlayingStatus = "Roon metadata stopped."
         roonSignalPath = nil
         currentFileURL = sourceMode == .filePlayback ? currentFileURL : nil
+        reevaluateAutomaticRendererMode(reason: "stop")
         statusMessage = "Stopped."
     }
 
@@ -1311,6 +2083,20 @@ final class OrbisonicViewModel: ObservableObject {
         max(rendererScene.outputSpeakers.count, rendererPreset.outputTopology.fullRangeCount + rendererPreset.outputTopology.lfeCount)
     }
 
+    var diagnosticSpeakerChannelCount: Int {
+        Self.diagnosticSpeakerChannelCount
+    }
+
+    private func clampedDiagnosticSpeakerChannel(_ channel: Int) -> Int {
+        min(max(channel, 1), Self.diagnosticSpeakerChannelCount)
+    }
+
+    func selectDiagnosticSpeakerChannel(_ channel: Int) {
+        let clamped = clampedDiagnosticSpeakerChannel(channel)
+        guard selectedDiagnosticSpeakerChannel != clamped else { return }
+        selectedDiagnosticSpeakerChannel = clamped
+    }
+
     func startMonitorChannelWalk() {
         startDiagnosticChannelWalk(kind: .monitor)
     }
@@ -1326,13 +2112,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func startDiagnosticChannelWalk(kind: DiagnosticChannelWalkKind) {
         refreshRoutesIfNeeded(force: true)
 
-        guard !outputRoute.isBlackHole else {
-            let message = "Set macOS Sound Output to your headphones before running diagnostics. Output is currently BlackHole."
-            AppLogger.shared.error(category: "diagnostics", message)
-            statusMessage = message
-            lastError = message
-            return
-        }
+        guard prepareDiagnosticOutput(for: kind) else { return }
 
         testToneStopTask?.cancel()
         testToneStopTask = nil
@@ -1349,20 +2129,40 @@ final class OrbisonicViewModel: ObservableObject {
         isPlaying = false
         isTestTonePlaying = true
         isDiagnosticSequencePlaying = true
+        isDiagnosticTransitioning = true
         activeDiagnosticPoint = nil
         activeDiagnosticChannelIndex = nil
         activeDiagnosticWalkTitle = kind.title
         activeDiagnosticChannelCount = kind == .monitor ? monitorChannelWalkCount : rendererOutputChannelWalkCount
         diagnosticSequencePosition = 0
-        testToneStatus = "Starting \(kind.shortTitle.lowercased()) channel walk."
-        statusMessage = "Running \(kind.shortTitle.lowercased()) channel walk through \(routeDisplayName)."
+        testToneStatus = ""
+        if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
+            diagnosticWalkStatus = "Starting renderer channel walk as monitor preview."
+            statusMessage = "Renderer output is not set. Previewing renderer channel walk through \(routeDisplayName)."
+        } else {
+            diagnosticWalkStatus = "Starting \(kind.shortTitle.lowercased()) channel walk."
+            statusMessage = "Running \(kind.shortTitle.lowercased()) channel walk through \(routeDisplayName)."
+        }
 
         AppLogger.shared.notice(
             category: "diagnostics",
-            "Started \(kind.title) output=\(outputRoute.deviceName) channels=\(activeDiagnosticChannelCount) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
+            "Started \(kind.title) output=\(outputRoute.deviceName) channels=\(activeDiagnosticChannelCount) monitorPreview=\(rendererDiagnosticsUsingMonitorPreview) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
         )
 
         diagnosticSequenceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 140_000_000)
+            } catch {
+                await MainActor.run {
+                    self?.isDiagnosticTransitioning = false
+                }
+                return
+            }
+
+            await MainActor.run {
+                self?.isDiagnosticTransitioning = false
+            }
+
             let total = await MainActor.run {
                 self?.activeDiagnosticChannelCount ?? 0
             }
@@ -1387,6 +2187,57 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func prepareDiagnosticOutput(for kind: DiagnosticChannelWalkKind) -> Bool {
+        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsMonitorDownmixAvailable = false
+        try? engine.setDiagnosticMonitorOutputDevice(nil)
+
+        switch kind {
+        case .monitor:
+            return ensureOutputForAction(.monitor)
+        case .renderer:
+            if rendererOutputSelection != .none {
+                guard ensureOutputForAction(.renderer) else { return false }
+                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix()
+                return true
+            }
+
+            rendererDiagnosticsUsingMonitorPreview = true
+            if monitorOutputRoute.isAvailable {
+                return applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName)
+            }
+
+            let fallbackRoute = outputRoute.isAvailable ? outputRoute : systemOutputRoute
+            if fallbackRoute.isAvailable, fallbackRoute.isSelectableOutputTarget {
+                outputRoute = fallbackRoute
+                syncRendererAudioRouting()
+                statusMessage = "Renderer output is not set; using \(fallbackRoute.deviceName) for monitor preview."
+                AppLogger.shared.notice(category: "diagnostics", "Renderer diagnostic preview using fallback output=\(fallbackRoute.deviceName)")
+                return true
+            }
+
+            AppLogger.shared.notice(category: "diagnostics", "Renderer diagnostic preview starting without explicit output route.")
+            return true
+        }
+    }
+
+    private func configureDiagnosticMonitorDownmix() -> Bool {
+        guard monitorOutputRoute.isAvailable,
+              monitorOutputRoute.isSelectableOutputTarget
+        else {
+            AppLogger.shared.warning(category: "diagnostics", "Monitor downmix unavailable for renderer diagnostic; no monitor output route.")
+            return false
+        }
+
+        do {
+            try engine.setDiagnosticMonitorOutputDevice(monitorOutputRoute.deviceID)
+            return true
+        } catch {
+            AppLogger.shared.warning(category: "diagnostics", "Monitor downmix unavailable: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     func stopDiagnosticsAndReturnToMusic() {
         finishDiagnosticChannelWalk(restoreMusic: true, automatic: false)
     }
@@ -1399,14 +2250,29 @@ final class OrbisonicViewModel: ObservableObject {
         guard isDiagnosticSequencePlaying else { return false }
 
         do {
-            try engine.playDiagnosticChannelTone(channelIndex: index, channelCount: total)
+            let usesMonitorDownmix = kind == .renderer
+                && !rendererDiagnosticsUsingMonitorPreview
+                && rendererDiagnosticsMonitorDownmixAvailable
+            try engine.playDiagnosticChannelTone(
+                channelIndex: index,
+                channelCount: total,
+                monitorDownmix: usesMonitorDownmix
+            )
             activeDiagnosticPoint = nil
             activeDiagnosticChannelIndex = index
             activeDiagnosticChannelCount = total
             activeDiagnosticWalkTitle = kind.title
             diagnosticSequencePosition = index + 1
-            testToneStatus = "Playing \(kind.shortTitle.lowercased()) channel \(index + 1) of \(total)."
-            statusMessage = "\(kind.shortTitle) channel \(index + 1) is active on \(routeDisplayName)."
+            if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
+                diagnosticWalkStatus = "Playing renderer channel \(index + 1) of \(total) as monitor downmix."
+                statusMessage = "Renderer channel \(index + 1) preview is active on \(routeDisplayName)."
+            } else if usesMonitorDownmix {
+                diagnosticWalkStatus = "Playing renderer channel \(index + 1) of \(total) with monitor downmix."
+                statusMessage = "Renderer channel \(index + 1) is active on \(routeDisplayName); monitor downmix is on \(monitorOutputRoute.deviceName)."
+            } else {
+                diagnosticWalkStatus = "Playing \(kind.shortTitle.lowercased()) channel \(index + 1) of \(total)."
+                statusMessage = "\(kind.shortTitle) channel \(index + 1) is active on \(routeDisplayName)."
+            }
 
             meterStore.reset()
             switch kind {
@@ -1419,7 +2285,12 @@ final class OrbisonicViewModel: ObservableObject {
                 let channels = rendererMeterChannels()
                 rendererMeterStore.configureIfNeeded(channels: channels)
                 rendererMeterStore.update(with: activeLevel(index: index, count: channels.count))
-                monitorMeterStore.reset()
+                if rendererDiagnosticsUsingMonitorPreview || usesMonitorDownmix {
+                    monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
+                    monitorMeterStore.update(with: Array(repeating: Float(0.72), count: monitorChannelWalkCount))
+                } else {
+                    monitorMeterStore.reset()
+                }
             }
 
             AppLogger.shared.notice(
@@ -1448,11 +2319,12 @@ final class OrbisonicViewModel: ObservableObject {
         activeDiagnosticChannelIndex = nil
         activeDiagnosticChannelCount = 0
         activeDiagnosticWalkTitle = ""
+        rendererDiagnosticsUsingMonitorPreview = false
         diagnosticSequencePosition = 0
         meterStore.reset()
         monitorMeterStore.reset()
         rendererMeterStore.reset()
-        testToneStatus = automatic ? "Diagnostic channel walk finished." : "Diagnostic channel walk stopped."
+        diagnosticWalkStatus = automatic ? "Diagnostic channel walk finished." : "Diagnostic channel walk stopped."
 
         AppLogger.shared.notice(
             category: "diagnostics",
@@ -1509,6 +2381,14 @@ final class OrbisonicViewModel: ObservableObject {
 
             startRoonPipe()
 
+        case .spotify:
+            guard context.wasPlaying else {
+                statusMessage = "Diagnostics stopped. Spotify route is ready."
+                return
+            }
+
+            startSpotifyPipe()
+
         case .testTone:
             statusMessage = "Diagnostics stopped. Test tone source is ready."
 
@@ -1532,14 +2412,12 @@ final class OrbisonicViewModel: ObservableObject {
 
     func playSelectedTestTone() {
         refreshRoutesIfNeeded(force: true)
+        rendererDiagnosticsMonitorDownmixAvailable = false
+        try? engine.setDiagnosticMonitorOutputDevice(nil)
 
-        guard !outputRoute.isBlackHole else {
-            let message = "Set macOS Sound Output to your headphones before running a test tone. Output is currently BlackHole."
-            AppLogger.shared.error(category: "diagnostics", message)
-            statusMessage = message
-            lastError = message
-            return
-        }
+        let purpose: OutputPurpose = selectedTestTonePoint.spatialChannel == nil ? .monitor : .renderer
+        guard ensureOutputForAction(purpose) else { return }
+        let monitorDownmix = purpose == .renderer && configureDiagnosticMonitorDownmix()
 
         if isPlaying {
             stop()
@@ -1548,16 +2426,24 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         do {
-            try engine.playTestTone(selectedTestTonePoint)
+            try engine.playTestTone(selectedTestTonePoint, monitorDownmix: monitorDownmix)
             isTestTonePlaying = true
             testToneStatus = "Playing \(selectedTestTonePoint.rawValue) for 3 seconds."
-            statusMessage = "\(selectedTestTonePoint.pipelineDescription). Listen on \(routeDisplayName)."
+            statusMessage = monitorDownmix
+                ? "\(selectedTestTonePoint.pipelineDescription). Renderer output is \(routeDisplayName); monitor downmix is on \(monitorOutputRoute.deviceName)."
+                : "\(selectedTestTonePoint.pipelineDescription). Listen on \(routeDisplayName)."
 
             let channels = selectedTestTonePoint.meterChannels
             meterStore.configure(channels: channels)
             meterStore.update(with: Array(repeating: 0.82, count: channels.count))
-            updateMonitorMeters()
-            updateRendererMeters(from: Array(repeating: 0.82, count: rendererScene.matrix.inputCount))
+            let rendererTestLevels = Array(repeating: Float(0.82), count: rendererScene.matrix.inputCount)
+            if monitorDownmix {
+                monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
+                monitorMeterStore.update(with: Array(repeating: Float(0.72), count: monitorChannelWalkCount))
+            } else {
+                updateMonitorMeters(from: rendererTestLevels.isEmpty ? [Float(0.82)] : rendererTestLevels)
+            }
+            updateRendererMeters(from: rendererTestLevels)
 
             AppLogger.shared.notice(
                 category: "diagnostics",
@@ -1583,6 +2469,81 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    func playSelectedDiagnosticSpeakerTone() {
+        refreshRoutesIfNeeded(force: true)
+        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsMonitorDownmixAvailable = false
+        try? engine.setDiagnosticMonitorOutputDevice(nil)
+
+        if rendererOutputSelection != .none {
+            guard ensureOutputForAction(.renderer) else { return }
+            rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix()
+        } else {
+            rendererDiagnosticsUsingMonitorPreview = true
+            if monitorOutputRoute.isAvailable {
+                guard applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName) else { return }
+            } else if outputRoute.isAvailable || systemOutputRoute.isAvailable {
+                let fallbackRoute = outputRoute.isAvailable ? outputRoute : systemOutputRoute
+                guard fallbackRoute.isSelectableOutputTarget else {
+                    let message = outputFeedbackMessage(for: fallbackRoute, purpose: .monitor)
+                    statusMessage = message
+                    lastError = message
+                    return
+                }
+                outputRoute = fallbackRoute
+                syncRendererAudioRouting()
+            }
+        }
+
+        if isPlaying {
+            stop()
+        } else {
+            stopTestTone()
+        }
+
+        let channel = clampedDiagnosticSpeakerChannel(selectedDiagnosticSpeakerChannel)
+        selectDiagnosticSpeakerChannel(channel)
+        let monitorDownmix = !rendererDiagnosticsUsingMonitorPreview && rendererDiagnosticsMonitorDownmixAvailable
+
+        do {
+            try engine.playDiagnosticChannelTone(
+                channelIndex: channel - 1,
+                channelCount: Self.diagnosticSpeakerChannelCount,
+                monitorDownmix: monitorDownmix
+            )
+            isTestTonePlaying = true
+            activeDiagnosticPoint = nil
+            activeDiagnosticChannelIndex = channel - 1
+            activeDiagnosticChannelCount = Self.diagnosticSpeakerChannelCount
+            activeDiagnosticWalkTitle = "Test Tone"
+            testToneStatus = rendererDiagnosticsUsingMonitorPreview
+                ? "Playing channel \(channel) as monitor downmix preview."
+                : (monitorDownmix ? "Playing channel \(channel) on renderer output with monitor downmix." : "Playing channel \(channel) on renderer output.")
+            statusMessage = rendererDiagnosticsUsingMonitorPreview
+                ? "Renderer output is not set. Channel \(channel) is previewing through \(routeDisplayName)."
+                : (monitorDownmix ? "Channel \(channel) tone is active on \(routeDisplayName); monitor downmix is on \(monitorOutputRoute.deviceName)." : "Channel \(channel) tone is active on \(routeDisplayName).")
+
+            let channels = rendererMeterChannels()
+            rendererMeterStore.configureIfNeeded(channels: channels)
+            rendererMeterStore.update(with: activeLevel(index: channel - 1, count: channels.count))
+            if rendererDiagnosticsUsingMonitorPreview || monitorDownmix {
+                monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
+                monitorMeterStore.update(with: Array(repeating: Float(0.72), count: monitorChannelWalkCount))
+            } else {
+                monitorMeterStore.reset()
+            }
+
+            AppLogger.shared.notice(
+                category: "diagnostics",
+                "Started speaker test tone channel=\(channel)/\(Self.diagnosticSpeakerChannelCount) monitorPreview=\(rendererDiagnosticsUsingMonitorPreview) output=\(outputRoute.deviceName)"
+            )
+        } catch {
+            AppLogger.shared.error(category: "diagnostics", "Speaker test tone failed: \(error.localizedDescription)")
+            lastError = error.localizedDescription
+            testToneStatus = "Speaker test tone failed."
+        }
+    }
+
     func stopTestTone(automatic: Bool = false) {
         testToneStopTask?.cancel()
         testToneStopTask = nil
@@ -1591,6 +2552,11 @@ final class OrbisonicViewModel: ObservableObject {
         guard isTestTonePlaying else { return }
 
         isTestTonePlaying = false
+        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsMonitorDownmixAvailable = false
+        activeDiagnosticChannelIndex = nil
+        activeDiagnosticChannelCount = 0
+        activeDiagnosticWalkTitle = ""
         meterStore.reset()
         monitorMeterStore.reset()
         rendererMeterStore.reset()
@@ -1629,14 +2595,90 @@ final class OrbisonicViewModel: ObservableObject {
         SpatialTuning(
             preset: preset,
             frontAngle: frontAngle,
-            rearAngle: rearAngle,
-            headTrackingEnabled: headTrackingEnabled
+            rearAngle: rearAngle
         )
     }
 
     func selectRendererPreset(_ preset: RendererPreset) {
         applyRendererPreset(preset, markDirty: false)
         statusMessage = "Selected renderer preset \(preset.name)."
+    }
+
+    func setRendererRenderMode(_ nextMode: RendererRenderMode) {
+        applyRendererModeRequest(nextMode, reason: "manual mode changed")
+    }
+
+    private func applyRendererModePolicyChange(reason: String) {
+        applyRendererModeRequest(rendererRenderMode, reason: reason, persistRequestedMode: false)
+    }
+
+    private func applyRendererModeRequest(
+        _ nextMode: RendererRenderMode,
+        reason: String,
+        persistRequestedMode: Bool = true
+    ) {
+        let nextScene = rendererScene(forRequestedMode: nextMode)
+        guard rendererRenderMode != nextMode || rendererScene != nextScene else { return }
+
+        let wasUsingDirectRendererAudio = shouldUseDirectRendererAudio(scene: rendererScene)
+        let willUseDirectRendererAudio = shouldUseDirectRendererAudio(scene: nextScene)
+        let changesActiveAudioGraph = wasUsingDirectRendererAudio || willUseDirectRendererAudio
+        let shouldResumeFilePlayback = sourceMode == .filePlayback && isPlaying && changesActiveAudioGraph
+        let shouldRestartLiveInput = sourceMode.isLiveInput && isPlaying && changesActiveAudioGraph
+        let wasLiveMuted = liveMonitorState.isMuted
+        let playbackProgress = duration > 0 ? currentTime / duration : scrubProgress
+
+        if shouldResumeFilePlayback || shouldRestartLiveInput {
+            engine.stop()
+            isPlaying = false
+            if shouldRestartLiveInput {
+                liveMonitorState = .stopped
+            }
+        }
+
+        rendererRenderMode = nextMode
+        if persistRequestedMode {
+            persistRendererRenderMode()
+        }
+        rendererScene = nextScene
+        syncRendererAudioRouting()
+        configureRendererMeters()
+        statusMessage = rendererModeStatusMessage(requestedMode: nextMode)
+        AppLogger.shared.notice(
+            category: "renderer",
+            "Renderer mode changed reason=\(reason) requested=\(nextMode.rawValue) effective=\(nextScene.requestedRenderMode.rawValue) resolved=\(nextScene.renderMode.rawValue)"
+        )
+
+        if shouldRestartLiveInput {
+            startLiveInputForCurrentRoute(reason: "renderer mode changed", resetRendererMode: false)
+            if wasLiveMuted {
+                muteLiveMonitor()
+            }
+            return
+        }
+
+        if shouldResumeFilePlayback {
+            do {
+                engine.seek(toProgress: playbackProgress)
+                guard prepareOutputForMusicPlayback() else { return }
+                try engine.play()
+                isPlaying = true
+                statusMessage = "Playing through \(routeDisplayName) with \(rendererScene.renderMode.displayName)."
+            } catch {
+                AppLogger.shared.error(category: "ui", "Renderer mode resume failed: \(error.localizedDescription)")
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func resetRendererTuning() {
+        rendererPreset = rendererPreset.replacingOptions(.default)
+        rendererPresetIsDirty = false
+        UserDefaults.standard.removeObject(forKey: Self.rendererOptionsKey)
+        syncRendererControlsFromPreset(rendererPreset)
+        rendererPresetStatus = "FEY renderer tuning reset to defaults."
+        refreshRendererScene()
+        AppLogger.shared.notice(category: "renderer", "Renderer tuning reset to defaults.")
     }
 
     func saveRendererPreset() {
@@ -1697,6 +2739,8 @@ final class OrbisonicViewModel: ObservableObject {
         switch sourceMode {
         case .roon:
             return "Roon"
+        case .spotify:
+            return "Spotify"
         case .testTone:
             return "Test Tone"
         case .filePlayback:
@@ -1714,13 +2758,19 @@ final class OrbisonicViewModel: ObservableObject {
             return "\(liveSignalStatus) • \(liveBufferStatus)"
         }
 
+        if sourceMode == .spotify {
+            let routeText = inputRoute.isAvailable ? inputRoute.detail : missingLoopbackMessage(for: .spotify)
+            let serverText = spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect Server" })?.value ?? spotifyReceiverStatus.message
+            return "\(routeText) • \(serverText) • \(liveSignalStatus)"
+        }
+
         if sourceMode == .aux {
             let routeText = inputRoute.isAvailable ? inputRoute.detail : missingLoopbackMessage(for: .aux)
             return "\(routeText) • \(liveSignalStatus) • \(liveBufferStatus)"
         }
 
         if sourceMode == .testTone {
-            return "\(selectedTestTonePoint.rawValue) • \(testToneStatus)"
+            return testToneStatus.isEmpty ? selectedTestTonePoint.rawValue : "\(selectedTestTonePoint.rawValue) • \(testToneStatus)"
         }
 
         guard let metadata = sourceMetadata else {
@@ -1787,8 +2837,28 @@ final class OrbisonicViewModel: ObservableObject {
         outputRoute.isAvailable ? "\(outputRoute.deviceName) • \(outputRoute.routeDetail)" : "No verified macOS output"
     }
 
+    var monitorOutputNowText: String {
+        outputText(for: monitorOutputRoute, noneText: "not set")
+    }
+
+    var rendererOutputNowText: String {
+        outputText(for: rendererOutputRoute, noneText: "not set")
+    }
+
     var monitorOutputSelectionText: String {
-        selectedOutputDeviceUID == nil ? "System Default" : outputRoute.deviceName
+        outputSelectionText(
+            selection: monitorOutputSelection,
+            route: monitorOutputRoute,
+            systemLabel: "System Default"
+        )
+    }
+
+    var rendererOutputSelectionText: String {
+        outputSelectionText(
+            selection: rendererOutputSelection,
+            route: rendererOutputRoute,
+            systemLabel: "System Default"
+        )
     }
 
     var systemOutputNowText: String {
@@ -1829,47 +2899,103 @@ final class OrbisonicViewModel: ObservableObject {
         return missingLoopbackMessage(for: sourceMode)
     }
 
+    var spotifySourceHealthLines: [SpotifySourceHealthLine] {
+        guard sourceMode == .spotify else { return [] }
+
+        let deviceStatus: String
+        if inputRoute.isSpotifyLoopback {
+            deviceStatus = "Selected: \(inputRoute.deviceName)"
+        } else if let route = availableInputRoutes.first(where: \.isSpotifyLoopback) {
+            deviceStatus = "Available: \(route.deviceName)"
+        } else {
+            deviceStatus = "Orbisonic Spotify Input unavailable"
+        }
+
+        let serverStatus: String
+        switch spotifyReceiverStatus.state {
+        case .notStarted:
+            serverStatus = "Unavailable"
+        case .embeddedModuleUnavailable:
+            serverStatus = "Unavailable"
+        case .waitingForConnection:
+            if let clientName = spotifyNowPlaying?.clientName?.trimmedNilIfBlank {
+                serverStatus = "Connected to \(clientName)"
+            } else {
+                serverStatus = "Advertising as \(spotifyReceiverClient.configuration.receiverName)"
+            }
+        case .running:
+            serverStatus = "Connected"
+        case .restarting:
+            serverStatus = "Restarting"
+        case .failed:
+            serverStatus = "Failed"
+        }
+
+        let streamRead: String
+        if let metadata = sourceMetadata, inputRoute.isSpotifyLoopback {
+            streamRead = "Connected: \(metadata.channelCount) channels, \(metadata.sampleRateText) \(metadata.layoutName.lowercased())"
+        } else if inputRoute.isSpotifyLoopback, liveMonitorState.isCapturing || liveMonitorState.isMuted {
+            streamRead = "Connected: \(activeLiveChannelCount) channels, \(formatSampleRate(inputRoute.nominalSampleRate)) stereo"
+        } else {
+            streamRead = "Waiting for stream"
+        }
+
+        let signal = lastLiveSignalPresent == true ? "Music detected" : "Silent"
+
+        return [
+            SpotifySourceHealthLine(title: "Device Status", value: deviceStatus),
+            SpotifySourceHealthLine(title: "Spotify Connect Server", value: serverStatus),
+            SpotifySourceHealthLine(title: "Stream Read", value: streamRead),
+            SpotifySourceHealthLine(title: "Signal", value: signal)
+        ]
+    }
+
     var outputSafetyText: String {
+        if rendererOutputSelection == .none {
+            return "Renderer output is not set. Renderer VU remains active."
+        }
+
         if DanteSafetyPolicy.requiresHighRateChannelWarning(
             outputChannelCount: rendererScene.outputSpeakers.count,
-            sampleRate: outputRoute.nominalSampleRate
+            sampleRate: rendererOutputRoute.nominalSampleRate
         ) {
             return "Dante Virtual Soundcard Pro supports only 16x16 channels at 176.4/192 kHz."
         }
 
-        switch outputRoute.routeRisk {
+        switch rendererOutputRoute.routeRisk {
         case .safe:
-            return "Safe output route."
+            if rendererOutputRoute.isRendererCapableOutput {
+                return "Renderer output selected."
+            }
+            return "Renderer output selected."
         case .feedbackLoop(let name):
             return "Blocked: \(name) would feed Orbisonic back into an input loopback."
         case .virtualOutput(let name):
             return "Virtual output: verify \(name) is the intended renderer target."
         case .unavailable:
-            return "No verified output route."
+            return "No verified renderer output route."
         }
     }
 
     var availableLiveChannelCounts: [Int] {
-        let available = min(inputRoute.inputChannelCount, OrbisonicAudioLimits.maxSourceChannelCount)
-        guard available > 0 else {
-            return [2, 4, 6, 8]
-        }
-
-        let common = [2, 4, 6, 8, 10, 11, 12, 14, 16, 24, 30, 32, 52, 64]
-        let filtered = common.filter { $0 <= available }
-
-        if filtered.contains(available) {
-            return filtered
-        }
-
-        return (filtered + [available]).sorted()
+        LiveChannelCountPolicy.availableCounts(
+            sourceMode: sourceMode,
+            availableInputChannels: inputRoute.inputChannelCount
+        )
     }
 
     var rendererText: String {
-        guard rendererScene.matrix.inputCount > 0 else {
-            return "\(rendererPreset.name) • waiting for source"
+        if rendererScene.isBypass {
+            return "\(rendererScene.renderMode.statusName) • direct speaker playback"
         }
-        return "\(rendererPreset.name) • \(rendererScene.matrix.inputCount)x\(rendererScene.matrix.outputCount) matrix"
+
+        guard rendererScene.matrix.inputCount > 0 else {
+            if let message = rendererScene.validationMessages.last {
+                return "\(rendererRenderMode.displayName) • \(message)"
+            }
+            return "\(rendererRenderMode.displayName) • waiting for source"
+        }
+        return "\(rendererScene.renderMode.statusName) • \(rendererScene.matrix.inputCount)x\(rendererScene.matrix.outputCount) matrix"
     }
 
     var rendererTargetText: String {
@@ -1877,11 +3003,146 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var rendererLayoutText: String {
-        "\(rendererPreset.outputTopology.fullRangeCount).\(rendererPreset.outputTopology.lfeCount) • \(rendererScene.outputSpeakers.count) outputs"
+        "\(rendererPreset.outputTopology.fullRangeCount).\(rendererPreset.outputTopology.lfeCount) Spatial"
     }
 
     var rendererSelectionText: String {
-        "\(rendererTargetText) • \(rendererLayoutText)"
+        "\(rendererTargetText) \(rendererLayoutText)"
+    }
+
+    var rendererLobeInspectionText: String {
+        if rendererScene.isBypass {
+            return "Direct speaker playback, renderer bypassed."
+        }
+
+        if rendererScene.renderMode.isAuroBed {
+            return "Auro lower uses lower/mid FEY lobes • height uses upper lobes • T uses crown"
+        }
+
+        return "FL 5/6/11/17/22/28 • FR 2/7/13/18/24/29 • rear supports 9/20/26"
+    }
+
+    var rendererChannelOrderText: String {
+        if rendererScene.isBypass {
+            return rendererScene.renderMode == .direct31
+                ? "0...30 direct to outputs 0...30"
+                : "0...29 direct to outputs 0...29"
+        }
+
+        let renderer = FeyStaticBedRenderer(options: rendererPreset.options)
+        let mode = rendererScene.renderMode == .automatic ? rendererRenderMode : rendererScene.renderMode
+        return renderer.getInputLayout(layoutId: mode)?.summary ?? "Waiting for supported source"
+    }
+
+    var rendererMatrixInspectionText: String {
+        if rendererScene.isBypass {
+            return rendererScene.renderMode == .direct31 ? "31 direct channels" : "30 direct speaker channels"
+        }
+
+        guard rendererScene.matrix.inputCount > 0 else {
+            return rendererScene.validationMessages.last ?? "Waiting for supported source"
+        }
+
+        let summary = (0..<min(rendererScene.matrix.inputCount, 4)).map { inputIndex in
+            let labels = rendererScene.matrix
+                .strongestOutputs(forInputAt: inputIndex, limit: 2)
+                .map { "\($0.index + 1)" }
+                .joined(separator: "/")
+            return "In \(inputIndex + 1): \(labels)"
+        }
+        .joined(separator: " • ")
+
+        return summary.isEmpty ? "No active matrix" : summary
+    }
+
+    var monitorOutputStatusText: String {
+        return outputStatusText(
+            for: monitorOutputRoute,
+            selection: monitorOutputSelection,
+            noneDetail: "local monitor disabled",
+            safeDetail: monitorOutputRoute.isRendererCapableOutput ? "multichannel output" : "local monitor"
+        )
+    }
+
+    var rendererOutputStatusText: String {
+        if rendererOutputSelection == .none {
+            return "not set • explicit renderer not selected"
+        }
+
+        if DanteSafetyPolicy.requiresHighRateChannelWarning(
+            outputChannelCount: rendererScene.outputSpeakers.count,
+            sampleRate: rendererOutputRoute.nominalSampleRate
+        ) {
+            return "Warning • 176.4/192 kHz limits high channel counts"
+        }
+
+        return outputStatusText(
+            for: rendererOutputRoute,
+            selection: rendererOutputSelection,
+            noneDetail: "explicit renderer not selected",
+            safeDetail: "renderer output selected"
+        )
+    }
+
+    var rendererSceneOutputText: String {
+        let target = "\(rendererTargetText) \(rendererPreset.outputTopology.fullRangeCount).\(rendererPreset.outputTopology.lfeCount)"
+        if rendererScene.isBypass {
+            return "\(target) • Direct speaker playback, renderer bypassed"
+        }
+
+        guard rendererScene.matrix.inputCount > 0 else {
+            if let message = rendererScene.validationMessages.last {
+                return "\(target) • \(message)"
+            }
+            return "\(target) • waiting for source"
+        }
+
+        return "\(target) • \(rendererScene.matrix.inputCount) -> \(rendererScene.matrix.outputCount) matrix"
+    }
+
+    private func outputText(for route: OutputRouteInfo, noneText: String) -> String {
+        route.isAvailable ? "\(route.deviceName) • \(route.routeDetail)" : noneText
+    }
+
+    private func outputSelectionText(
+        selection: OutputSelectionMode,
+        route: OutputRouteInfo,
+        systemLabel: String
+    ) -> String {
+        switch selection {
+        case .none:
+            return "not set"
+        case .systemDefault:
+            return route.isAvailable ? "\(systemLabel): \(route.deviceName)" : systemLabel
+        case .device:
+            return route.isAvailable ? route.deviceName : "Unavailable Device"
+        }
+    }
+
+    private func outputStatusText(
+        for route: OutputRouteInfo,
+        selection: OutputSelectionMode,
+        noneDetail: String,
+        safeDetail: String
+    ) -> String {
+        if selection == .none {
+            return "not set • \(noneDetail)"
+        }
+
+        guard route.isAvailable else {
+            return "Unavailable • no verified route"
+        }
+
+        switch route.routeRisk {
+        case .safe:
+            return "Safe • \(safeDetail)"
+        case .feedbackLoop(let name):
+            return "Blocked • \(name) would feed back into Orbisonic"
+        case .virtualOutput(let name):
+            return "Warning • verify \(name) is the intended target"
+        case .unavailable:
+            return "Unavailable • no verified route"
+        }
     }
 
     private var routeDisplayName: String {
@@ -1892,6 +3153,8 @@ final class OrbisonicViewModel: ObservableObject {
         switch sourceMode {
         case .roon:
             return "Roon"
+        case .spotify:
+            return "Spotify"
         case .aux:
             return "Aux Cable"
         case .filePlayback:
@@ -1904,6 +3167,9 @@ final class OrbisonicViewModel: ObservableObject {
     private var liveInputSignalName: String {
         if sourceMode == .roon {
             return OrbisonicLoopbackDevice.roonInput.displayName
+        }
+        if sourceMode == .spotify {
+            return OrbisonicLoopbackDevice.spotifyInput.displayName
         }
         if sourceMode == .aux {
             return OrbisonicLoopbackDevice.auxCable.displayName
@@ -1943,13 +3209,11 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func preferredLiveChannelCount() -> Int {
-        let available = max(min(inputRoute.inputChannelCount, OrbisonicAudioLimits.maxSourceChannelCount), 1)
-
-        if inputRoute.isOrbisonicLoopback, activeLiveChannelCount <= 1, available >= 8 {
-            return 8
-        }
-
-        return min(max(activeLiveChannelCount, 1), available)
+        LiveChannelCountPolicy.preferredCount(
+            sourceMode: sourceMode,
+            availableInputChannels: inputRoute.inputChannelCount,
+            activeCount: activeLiveChannelCount
+        )
     }
 
     @discardableResult
@@ -1960,12 +3224,13 @@ final class OrbisonicViewModel: ObservableObject {
 
         if inputRoute.deviceID != route.deviceID {
             inputRoute = route
-            applyLiveChannelDefaults(for: route)
             AppLogger.shared.notice(
                 category: "route",
                 "Selected expected source input source=\(mode.rawValue) device=\(route.deviceName) uid=\(route.uid)"
             )
         }
+
+        applyLiveChannelDefaults(for: route)
 
         return true
     }
@@ -1976,30 +3241,59 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func missingLoopbackMessage(for mode: SourceMode) -> String {
-        guard let expectedLoopback = mode.expectedLoopback else {
-            return "No live input route is required for \(mode.rawValue)."
+        mode.missingLoopbackMessage()
+    }
+
+    private func inputSelectionBlockedMessage(for route: InputRouteInfo) -> String {
+        guard let expectedLoopback = sourceMode.expectedLoopback else {
+            return "\(sourceMode.rawValue) does not use \(route.deviceName) as a live input."
         }
 
-        return "\(expectedLoopback.displayName) is not available. Install Orbisonic Inputs, then restart Core Audio or reboot."
+        switch sourceMode {
+        case .roon:
+            return "Roon mode captures \(expectedLoopback.displayName) only."
+        case .spotify:
+            return "Spotify mode captures \(expectedLoopback.displayName) only. Aux Cable and Roon Input stay separate."
+        case .aux:
+            return "Aux Cable mode captures \(expectedLoopback.displayName) only."
+        case .filePlayback, .testTone:
+            return "\(sourceMode.rawValue) does not use a live input route."
+        }
     }
 
     private var outputFeedbackMessage: String {
-        switch outputRoute.routeRisk {
+        outputFeedbackMessage(for: outputRoute, purpose: .renderer)
+    }
+
+    private func outputFeedbackMessage(for route: OutputRouteInfo, purpose: OutputPurpose) -> String {
+        switch route.routeRisk {
         case .feedbackLoop(let name):
-            return "Set macOS Sound Output to a monitor or renderer target before monitoring. Output is currently \(name), which would feed Orbisonic back into a loopback input."
+            return "Blocked: \(name) would feed Orbisonic output back into an input loopback. Choose a safe \(purpose.lowerTitle) output or leave it not set."
         case .virtualOutput(let name):
-            return "Output is currently the virtual device \(name). Verify it is the intended renderer target before monitoring."
+            return "Output is currently the virtual device \(name). Verify it is the intended \(purpose.lowerTitle) target."
         case .safe:
             return "Output route is safe."
         case .unavailable:
-            return "No output route is available."
+            return "No \(purpose.lowerTitle) output route is available."
         }
     }
 
-    private func applySelectedMonitorOutput(_ route: OutputRouteInfo, label: String) {
+    @discardableResult
+    private func applyOutputRouteIfAvailable(
+        _ route: OutputRouteInfo,
+        purpose: OutputPurpose,
+        label: String
+    ) -> Bool {
         guard route.isAvailable else {
-            statusMessage = "No output device is available for monitoring."
-            return
+            statusMessage = "\(purpose.title) output not set."
+            return false
+        }
+
+        guard route.isSelectableOutputTarget else {
+            let message = outputFeedbackMessage(for: route, purpose: purpose)
+            statusMessage = message
+            lastError = message
+            return false
         }
 
         if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
@@ -2010,32 +3304,117 @@ final class OrbisonicViewModel: ObservableObject {
             try engine.setOutputDevice(route.deviceID)
             outputRoute = route
             configureMonitorMeters()
-            statusMessage = "Monitor output set to \(label)."
+            syncRendererAudioRouting()
+            statusMessage = "\(purpose.title) output set to \(label)."
             AppLogger.shared.notice(
                 category: "route",
-                "Selected monitor output label=\(label) device=\(route.deviceName) uid=\(route.uid) channels=\(route.outputChannelCount) sampleRate=\(formatSampleRate(route.nominalSampleRate))"
+                "Selected \(purpose.lowerTitle) output label=\(label) device=\(route.deviceName) uid=\(route.uid) channels=\(route.outputChannelCount) sampleRate=\(formatSampleRate(route.nominalSampleRate))"
             )
+            return true
         } catch {
             lastError = error.localizedDescription
-            statusMessage = "Could not select \(label) for monitoring."
-            AppLogger.shared.error(category: "route", "Monitor output selection failed: \(error.localizedDescription)")
+            statusMessage = "Could not select \(label) for \(purpose.lowerTitle)."
+            AppLogger.shared.error(category: "route", "\(purpose.title) output selection failed: \(error.localizedDescription)")
+            return false
         }
     }
 
-    private func resolvedSelectedOutputRoute(
+    private func resolvedMonitorOutputRoute(
         from routes: [OutputRouteInfo],
         systemOutput: OutputRouteInfo
     ) -> OutputRouteInfo {
-        if let selectedOutputDeviceUID,
-           let selectedRoute = routes.first(where: { $0.uid == selectedOutputDeviceUID }) {
-            return selectedRoute
+        OutputRouteSelectionPolicy.monitorRoute(
+            from: routes,
+            selection: monitorOutputSelection,
+            systemOutput: systemOutput
+        )
+    }
+
+    private func resolvedRendererOutputRoute(
+        from routes: [OutputRouteInfo],
+        systemOutput: OutputRouteInfo
+    ) -> OutputRouteInfo {
+        OutputRouteSelectionPolicy.rendererRoute(
+            from: routes,
+            selection: rendererOutputSelection,
+            systemOutput: systemOutput
+        )
+    }
+
+    private func refreshedActiveOutputRoute(from routes: [OutputRouteInfo]) -> OutputRouteInfo {
+        if outputRoute.isAvailable,
+           let refreshedRoute = routes.first(where: { $0.uid == outputRoute.uid || $0.deviceID == outputRoute.deviceID }) {
+            return refreshedRoute
         }
 
-        if systemOutput.isAvailable {
-            return systemOutput
+        if rendererOutputRoute.isAvailable {
+            return rendererOutputRoute
         }
 
-        return routes.first ?? .unavailable
+        if monitorOutputRoute.isAvailable {
+            return monitorOutputRoute
+        }
+
+        return .unavailable
+    }
+
+    @discardableResult
+    private func prepareOutputForMusicPlayback() -> Bool {
+        refreshRoutesIfNeeded(force: true)
+
+        if rendererOutputSelection != .none {
+            return ensureOutputForAction(.renderer)
+        }
+
+        if monitorOutputRoute.isAvailable {
+            return applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName)
+        }
+
+        let fallbackRoute = outputRoute.isAvailable ? outputRoute : systemOutputRoute
+        if fallbackRoute.isAvailable {
+            guard fallbackRoute.isSelectableOutputTarget else {
+                let message = outputFeedbackMessage(for: fallbackRoute, purpose: .renderer)
+                statusMessage = message
+                lastError = message
+                AppLogger.shared.error(category: "route", message)
+                return false
+            }
+
+            outputRoute = fallbackRoute
+            syncRendererAudioRouting()
+            return true
+        }
+
+        AppLogger.shared.notice(
+            category: "route",
+            "Music playback starting without an explicit renderer output; using the current AVAudioEngine output route."
+        )
+        return true
+    }
+
+    @discardableResult
+    private func ensureOutputForAction(_ purpose: OutputPurpose) -> Bool {
+        refreshRoutesIfNeeded(force: true)
+
+        let selection = purpose == .monitor ? monitorOutputSelection : rendererOutputSelection
+        if selection == .none {
+            let message = "Select a \(purpose.lowerTitle) output before starting this action."
+            statusMessage = message
+            lastError = message
+            AppLogger.shared.error(category: "route", message)
+            return false
+        }
+
+        let route = purpose == .monitor ? monitorOutputRoute : rendererOutputRoute
+        guard route.isAvailable else {
+            let message = "No \(purpose.lowerTitle) output route is available."
+            statusMessage = message
+            lastError = message
+            AppLogger.shared.error(category: "route", message)
+            return false
+        }
+
+        return applyOutputRouteIfAvailable(route, purpose: purpose, label: route.deviceName)
     }
 
     private func resolvedSelectedInputRoute(
@@ -2066,15 +3445,11 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func applyLiveChannelDefaults(for route: InputRouteInfo) {
-        let available = max(min(route.inputChannelCount, OrbisonicAudioLimits.maxSourceChannelCount), 1)
-
-        if activeLiveChannelCount > available {
-            activeLiveChannelCount = available
-        }
-
-        if route.isOrbisonicLoopback, activeLiveChannelCount <= 1, available >= 8 {
-            activeLiveChannelCount = 8
-        }
+        activeLiveChannelCount = LiveChannelCountPolicy.preferredCount(
+            sourceMode: sourceMode,
+            availableInputChannels: route.inputChannelCount,
+            activeCount: activeLiveChannelCount
+        )
     }
 
     private func handlePlaybackEnded() {
@@ -2086,6 +3461,7 @@ final class OrbisonicViewModel: ObservableObject {
         meterStore.reset()
         monitorMeterStore.reset()
         rendererMeterStore.reset()
+        reevaluateAutomaticRendererMode(reason: "playback ended")
         statusMessage = "Playback finished."
     }
 
@@ -2129,6 +3505,11 @@ final class OrbisonicViewModel: ObservableObject {
         for keyPath in [primary, secondary, tertiary] {
             let lhsValue = lhs[keyPath: keyPath]
             let rhsValue = rhs[keyPath: keyPath]
+            let lhsBlank = lhsValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let rhsBlank = rhsValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if lhsBlank != rhsBlank {
+                return !lhsBlank
+            }
             let comparison = lhsValue.localizedStandardCompare(rhsValue)
             if comparison == .orderedAscending { return true }
             if comparison == .orderedDescending { return false }
@@ -2146,6 +3527,10 @@ final class OrbisonicViewModel: ObservableObject {
             repairBlackHoleSampleRateIfNeeded()
         }
 
+        if sourceMode == .spotify {
+            refreshSpotifyNowPlayingIfNeeded()
+        }
+
         let engineDuration = engine.duration()
         if abs(engineDuration - duration) >= 0.001 {
             duration = engineDuration
@@ -2158,9 +3543,10 @@ final class OrbisonicViewModel: ObservableObject {
             }
 
             let levels = engine.channelMeterLevels()
+            let audibleLevels = liveMonitorState.isMuted ? [] : levels
             meterStore.update(with: levels)
-            updateMonitorMeters()
-            updateRendererMeters(from: liveMonitorState.isMuted ? [] : levels)
+            updateMonitorMeters(from: audibleLevels)
+            updateRendererMeters(from: audibleLevels)
 
             let wholeSecond = Int(nextTime.rounded(.down))
             updateLiveBufferStatus(elapsedSecond: wholeSecond)
@@ -2208,7 +3594,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         let levels = engine.channelMeterLevels()
         meterStore.update(with: levels)
-        updateMonitorMeters()
+        updateMonitorMeters(from: levels)
         updateRendererMeters(from: levels)
     }
 
@@ -2236,17 +3622,42 @@ final class OrbisonicViewModel: ObservableObject {
             )
         }
 
-        let nextRoute = resolvedSelectedOutputRoute(
+        let nextMonitorOutputRoute = resolvedMonitorOutputRoute(
             from: nextAvailableOutputRoutes,
             systemOutput: nextSystemOutputRoute
         )
-        if nextRoute != outputRoute {
-            outputRoute = nextRoute
+        if nextMonitorOutputRoute != monitorOutputRoute {
+            monitorOutputRoute = nextMonitorOutputRoute
+            configureMonitorMeters()
+            AppLogger.shared.notice(
+                category: "route",
+                "Monitor output route changed device=\(nextMonitorOutputRoute.deviceName) transport=\(nextMonitorOutputRoute.transportName) channels=\(nextMonitorOutputRoute.outputChannelCount) target=\(nextMonitorOutputRoute.targetName)"
+            )
+        }
+
+        let nextRendererOutputRoute = resolvedRendererOutputRoute(
+            from: nextAvailableOutputRoutes,
+            systemOutput: nextSystemOutputRoute
+        )
+        if nextRendererOutputRoute != rendererOutputRoute {
+            rendererOutputRoute = nextRendererOutputRoute
+            configureMonitorMeters()
+            configureRendererMeters()
+            syncRendererAudioRouting()
+            AppLogger.shared.notice(
+                category: "route",
+                "Renderer output route changed device=\(nextRendererOutputRoute.deviceName) transport=\(nextRendererOutputRoute.transportName) channels=\(nextRendererOutputRoute.outputChannelCount) target=\(nextRendererOutputRoute.targetName)"
+            )
+        }
+
+        let refreshedActiveRoute = refreshedActiveOutputRoute(from: nextAvailableOutputRoutes)
+        if refreshedActiveRoute != outputRoute {
+            outputRoute = refreshedActiveRoute
             configureMonitorMeters()
 
-            if nextRoute.isAvailable, !isPlaying, !isTestTonePlaying, !isDiagnosticSequencePlaying {
+            if refreshedActiveRoute.isAvailable, !isPlaying, !isTestTonePlaying, !isDiagnosticSequencePlaying {
                 do {
-                    try engine.setOutputDevice(nextRoute.deviceID)
+                    try engine.setOutputDevice(refreshedActiveRoute.deviceID)
                 } catch {
                     AppLogger.shared.warning(category: "route", "Could not apply refreshed output device: \(error.localizedDescription)")
                 }
@@ -2254,17 +3665,19 @@ final class OrbisonicViewModel: ObservableObject {
 
             AppLogger.shared.notice(
                 category: "route",
-                "Monitor output route changed device=\(nextRoute.deviceName) transport=\(nextRoute.transportName) channels=\(nextRoute.outputChannelCount) target=\(nextRoute.targetName)"
+                "Active output route changed device=\(refreshedActiveRoute.deviceName) transport=\(refreshedActiveRoute.transportName) channels=\(refreshedActiveRoute.outputChannelCount) target=\(refreshedActiveRoute.targetName)"
             )
 
             if isPlaying {
                 statusMessage = "Playing through \(routeDisplayName)."
             } else if let metadata = sourceMetadata {
                 statusMessage = "Loaded \(metadata.fileName). Current route: \(routeDisplayName)."
-            } else if outputRoute.isAvailable {
-                statusMessage = "Load a surround file. Current monitor output: \(routeDisplayName)."
+            } else if rendererOutputRoute.isAvailable {
+                statusMessage = "Load a surround file. Current renderer output: \(rendererOutputRoute.deviceName)."
+            } else if monitorOutputRoute.isAvailable {
+                statusMessage = "Load a surround file. Current monitor output: \(monitorOutputRoute.deviceName)."
             } else {
-                statusMessage = "Load a surround file. The active macOS output route will appear below."
+                statusMessage = "Load a surround file. Monitor and renderer outputs are not set."
             }
         }
 
@@ -2300,13 +3713,14 @@ final class OrbisonicViewModel: ObservableObject {
                 "Orbisonic input route changed device=\(nextInputRoute.deviceName) transport=\(nextInputRoute.transportName) channels=\(nextInputRoute.inputChannelCount) sampleRate=\(formatSampleRate(nextInputRoute.nominalSampleRate)) blackHole=\(nextInputRoute.isBlackHole)"
             )
 
+            if sourceMode == .spotify, nextInputRoute.isSpotifyLoopback {
+                refreshSpotifyConnectServerIfNeeded(reason: "spotify input route changed")
+            }
+
             if sourceMode.isLiveInput, isPlaying, previousInputRoute.deviceID != nextInputRoute.deviceID {
-                if sourceMode == .roon, !nextInputRoute.isRoonLoopback {
+                if !sourceMode.acceptsInputRoute(nextInputRoute) {
                     stop()
-                    statusMessage = "Live input stopped because Orbisonic Roon Input is unavailable. The macOS system input is still \(systemInputRoute.displayName)."
-                } else if sourceMode == .aux, !nextInputRoute.isAuxLoopback {
-                    stop()
-                    statusMessage = "Live input stopped because Orbisonic Aux Cable is unavailable."
+                    statusMessage = "Live input stopped because \(sourceMode.expectedLoopback?.displayName ?? "the selected Orbisonic input") is unavailable."
                 } else if nextInputRoute.isAvailable {
                     startLiveInputForCurrentRoute(reason: "selected input route changed")
                 } else {
@@ -2333,42 +3747,192 @@ final class OrbisonicViewModel: ObservableObject {
         reloadRendererPresets(selectCurrent: false)
     }
 
+    private func restorePersistedRendererOptions() {
+        guard let data = UserDefaults.standard.data(forKey: Self.rendererOptionsKey),
+              let options = try? JSONDecoder().decode(FeyRendererOptions.self, from: data)
+        else { return }
+
+        rendererPreset = rendererPreset.replacingOptions(options.clamped)
+        syncRendererControlsFromPreset(rendererPreset)
+        refreshRendererScene()
+        rendererPresetIsDirty = true
+        rendererPresetStatus = "Loaded persisted FEY renderer tuning."
+        AppLogger.shared.notice(category: "renderer", "Loaded persisted renderer tuning from UserDefaults.")
+    }
+
     private func applyRendererPreset(_ preset: RendererPreset, markDirty: Bool) {
-        rendererPreset = preset
+        rendererPreset = preset.normalizedForCurrentSchema
         rendererPresetIsDirty = markDirty
-        suppressRendererPublish = true
-        rendererBedRadius = preset.inputGeometry.bedRadius
-        suppressRendererPublish = false
+        syncRendererControlsFromPreset(rendererPreset)
         refreshRendererScene()
     }
 
-    private func updateRendererBedRadius(_ rawRadius: Double) {
-        let radius = min(max(rawRadius, 0.25), 1.75)
-        if abs(radius - rawRadius) > 0.000_1 {
-            suppressRendererPublish = true
-            rendererBedRadius = radius
-            suppressRendererPublish = false
-        }
+    private func syncRendererControlsFromPreset(_ preset: RendererPreset) {
+        suppressRendererPublish = true
+        rendererSeamSupportGain = preset.options.seamSupportGain
+        rendererUpperBiasDbPerUnitZ = preset.options.upperBiasDbPerUnitZ
+        rendererStereoRearFill = preset.options.stereoRearFill
+        rendererCenterSideSupportGain = preset.options.centerSideSupportGain
+        rendererAdjacentBleed = preset.options.adjacentBleed
+        rendererMaxSingleSpeakerPowerShare = preset.options.maxSingleSpeakerPowerShare
+        rendererRenderedOutputTrimDb = preset.options.renderedMainTrimDb
+        rendererLfeTrimDb = preset.options.lfeTrimDb
+        rendererAuroLowerUpperBiasDbPerUnitZ = preset.options.defaultUpperBiasDbPerUnitZ
+        rendererAuroHeightUpperBiasDbPerUnitZ = preset.options.heightUpperBiasDbPerUnitZ
+        rendererAuroHeightMaxSingleSpeakerPowerShare = preset.options.heightMaxSingleSpeakerPowerShare
+        rendererAuroTopMaxSingleSpeakerPowerShare = preset.options.topMaxSingleSpeakerPowerShare
+        rendererFiveOneChannelOrder = preset.options.fiveOneChannelOrder
+        suppressRendererPublish = false
+    }
 
-        rendererPreset = rendererPreset.replacingBedRadius(radius)
+    private func publishRendererOptions() {
+        guard !suppressRendererPublish else { return }
+
+        let options = FeyRendererOptions(
+            coreGain: rendererPreset.options.coreGain,
+            seamSupportGain: rendererSeamSupportGain,
+            upperBiasDbPerUnitZ: rendererUpperBiasDbPerUnitZ,
+            stereoRearFill: rendererStereoRearFill,
+            centerSideSupportGain: rendererCenterSideSupportGain,
+            adjacentBleed: rendererAdjacentBleed,
+            maxSingleSpeakerPowerShare: rendererMaxSingleSpeakerPowerShare,
+            renderedOutputTrimDb: rendererRenderedOutputTrimDb,
+            directOutputTrimDb: rendererPreset.options.directOutputTrimDb,
+            fiveOneChannelOrder: rendererFiveOneChannelOrder,
+            renderedMainTrimDb: rendererRenderedOutputTrimDb,
+            lfeTrimDb: rendererLfeTrimDb,
+            defaultMaxSingleSpeakerPowerShare: rendererMaxSingleSpeakerPowerShare,
+            heightMaxSingleSpeakerPowerShare: rendererAuroHeightMaxSingleSpeakerPowerShare,
+            topMaxSingleSpeakerPowerShare: rendererAuroTopMaxSingleSpeakerPowerShare,
+            defaultUpperBiasDbPerUnitZ: rendererAuroLowerUpperBiasDbPerUnitZ,
+            heightUpperBiasDbPerUnitZ: rendererAuroHeightUpperBiasDbPerUnitZ
+        ).clamped
+
+        rendererPreset = rendererPreset.replacingOptions(options)
         rendererPresetIsDirty = true
-        rendererPresetStatus = "Edited \(rendererPreset.name). Save to update its JSON preset."
+        rendererPresetStatus = "FEY renderer tuning changed."
+        persistRendererOptions(options)
+        syncRendererControlsFromPreset(rendererPreset)
         refreshRendererScene()
+    }
+
+    private func persistRendererOptions(_ options: FeyRendererOptions) {
+        if let data = try? JSONEncoder().encode(options) {
+            UserDefaults.standard.set(data, forKey: Self.rendererOptionsKey)
+        }
+        AppLogger.shared.info(
+            category: "renderer",
+            "Renderer tuning persisted seam=\(String(format: "%.3f", options.seamSupportGain)) upperBias=\(String(format: "%.3f", options.upperBiasDbPerUnitZ)) rearFill=\(String(format: "%.3f", options.stereoRearFill)) trim=\(String(format: "%.3f", options.renderedOutputTrimDb))"
+        )
     }
 
     private func refreshRendererScene() {
-        rendererScene = RendererMatrixBuilder.sceneModel(
-            for: currentRendererLayout,
-            preset: rendererPreset
-        )
+        rendererScene = rendererScene(forRequestedMode: rendererRenderMode)
+        syncRendererAudioRouting()
+        configureMonitorMeters()
         configureRendererMeters()
+    }
+
+    private func rendererScene(forRequestedMode requestedMode: RendererRenderMode) -> RendererSceneModel {
+        RendererMatrixBuilder.sceneModel(
+            for: currentRendererLayout,
+            preset: rendererPreset,
+            renderMode: effectiveRendererRenderMode(forRequestedMode: requestedMode)
+        )
+    }
+
+    private func effectiveRendererRenderMode(forRequestedMode requestedMode: RendererRenderMode) -> RendererRenderMode {
+        RendererModePolicy.effectiveRequestedMode(
+            requestedMode: requestedMode,
+            inputChannelCount: currentRendererLayout?.channelCount,
+            alwaysMono: rendererAlwaysMono,
+            twoChannelPreference: rendererTwoChannelPreference
+        )
+    }
+
+    private func rendererModeStatusMessage(requestedMode: RendererRenderMode) -> String {
+        if let message = rendererScene.validationMessages.last,
+           rendererScene.renderMode != rendererScene.requestedRenderMode {
+            return message
+        }
+
+        if rendererAlwaysMono {
+            return "Renderer mode set to Always Mono. Using \(rendererScene.renderMode.displayName)."
+        }
+
+        if requestedMode == .automatic,
+           currentRendererLayout?.channelCount == 2,
+           rendererTwoChannelPreference != .automatic {
+            return "Renderer Auto uses \(rendererTwoChannelPreference.displayName) for two-channel sources."
+        }
+
+        return "Renderer mode set to \(requestedMode.displayName)."
+    }
+
+    private func resetRendererRequestToAutomatic(reason: String) {
+        guard rendererRenderMode != .automatic else {
+            refreshRendererScene()
+            return
+        }
+
+        rendererRenderMode = .automatic
+        persistRendererRenderMode()
+        refreshRendererScene()
+        AppLogger.shared.info(category: "renderer", "Renderer request reset to Auto reason=\(reason)")
+    }
+
+    private func reevaluateAutomaticRendererMode(reason: String) {
+        refreshRendererScene()
+        if rendererRenderMode == .automatic {
+            AppLogger.shared.info(
+                category: "renderer",
+                "Re-evaluated automatic renderer mode reason=\(reason) resolved=\(rendererScene.renderMode.rawValue) inputChannels=\(rendererScene.matrix.inputCount)"
+            )
+        }
+    }
+
+    private var shouldUseDirectRendererAudio: Bool {
+        shouldUseDirectRendererAudio(scene: rendererScene)
+    }
+
+    private func shouldUseDirectRendererAudio(scene: RendererSceneModel) -> Bool {
+        RendererAudioRoutingPolicy.usesDirectRendererAudio(
+            renderMode: scene.renderMode,
+            activeOutputRoute: outputRoute,
+            rendererOutputRoute: rendererOutputRoute,
+            requiredOutputChannelCount: rendererOutputChannelRequirement(for: scene)
+        )
+    }
+
+    private var rendererOutputChannelRequirement: Int {
+        rendererOutputChannelRequirement(for: rendererScene)
+    }
+
+    private func rendererOutputChannelRequirement(for scene: RendererSceneModel) -> Int {
+        if scene.renderMode == .direct30 {
+            return FeyStaticBedRenderer.fullRangeOutputs
+        }
+
+        if scene.matrix.outputCount > 0 {
+            return scene.matrix.outputCount
+        }
+
+        return rendererPreset.outputTopology.fullRangeCount + rendererPreset.outputTopology.lfeCount
+    }
+
+    private func syncRendererAudioRouting() {
+        engine.updateRenderer(
+            mode: rendererScene.renderMode,
+            scene: rendererScene,
+            directRendererAudioEnabled: shouldUseDirectRendererAudio
+        )
     }
 
     private func configureMonitorMeters() {
         monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
     }
 
-    private func updateMonitorMeters() {
+    private func updateMonitorMeters(from _: [Float]) {
         let levels = engine.monitorMeterLevels()
         let channelCount = monitorChannelWalkCount
         let paddedLevels = padded(levels, count: channelCount)
@@ -2384,46 +3948,31 @@ final class OrbisonicViewModel: ObservableObject {
         let channels = rendererMeterChannels()
         guard !channels.isEmpty else { return }
 
-        rendererMeterStore.configureIfNeeded(channels: channels)
+        updateRenderedMeterStore(
+            rendererMeterStore,
+            channels: channels,
+            scene: rendererScene,
+            sourceLevels: sourceLevels
+        )
+    }
 
-        guard rendererScene.matrix.inputCount > 0,
-              rendererScene.matrix.outputCount == channels.count,
-              sourceLevels.count == rendererScene.matrix.inputCount
-        else {
-            rendererMeterStore.update(with: Array(repeating: 0, count: channels.count))
-            return
-        }
+    private func updateRenderedMeterStore(
+        _ store: ChannelMeterStore,
+        channels: [SurroundChannel],
+        scene: RendererSceneModel,
+        sourceLevels: [Float]
+    ) {
+        store.configureIfNeeded(channels: channels)
 
-        var nextLevels = Array(repeating: Float(0), count: rendererScene.matrix.outputCount)
-
-        for inputIndex in 0..<rendererScene.matrix.inputCount {
-            let inputLevel = sourceLevels[inputIndex]
-            guard inputLevel > 0 else { continue }
-
-            for outputIndex in 0..<rendererScene.matrix.outputCount {
-                let gain = Float(abs(rendererScene.matrix.gains[inputIndex][outputIndex]))
-                let weightedLevel = inputLevel * gain
-                nextLevels[outputIndex] += weightedLevel * weightedLevel
-            }
-        }
-
-        rendererMeterStore.update(with: nextLevels.map { min(sqrtf($0), 1) })
+        store.update(with: RendererMeterDisplayModel.levels(for: scene, sourceLevels: sourceLevels))
     }
 
     private func rendererMeterChannels() -> [SurroundChannel] {
-        var lfeCount = 0
+        rendererMeterChannels(for: rendererScene)
+    }
 
-        return rendererScene.outputSpeakers.enumerated().map { offset, speaker in
-            let role: SurroundChannelRole
-            if speaker.isLFE {
-                role = lfeCount == 0 ? .lfe : .lfe2
-                lfeCount += 1
-            } else {
-                role = .discrete(offset)
-            }
-
-            return SurroundChannel(index: offset, role: role)
-        }
+    private func rendererMeterChannels(for scene: RendererSceneModel) -> [SurroundChannel] {
+        RendererMeterDisplayModel.channels(for: scene)
     }
 
     private func padded(_ levels: [Float], count: Int) -> [Float] {
@@ -2496,6 +4045,8 @@ final class OrbisonicViewModel: ObservableObject {
             liveSignalStatus = "\(liveInputSignalName) is silent because Roon is paused."
         } else if sourceMode == .roon {
             liveSignalStatus = "\(liveInputSignalName) is silent. Select Orbisonic Roon Input in Roon and start playback."
+        } else if sourceMode == .spotify {
+            liveSignalStatus = "\(liveInputSignalName) is silent. Start Spotify playback and select Orbisonic Spotify in Spotify Connect."
         } else {
             liveSignalStatus = "\(liveInputSignalName) is silent. Start the source or route it to Orbisonic Aux Cable."
         }
@@ -2637,11 +4188,85 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func refreshSpotifyNowPlayingIfNeeded(force: Bool = false) {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastSpotifyNowPlayingRefreshTime) >= Self.spotifyNowPlayingRefreshInterval else { return }
+        lastSpotifyNowPlayingRefreshTime = now
+
+        let next = spotifyReceiverClient.readNowPlaying()
+        if next != spotifyNowPlaying {
+            spotifyNowPlaying = next
+        }
+
+        if sourceMode == .spotify, next == nil, spotifyReceiverStatus.isRunning {
+            refreshSpotifyConnectServerIfNeeded(reason: "stale now playing")
+        }
+    }
+
+    private func refreshSpotifyConnectServerIfNeeded(reason: String, force: Bool = false) {
+        guard sourceMode == .spotify else { return }
+
+        let now = Date()
+        guard force || now.timeIntervalSince(lastSpotifyConnectRefreshTime) >= Self.spotifyConnectRestartDebounce else { return }
+        lastSpotifyConnectRefreshTime = now
+
+        if spotifyReceiverStatus.isRunning || force {
+            spotifyReceiverStatus = SpotifyReceiverStatus(
+                state: .restarting,
+                message: "Spotify Connect server is restarting."
+            )
+            spotifyReceiverClient.stop()
+        }
+
+        spotifyReceiverStatus = spotifyReceiverClient.start()
+        AppLogger.shared.notice(
+            category: "spotify-receiver",
+            "Refreshed Spotify Connect server reason=\(reason) state=\(spotifyReceiverStatus.state.rawValue)"
+        )
+    }
+
+    func toggleSpotifyTransport() {
+        sendSpotifyControl(.playPause)
+    }
+
+    func playPreviousSpotifyTrack() {
+        sendSpotifyControl(.previous)
+    }
+
+    func playNextSpotifyTrack() {
+        sendSpotifyControl(.next)
+    }
+
+    func seekSpotifyBy(seconds delta: Int) {
+        guard let nowPlaying = spotifyNowPlaying,
+              let current = nowPlaying.positionMs
+        else { return }
+
+        let duration = nowPlaying.durationMs ?? current
+        let next = UInt32(min(max(Int(current) + delta * 1_000, 0), Int(duration)))
+        sendSpotifyControl(.seek(positionMs: next))
+    }
+
+    private func sendSpotifyControl(_ control: SpotifyReceiverControl) {
+        guard sourceMode == .spotify else { return }
+        if spotifyReceiverClient.send(control) {
+            refreshSpotifyNowPlayingIfNeeded(force: true)
+            statusMessage = "Sent Spotify Connect control."
+        } else {
+            statusMessage = "Spotify Connect control is not available in this build or the receiver is not active."
+            refreshSpotifyConnectServerIfNeeded(reason: "control failed", force: true)
+        }
+    }
+
     private func sendRoonTransport(_ control: RoonBridgeControl) {
         guard sourceMode == .roon else { return }
+        guard !isRoonTransportCommandInFlight else { return }
+        isRoonTransportCommandInFlight = true
+        statusMessage = "Sending \(control.rawValue) to Roon..."
 
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { isRoonTransportCommandInFlight = false }
 
             do {
                 let response = try await roonBridgeClient.sendStartingIfNeeded(control)
@@ -2716,7 +4341,6 @@ final class OrbisonicViewModel: ObservableObject {
         suppressTuningPublish = true
         frontAngle = defaults.frontAngle
         rearAngle = defaults.rearAngle
-        headTrackingEnabled = defaults.headTrackingEnabled
         suppressTuningPublish = false
 
         if pushToEngine {
@@ -2735,6 +4359,7 @@ final class OrbisonicViewModel: ObservableObject {
         }
         return String(format: "%02d:%02d", minutes, seconds)
     }
+
 }
 
 private extension SpatialPreset {

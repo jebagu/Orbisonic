@@ -20,6 +20,21 @@ let package = Package(
             ],
             resources: [
                 .process("Resources")
+            ],
+            swiftSettings: [
+                .define("ORBISONIC_ENABLE_EMBEDDED_LIBRESPOT")
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L", ".build/orbisonic-librespot",
+                    "-lorbisonic_librespot_ffi",
+                    "-framework", "AudioToolbox",
+                    "-framework", "CoreAudio",
+                    "-framework", "CoreFoundation",
+                    "-framework", "Foundation",
+                    "-framework", "Security",
+                    "-framework", "SystemConfiguration"
+                ])
             ]
         ),
         .testTarget(

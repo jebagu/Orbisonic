@@ -10,6 +10,12 @@
 - `Orbisonic.app` is the user-facing double-clickable app bundle in the project root.
 - Sonic Sphere is the physical spatial audio system. Orbisonic is the software tool for interfacing with it.
 
+## Local Hosting
+
+- Permanent local public page: `http://127.0.0.1:37943/Orbisonic/`
+- Permanent local control page: `http://127.0.0.1:37943/Orbisonic/control/`
+- The control page uses a runtime access token shown by the desktop app. Do not commit copied tokenized URLs.
+
 ## Privacy Hygiene
 
 - Do not add real names, local usernames, machine-specific absolute paths, or personal folders such as Desktop, Downloads, or Documents to repo-tracked files.
@@ -30,17 +36,19 @@ Use Xcode's developer dir for tests:
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-After changing app code, refresh the bundle:
+After changing app code, refresh and verify the bundle:
 
 ```sh
-cp .build/arm64-apple-macosx/debug/Orbisonic Orbisonic.app/Contents/MacOS/Orbisonic
-chmod +x Orbisonic.app/Contents/MacOS/Orbisonic
-codesign --force --deep --sign - Orbisonic.app
-codesign --verify --deep --strict --verbose=2 Orbisonic.app
-plutil -lint Orbisonic.app/Contents/Info.plist
+./scripts/refresh-orbisonic-app.sh
 ```
 
-If the app is already running, quit and reopen it before judging UI/audio behavior.
+If the app is already running, quit and reopen it through LaunchServices before judging UI/audio behavior:
+
+```sh
+./scripts/reopen-orbisonic-app.sh
+```
+
+Do not launch `Orbisonic.app/Contents/MacOS/Orbisonic` directly for GUI/audio verification. AppKit needs LaunchServices registration, and raw executable launches can abort before Orbisonic code runs.
 
 ## Audio Priorities
 

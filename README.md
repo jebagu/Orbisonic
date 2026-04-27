@@ -61,9 +61,13 @@ Orbisonic also keeps a binaural headphone/monitor path available for setup, chec
 
 ```bash
 cd Orbisonic
-swift build
-swift run
+./scripts/refresh-orbisonic-app.sh
+./scripts/reopen-orbisonic-app.sh
 ```
+
+Orbisonic is a macOS GUI app. For development launches, open `Orbisonic.app`
+through LaunchServices with the reopen script above; do not run
+`Orbisonic.app/Contents/MacOS/Orbisonic` directly.
 
 ## Installer
 

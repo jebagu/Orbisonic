@@ -1,4 +1,5 @@
 import AudioToolbox
+import AppKit
 import AVFoundation
 
 enum TransportState: String {
@@ -14,6 +15,7 @@ enum OutputDeviceSelectionError: LocalizedError {
     case setDeviceFailed(OSStatus)
     case invalidDiagnosticChannel(Int, Int)
     case diagnosticFormatCreationFailed(channelCount: Int, sampleRate: Double)
+    case rendererFormatCreationFailed(channelCount: Int, sampleRate: Double)
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +29,8 @@ enum OutputDeviceSelectionError: LocalizedError {
             "Diagnostic channel \(index + 1) is outside the available \(count)-channel range."
         case .diagnosticFormatCreationFailed(let channelCount, let sampleRate):
             "Unable to create a \(channelCount)-channel diagnostic output format at \(sampleRate) Hz."
+        case .rendererFormatCreationFailed(let channelCount, let sampleRate):
+            "Unable to create a \(channelCount)-channel renderer output format at \(sampleRate) Hz."
         }
     }
 }
@@ -37,6 +41,7 @@ final class OrbisonicEngine {
     private let engine = AVAudioEngine()
     private let environment = AVAudioEnvironmentNode()
     private let loader = AudioFileLoader()
+    private let diagnosticMonitorEngine = AVAudioEngine()
 
     private(set) var loadedFile: LoadedAudioFile?
     private(set) var state: TransportState = .idle
@@ -44,12 +49,21 @@ final class OrbisonicEngine {
     private(set) var liveInputSource: LiveInputSource?
 
     private var playerNodes: [AVAudioPlayerNode] = []
+    private var rendererSourceNode: AVAudioSourceNode?
     private var sourceNodes: [AVAudioSourceNode] = []
     private var testToneNodes: [AVAudioSourceNode] = []
+    private var diagnosticMonitorToneNodes: [AVAudioSourceNode] = []
+    private var diagnosticMonitorOutputDeviceID: AudioDeviceID?
     private var livePipe: LiveAudioPipe?
     private var liveCapture: LiveInputCapture?
     private var liveStartDate: Date?
     private var liveInputMuted = false
+    private var rendererMode: RendererRenderMode = .automatic
+    private var rendererScene: RendererSceneModel = .empty
+    private var directRendererAudioEnabled = false
+    private let rendererPlaybackLock = NSLock()
+    private var rendererPlaybackFrame: AVAudioFramePosition = 0
+    private var rendererPlaybackCompletionSent = false
     private let monitorMeterLock = NSLock()
     private var monitorMeterLevelSnapshot: [Float] = []
     private var currentStartFrame: AVAudioFramePosition = 0
@@ -73,7 +87,7 @@ final class OrbisonicEngine {
         currentStartFrame = 0
         state = .ready
 
-        rebuildPlayers(for: loaded)
+        rebuildPlaybackGraph(for: loaded)
         applyTuning(tuning)
 
         AppLogger.shared.notice(
@@ -84,14 +98,78 @@ final class OrbisonicEngine {
         return loaded
     }
 
+    func updateRenderer(
+        mode: RendererRenderMode,
+        scene: RendererSceneModel,
+        directRendererAudioEnabled: Bool
+    ) {
+        rendererMode = mode
+        rendererScene = scene
+        self.directRendererAudioEnabled = directRendererAudioEnabled
+
+        guard let loadedFile, liveInputSource == nil, testToneNodes.isEmpty else { return }
+        guard state != .playing else {
+            AppLogger.shared.info(category: "renderer", "Deferred renderer graph rebuild until playback stops.")
+            return
+        }
+
+        rebuildPlaybackGraph(for: loadedFile)
+        applyTuning(tuning)
+        AppLogger.shared.notice(
+            category: "renderer",
+            "Configured renderer mode=\(mode.rawValue) directAudio=\(directRendererAudioEnabled) matrix=\(scene.matrix.inputCount)x\(scene.matrix.outputCount)"
+        )
+    }
+
+    func setOutputVolume(_ volume: Float) {
+        engine.mainMixerNode.outputVolume = min(max(volume, 0), 1)
+        diagnosticMonitorEngine.mainMixerNode.outputVolume = min(max(volume, 0), 1)
+    }
+
+    func setDiagnosticMonitorOutputDevice(_ deviceID: AudioDeviceID?) throws {
+        guard let deviceID, deviceID != 0 else {
+            diagnosticMonitorOutputDeviceID = nil
+            return
+        }
+
+        guard let audioUnit = diagnosticMonitorEngine.outputNode.audioUnit else {
+            throw OutputDeviceSelectionError.outputAudioUnitUnavailable
+        }
+
+        if diagnosticMonitorEngine.isRunning {
+            diagnosticMonitorEngine.stop()
+        }
+
+        var selectedDeviceID = deviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &selectedDeviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+
+        guard status == noErr else {
+            throw OutputDeviceSelectionError.setDeviceFailed(status)
+        }
+
+        diagnosticMonitorOutputDeviceID = deviceID
+        AppLogger.shared.notice(category: "engine", "Selected diagnostic monitor output device id=\(deviceID).")
+    }
+
     func startLiveInput(
         activeChannelCount requestedChannelCount: Int,
         inputRoute: InputRouteInfo,
-        sourceName: String = "Live Input"
+        sourceName: String = "Live Input",
+        rendererMode: RendererRenderMode = .automatic,
+        rendererPreset: RendererPreset = .sonicSphere30Point1,
+        directRendererAudioEnabled: Bool = false
     ) throws -> LiveInputSource {
         stopTestTone()
         stop()
         detachPlayerNodes()
+        detachRendererSourceNode()
         detachSourceNodes()
 
         guard inputRoute.isAvailable else {
@@ -138,6 +216,11 @@ final class OrbisonicEngine {
             duration: 0
         )
         let liveSource = LiveInputSource(layout: layout, metadata: metadata)
+        let liveRendererScene = RendererMatrixBuilder.sceneModel(
+            for: layout,
+            preset: rendererPreset,
+            renderMode: rendererMode
+        )
         let pipe = LiveAudioPipe(channelCount: requestedChannelCount, sampleRate: sampleRate)
         let capture = try LiveInputCapture(
             inputRoute: inputRoute,
@@ -152,20 +235,44 @@ final class OrbisonicEngine {
         liveInputMuted = false
         loadedFile = nil
         currentStartFrame = 0
+        self.rendererMode = liveRendererScene.renderMode
+        rendererScene = liveRendererScene
+        self.directRendererAudioEnabled = directRendererAudioEnabled
 
-        sourceNodes = layout.channels.enumerated().map { index, _ in
-            AVAudioSourceNode { [weak self, weak pipe] _, _, frameCount, audioBufferList in
-                let status = pipe?.render(channelIndex: index, audioBufferList: audioBufferList, frameCount: frameCount) ?? noErr
+        if directRendererAudioEnabled,
+           liveRendererScene.renderMode.usesDirectRendererAudio,
+           liveRendererScene.matrix.inputCount == requestedChannelCount,
+           liveRendererScene.matrix.outputCount > 0 {
+            let rendererFormat = try rendererOutputFormat(
+                channelCount: liveRendererScene.matrix.outputCount,
+                sampleRate: sampleRate
+            )
+            let matrix = liveRendererScene.matrix
+            let sourceNode = AVAudioSourceNode { [weak self, weak pipe] _, _, frameCount, audioBufferList in
+                let status = pipe?.render(matrix: matrix, audioBufferList: audioBufferList, frameCount: frameCount) ?? noErr
                 if self?.liveInputMuted == true {
                     Self.clear(audioBufferList: audioBufferList, frameCount: Int(frameCount))
                 }
                 return status
             }
-        }
-
-        for sourceNode in sourceNodes {
+            sourceNodes = [sourceNode]
             engine.attach(sourceNode)
-            engine.connect(sourceNode, to: environment, format: monoFormat)
+            engine.connect(sourceNode, to: engine.mainMixerNode, format: rendererFormat)
+        } else {
+            sourceNodes = layout.channels.enumerated().map { index, _ in
+                AVAudioSourceNode { [weak self, weak pipe] _, _, frameCount, audioBufferList in
+                    let status = pipe?.render(channelIndex: index, audioBufferList: audioBufferList, frameCount: frameCount) ?? noErr
+                    if self?.liveInputMuted == true {
+                        Self.clear(audioBufferList: audioBufferList, frameCount: Int(frameCount))
+                    }
+                    return status
+                }
+            }
+
+            for sourceNode in sourceNodes {
+                engine.attach(sourceNode)
+                engine.connect(sourceNode, to: environment, format: monoFormat)
+            }
         }
 
         applyTuning(tuning)
@@ -186,7 +293,7 @@ final class OrbisonicEngine {
 
         AppLogger.shared.notice(
             category: "live-input",
-            "Started live input source=\(sourceName) input=\(inputRoute.deviceName) inputUID=\(inputRoute.uid) inputChannels=\(availableChannels) activeChannels=\(requestedChannelCount) sampleRate=\(sampleRate) layout=\(layout.name)"
+            "Started live input source=\(sourceName) input=\(inputRoute.deviceName) inputUID=\(inputRoute.uid) inputChannels=\(availableChannels) activeChannels=\(requestedChannelCount) sampleRate=\(sampleRate) layout=\(layout.name) rendererMode=\(rendererMode.rawValue) directAudio=\(directRendererAudioEnabled)"
         )
 
         return liveSource
@@ -197,6 +304,11 @@ final class OrbisonicEngine {
 
         guard let loadedFile else {
             AppLogger.shared.error(category: "engine", "Play requested with no loaded file.")
+            return
+        }
+
+        if usesDirectRendererPlayback {
+            try playDirectRenderer(loadedFile: loadedFile)
             return
         }
 
@@ -226,7 +338,12 @@ final class OrbisonicEngine {
     func pause() {
         guard state == .playing else { return }
         currentStartFrame = playbackFrame()
-        playerNodes.forEach { $0.pause() }
+        if usesDirectRendererPlayback {
+            engine.pause()
+            resetMonitorMeterLevels()
+        } else {
+            playerNodes.forEach { $0.pause() }
+        }
         state = .paused
         AppLogger.shared.notice(category: "transport", "Paused playback at frame=\(currentStartFrame) time=\(formatTime(currentTime())).")
     }
@@ -270,10 +387,12 @@ final class OrbisonicEngine {
 
     func stop() {
         playerNodes.forEach { $0.stop() }
+        resetRendererPlayback(to: 0)
         if liveInputSource != nil {
             stopLiveInput()
         }
         stopTestTone()
+        stopDiagnosticMonitorTone()
         stopEngineIfRunning(reason: "transport stop")
         completionToken = UUID()
         currentStartFrame = 0
@@ -281,8 +400,9 @@ final class OrbisonicEngine {
         AppLogger.shared.notice(category: "transport", "Stopped playback. state=\(state.rawValue)")
     }
 
-    func playTestTone(_ point: TestTonePipelinePoint) throws {
+    func playTestTone(_ point: TestTonePipelinePoint, monitorDownmix: Bool = false) throws {
         playerNodes.forEach { $0.stop() }
+        detachRendererSourceNode()
         if liveInputSource != nil {
             stopLiveInput()
         }
@@ -319,18 +439,27 @@ final class OrbisonicEngine {
             AppLogger.shared.notice(category: "engine", "AVAudioEngine started for diagnostic tone.")
         }
 
+        if monitorDownmix {
+            try playDiagnosticMonitorTone(
+                frequency: point.frequency,
+                sampleRate: sampleRate,
+                gain: min(point.gain * 1.8, 0.28)
+            )
+        }
+
         AppLogger.shared.notice(
             category: "diagnostics",
-            "Started test tone point=\(point.rawValue) frequency=\(point.frequency)Hz route=\(point.pipelineDescription)"
+            "Started test tone point=\(point.rawValue) frequency=\(point.frequency)Hz route=\(point.pipelineDescription) monitorDownmix=\(monitorDownmix)"
         )
     }
 
-    func playDiagnosticChannelTone(channelIndex: Int, channelCount: Int) throws {
+    func playDiagnosticChannelTone(channelIndex: Int, channelCount: Int, monitorDownmix: Bool = false) throws {
         guard channelCount > 0, channelIndex >= 0, channelIndex < channelCount else {
             throw OutputDeviceSelectionError.invalidDiagnosticChannel(channelIndex, channelCount)
         }
 
         playerNodes.forEach { $0.stop() }
+        detachRendererSourceNode()
         if liveInputSource != nil {
             stopLiveInput()
         }
@@ -339,12 +468,25 @@ final class OrbisonicEngine {
         let sampleRate = preferredOutputSampleRate()
         let channelFormat = try diagnosticChannelFormat(channelCount: channelCount, sampleRate: sampleRate)
 
-        let node = makeChannelToneNode(
-            channelIndex: channelIndex,
-            frequency: 440 + Double(channelIndex % 12) * 18,
-            sampleRate: sampleRate,
-            gain: 0.14
-        )
+        let node: AVAudioSourceNode
+        let diagnosticAudioDescription: String
+        if let speechClip = DiagnosticSpeechRenderer.clip(for: channelIndex + 1) {
+            node = makeChannelVoiceNode(
+                clip: speechClip,
+                channelIndex: channelIndex,
+                outputSampleRate: sampleRate
+            )
+            diagnosticAudioDescription = "speechSampleRate=\(speechClip.sampleRate) outputSampleRate=\(sampleRate)"
+        } else {
+            let frequency = 440 + Double(channelIndex % 12) * 18
+            node = makeChannelToneNode(
+                channelIndex: channelIndex,
+                frequency: frequency,
+                sampleRate: sampleRate,
+                gain: 0.14
+            )
+            diagnosticAudioDescription = "fallbackToneFrequency=\(frequency)Hz outputSampleRate=\(sampleRate)"
+        }
 
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: channelFormat)
@@ -355,9 +497,18 @@ final class OrbisonicEngine {
             AppLogger.shared.notice(category: "engine", "AVAudioEngine started for channel diagnostic tone.")
         }
 
+        if monitorDownmix {
+            if let speechClip = DiagnosticSpeechRenderer.clip(for: channelIndex + 1) {
+                try playDiagnosticMonitorVoice(clip: speechClip, sampleRate: sampleRate)
+            } else {
+                let frequency = 440 + Double(channelIndex % 12) * 18
+                try playDiagnosticMonitorTone(frequency: frequency, sampleRate: sampleRate, gain: 0.18)
+            }
+        }
+
         AppLogger.shared.notice(
             category: "diagnostics",
-            "Started channel diagnostic tone channel=\(channelIndex + 1)/\(channelCount) frequency=\(440 + Double(channelIndex % 12) * 18)Hz"
+            "Started channel diagnostic tone channel=\(channelIndex + 1)/\(channelCount) \(diagnosticAudioDescription) monitorDownmix=\(monitorDownmix)"
         )
     }
 
@@ -394,6 +545,7 @@ final class OrbisonicEngine {
     }
 
     func stopTestTone() {
+        stopDiagnosticMonitorTone()
         guard !testToneNodes.isEmpty else { return }
 
         testToneNodes.forEach { node in
@@ -402,6 +554,20 @@ final class OrbisonicEngine {
         }
         testToneNodes = []
         AppLogger.shared.notice(category: "diagnostics", "Stopped test tone.")
+    }
+
+    private func stopDiagnosticMonitorTone() {
+        guard !diagnosticMonitorToneNodes.isEmpty || diagnosticMonitorEngine.isRunning else { return }
+
+        diagnosticMonitorToneNodes.forEach { node in
+            diagnosticMonitorEngine.disconnectNodeOutput(node)
+            diagnosticMonitorEngine.detach(node)
+        }
+        diagnosticMonitorToneNodes = []
+        if diagnosticMonitorEngine.isRunning {
+            diagnosticMonitorEngine.stop()
+        }
+        AppLogger.shared.notice(category: "diagnostics", "Stopped diagnostic monitor downmix.")
     }
 
     func seek(toProgress progress: Double) {
@@ -416,11 +582,16 @@ final class OrbisonicEngine {
         )
 
         if state == .playing {
-            playerNodes.forEach { $0.stop() }
-            scheduleFromCurrentPosition()
-            startPlayers()
+            if usesDirectRendererPlayback {
+                resetRendererPlayback(to: currentStartFrame)
+            } else {
+                playerNodes.forEach { $0.stop() }
+                scheduleFromCurrentPosition()
+                startPlayers()
+            }
         } else if state == .paused {
             playerNodes.forEach { $0.stop() }
+            resetRendererPlayback(to: currentStartFrame)
         }
     }
 
@@ -501,7 +672,7 @@ final class OrbisonicEngine {
         applyTuning(tuning)
         AppLogger.shared.info(
             category: "tuning",
-            "Updated tuning preset=\(tuning.preset.rawValue) frontAngle=\(tuning.frontAngle) rearAngle=\(tuning.rearAngle) headTracking=\(tuning.headTrackingEnabled)"
+            "Updated tuning preset=\(tuning.preset.rawValue) frontAngle=\(tuning.frontAngle) rearAngle=\(tuning.rearAngle)"
         )
     }
 
@@ -519,8 +690,33 @@ final class OrbisonicEngine {
         installMonitorMeterTap()
     }
 
-    private func rebuildPlayers(for loadedFile: LoadedAudioFile) {
+    private var usesDirectRendererPlayback: Bool {
+        directRendererAudioEnabled && rendererMode.usesDirectRendererAudio && rendererSourceNode != nil
+    }
+
+    private func rebuildPlaybackGraph(for loadedFile: LoadedAudioFile) {
         detachPlayerNodes()
+        detachRendererSourceNode()
+
+        if directRendererAudioEnabled,
+           rendererMode.usesDirectRendererAudio,
+           rendererScene.matrix.inputCount == loadedFile.layout.channelCount,
+           rendererScene.matrix.outputCount > 0,
+           let rendererFormat = try? rendererOutputFormat(
+                channelCount: rendererScene.matrix.outputCount,
+                sampleRate: loadedFile.sampleRate
+           ) {
+            let sourceNode = makeFileRendererNode(loadedFile: loadedFile, matrix: rendererScene.matrix)
+            rendererSourceNode = sourceNode
+            resetRendererPlayback(to: currentStartFrame)
+            engine.attach(sourceNode)
+            engine.connect(sourceNode, to: engine.mainMixerNode, format: rendererFormat)
+            AppLogger.shared.info(
+                category: "engine",
+                "Rebuilt playback graph with direct FEY renderer outputs=\(rendererScene.matrix.outputCount) bypass=\(rendererScene.matrix.isBypass)."
+            )
+            return
+        }
 
         playerNodes = loadedFile.layout.channels.map { _ in AVAudioPlayerNode() }
 
@@ -535,11 +731,46 @@ final class OrbisonicEngine {
         )
     }
 
+    private func playDirectRenderer(loadedFile: LoadedAudioFile) throws {
+        if rendererSourceNode == nil {
+            rebuildPlaybackGraph(for: loadedFile)
+        }
+
+        guard rendererSourceNode != nil else {
+            scheduleFromCurrentPosition()
+            startPlayers()
+            state = .playing
+            return
+        }
+
+        switch state {
+        case .paused:
+            if !engine.isRunning {
+                try engine.start()
+                AppLogger.shared.notice(category: "engine", "AVAudioEngine restarted for direct renderer playback.")
+            }
+            state = .playing
+            AppLogger.shared.notice(category: "transport", "Resumed direct renderer playback at \(formatTime(currentTime())) / \(loadedFile.metadata.durationText).")
+        case .playing:
+            AppLogger.shared.debug(category: "transport", "Direct renderer play requested while already playing.")
+        case .idle, .ready:
+            completionToken = UUID()
+            resetRendererPlayback(to: currentStartFrame)
+            if !engine.isRunning {
+                try engine.start()
+                AppLogger.shared.notice(category: "engine", "AVAudioEngine started for direct renderer playback.")
+            }
+            state = .playing
+            AppLogger.shared.notice(
+                category: "transport",
+                "Started direct renderer playback state=\(state.rawValue) startFrame=\(currentStartFrame) layout=\(loadedFile.layout.name) outputs=\(rendererScene.matrix.outputCount)"
+            )
+        }
+    }
+
     private func applyTuning(_ tuning: SpatialTuning) {
         environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
         environment.listenerAngularOrientation = AVAudio3DAngularOrientation(yaw: 0, pitch: 0, roll: 0)
-
-        // Head tracking is controlled by the active output route/profile when the SDK exposes it.
 
         if let loadedFile {
             for (channel, player) in zip(loadedFile.layout.channels, playerNodes) {
@@ -611,6 +842,136 @@ final class OrbisonicEngine {
         return mixerFormat.sampleRate > 0 ? mixerFormat.sampleRate : 48_000
     }
 
+    private func rendererOutputFormat(channelCount: Int, sampleRate: Double) throws -> AVAudioFormat {
+        guard channelCount > 0 else {
+            throw OutputDeviceSelectionError.rendererFormatCreationFailed(
+                channelCount: channelCount,
+                sampleRate: sampleRate
+            )
+        }
+
+        if channelCount <= 2 {
+            guard let format = AVAudioFormat(
+                standardFormatWithSampleRate: sampleRate,
+                channels: AVAudioChannelCount(channelCount)
+            ) else {
+                throw OutputDeviceSelectionError.rendererFormatCreationFailed(
+                    channelCount: channelCount,
+                    sampleRate: sampleRate
+                )
+            }
+            return format
+        }
+
+        let layoutTag = AudioChannelLayoutTag(kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channelCount))
+        guard let layout = AVAudioChannelLayout(layoutTag: layoutTag) else {
+            throw OutputDeviceSelectionError.rendererFormatCreationFailed(
+                channelCount: channelCount,
+                sampleRate: sampleRate
+            )
+        }
+
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            interleaved: false,
+            channelLayout: layout
+        )
+
+        return format
+    }
+
+    private func makeFileRendererNode(loadedFile: LoadedAudioFile, matrix: RendererMatrix) -> AVAudioSourceNode {
+        AVAudioSourceNode { [weak self, loadedFile, matrix] _, _, frameCount, audioBufferList in
+            self?.renderLoadedFile(
+                loadedFile: loadedFile,
+                matrix: matrix,
+                audioBufferList: audioBufferList,
+                frameCount: frameCount
+            ) ?? noErr
+        }
+    }
+
+    private func renderLoadedFile(
+        loadedFile: LoadedAudioFile,
+        matrix: RendererMatrix,
+        audioBufferList: UnsafeMutablePointer<AudioBufferList>,
+        frameCount: AVAudioFrameCount
+    ) -> OSStatus {
+        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+        let requestedFrames = Int(frameCount)
+        guard requestedFrames > 0, matrix.inputCount == loadedFile.monoBuffers.count else {
+            Self.clear(audioBufferList: audioBufferList, frameCount: requestedFrames)
+            return noErr
+        }
+
+        for buffer in buffers {
+            guard let rawData = buffer.mData else { continue }
+            let sampleCount = min(
+                Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride,
+                requestedFrames
+            )
+            rawData.assumingMemoryBound(to: Float.self).initialize(repeating: 0, count: sampleCount)
+        }
+
+        rendererPlaybackLock.lock()
+        let startFrame = min(max(rendererPlaybackFrame, 0), loadedFile.frameCount)
+        let framesRemaining = max(Int(loadedFile.frameCount - startFrame), 0)
+        let framesToRender = min(requestedFrames, framesRemaining)
+        rendererPlaybackFrame = startFrame + AVAudioFramePosition(framesToRender)
+        let reachedEnd = rendererPlaybackFrame >= loadedFile.frameCount
+        let shouldNotifyCompletion = reachedEnd && !rendererPlaybackCompletionSent
+        if shouldNotifyCompletion {
+            rendererPlaybackCompletionSent = true
+        }
+        rendererPlaybackLock.unlock()
+
+        guard framesToRender > 0 else {
+            if shouldNotifyCompletion {
+                notifyDirectRendererPlaybackEnded()
+            }
+            return noErr
+        }
+
+        let outputLimit = min(buffers.count, matrix.outputCount)
+        let sourceOffset = Int(startFrame)
+
+        for inputIndex in 0..<matrix.inputCount {
+            guard let sourceData = loadedFile.monoBuffers[inputIndex].floatChannelData else { continue }
+            let input = sourceData[0].advanced(by: sourceOffset)
+
+            for outputIndex in 0..<outputLimit {
+                let gain = Float(matrix.gains[inputIndex][outputIndex])
+                guard abs(gain) > 0.000_001,
+                      let rawData = buffers[outputIndex].mData
+                else {
+                    continue
+                }
+
+                let output = rawData.assumingMemoryBound(to: Float.self)
+                for frame in 0..<framesToRender {
+                    output[frame] += input[frame] * gain
+                }
+            }
+        }
+
+        if shouldNotifyCompletion {
+            notifyDirectRendererPlaybackEnded()
+        }
+
+        return noErr
+    }
+
+    private func notifyDirectRendererPlaybackEnded() {
+        let token = completionToken
+        Task { @MainActor [weak self] in
+            guard let self, self.completionToken == token else { return }
+            AppLogger.shared.notice(category: "transport", "Direct renderer playback finished naturally.")
+            self.stop()
+            self.onPlaybackEnded?()
+        }
+    }
+
     private func makeToneNode(
         frequency: Double,
         sampleRate: Double,
@@ -632,6 +993,51 @@ final class OrbisonicEngine {
             }
 
             return noErr
+        }
+    }
+
+    private func playDiagnosticMonitorTone(
+        frequency: Double,
+        sampleRate: Double,
+        gain: Float
+    ) throws {
+        guard diagnosticMonitorOutputDeviceID != nil else { return }
+        stopDiagnosticMonitorTone()
+
+        let node = makeToneNode(frequency: frequency, sampleRate: sampleRate, gain: gain)
+        guard let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
+            throw LiveInputError.monoFormatCreationFailed(sampleRate)
+        }
+
+        diagnosticMonitorEngine.attach(node)
+        diagnosticMonitorEngine.connect(node, to: diagnosticMonitorEngine.mainMixerNode, format: stereoFormat)
+        diagnosticMonitorToneNodes = [node]
+
+        if !diagnosticMonitorEngine.isRunning {
+            try diagnosticMonitorEngine.start()
+            AppLogger.shared.notice(category: "engine", "Diagnostic monitor engine started.")
+        }
+    }
+
+    private func playDiagnosticMonitorVoice(
+        clip: DiagnosticSpeechClip,
+        sampleRate: Double
+    ) throws {
+        guard diagnosticMonitorOutputDeviceID != nil else { return }
+        stopDiagnosticMonitorTone()
+
+        let node = makeMonitorVoiceNode(clip: clip, outputSampleRate: sampleRate)
+        guard let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
+            throw LiveInputError.monoFormatCreationFailed(sampleRate)
+        }
+
+        diagnosticMonitorEngine.attach(node)
+        diagnosticMonitorEngine.connect(node, to: diagnosticMonitorEngine.mainMixerNode, format: stereoFormat)
+        diagnosticMonitorToneNodes = [node]
+
+        if !diagnosticMonitorEngine.isRunning {
+            try diagnosticMonitorEngine.start()
+            AppLogger.shared.notice(category: "engine", "Diagnostic monitor speech engine started.")
         }
     }
 
@@ -660,8 +1066,70 @@ final class OrbisonicEngine {
         }
     }
 
+    private func makeMonitorVoiceNode(
+        clip: DiagnosticSpeechClip,
+        outputSampleRate: Double
+    ) -> AVAudioSourceNode {
+        let playhead = DiagnosticSpeechPlayhead(
+            clip: clip,
+            targetSampleRate: outputSampleRate,
+            gain: 0.50
+        )
+
+        return AVAudioSourceNode { _, _, frameCount, audioBufferList in
+            let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let frames = Int(frameCount)
+
+            for frame in 0..<frames {
+                let sample = playhead.nextSample()
+
+                for buffer in buffers {
+                    guard let rawData = buffer.mData else { continue }
+                    rawData.assumingMemoryBound(to: Float.self)[frame] = sample
+                }
+            }
+
+            return noErr
+        }
+    }
+
+    private func makeChannelVoiceNode(
+        clip: DiagnosticSpeechClip,
+        channelIndex: Int,
+        outputSampleRate: Double
+    ) -> AVAudioSourceNode {
+        let playhead = DiagnosticSpeechPlayhead(
+            clip: clip,
+            targetSampleRate: outputSampleRate,
+            gain: 0.72
+        )
+
+        return AVAudioSourceNode { _, _, frameCount, audioBufferList in
+            let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let frames = Int(frameCount)
+
+            for frame in 0..<frames {
+                let sample = playhead.nextSample()
+
+                for (bufferIndex, buffer) in buffers.enumerated() {
+                    guard let rawData = buffer.mData else { continue }
+                    rawData.assumingMemoryBound(to: Float.self)[frame] = bufferIndex == channelIndex ? sample : 0
+                }
+            }
+
+            return noErr
+        }
+    }
+
     private func playbackFrame() -> AVAudioFramePosition {
         guard let loadedFile else { return 0 }
+
+        if usesDirectRendererPlayback {
+            rendererPlaybackLock.lock()
+            let frame = rendererPlaybackFrame
+            rendererPlaybackLock.unlock()
+            return min(frame, loadedFile.frameCount)
+        }
 
         if state == .playing,
            let renderTime = playerNodes.first?.lastRenderTime,
@@ -705,12 +1173,27 @@ final class OrbisonicEngine {
         playerNodes = []
     }
 
+    private func detachRendererSourceNode() {
+        guard let rendererSourceNode else { return }
+        engine.disconnectNodeOutput(rendererSourceNode)
+        engine.detach(rendererSourceNode)
+        self.rendererSourceNode = nil
+        resetRendererPlayback(to: currentStartFrame)
+    }
+
     private func detachSourceNodes() {
         sourceNodes.forEach { sourceNode in
             engine.disconnectNodeOutput(sourceNode)
             engine.detach(sourceNode)
         }
         sourceNodes = []
+    }
+
+    private func resetRendererPlayback(to frame: AVAudioFramePosition) {
+        rendererPlaybackLock.lock()
+        rendererPlaybackFrame = max(frame, 0)
+        rendererPlaybackCompletionSent = false
+        rendererPlaybackLock.unlock()
     }
 
     private func volume(for role: SurroundChannelRole) -> Float {

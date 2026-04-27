@@ -2,11 +2,12 @@ import AppKit
 import SceneKit
 import SwiftUI
 
-private enum StageTab: String, CaseIterable, Identifiable {
+enum StageTab: String, CaseIterable, Identifiable {
     case input = "Input"
     case routing = "Routing"
-    case output = "Output"
     case renderer = "Renderer"
+    case output = "Output"
+    case analyzerVU = "VU"
     case localMusic = "Local Music"
     case diagnostics = "Diagnostics"
     case settings = "Settings"
@@ -22,11 +23,43 @@ private enum LocalMusicPanel: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum AppBuildInfo {
+    static var version: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+
+    static var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
+    }
+
+    static var gitCommit: String {
+        Bundle.main.infoDictionary?["OrbisonicGitCommit"] as? String ?? "not embedded"
+    }
+
+    static var buildDate: String {
+        guard let executableURL = Bundle.main.executableURL,
+              let modifiedAt = try? FileManager.default
+                .attributesOfItem(atPath: executableURL.path)[.modificationDate] as? Date
+        else {
+            return "not available"
+        }
+
+        return Self.dateFormatter.string(from: modifiedAt)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+}
+
 private enum VUMeterVisualStyle: String, CaseIterable, Identifiable {
     case squarePulse = "Square Pulse"
     case squareFlicker = "Square Flicker"
     case hexPulse = "Hex Pulse"
     case hexFlicker = "Hex Flicker"
+    case verticalBars = "Vertical Bars"
 
     var id: String { rawValue }
 
@@ -34,6 +67,7 @@ private enum VUMeterVisualStyle: String, CaseIterable, Identifiable {
         switch self {
         case .squarePulse, .squareFlicker: "Squares"
         case .hexPulse, .hexFlicker: "Hexagons"
+        case .verticalBars: "Bars"
         }
     }
 
@@ -41,20 +75,286 @@ private enum VUMeterVisualStyle: String, CaseIterable, Identifiable {
         switch self {
         case .squarePulse, .hexPulse: "Pulse"
         case .squareFlicker, .hexFlicker: "Flicker"
+        case .verticalBars: "Classic"
         }
     }
 
     var isHex: Bool {
         switch self {
         case .hexPulse, .hexFlicker: true
-        case .squarePulse, .squareFlicker: false
+        case .squarePulse, .squareFlicker, .verticalBars: false
         }
     }
 
     var isFlicker: Bool {
         switch self {
         case .squareFlicker, .hexFlicker: true
-        case .squarePulse, .hexPulse: false
+        case .squarePulse, .hexPulse, .verticalBars: false
+        }
+    }
+
+    var isBars: Bool {
+        self == .verticalBars
+    }
+}
+
+private enum VUMeterColorMode: String, CaseIterable, Identifiable {
+    case systemGreen = "System Green"
+    case white = "White"
+    case sparkle = "Sparkle"
+    case classic = "Classic"
+
+    var id: String { rawValue }
+}
+
+private enum AudioMotionVUStyle: String, CaseIterable, Identifiable {
+    case classicSpectrum = "Classic Spectrum"
+    case ledBars = "LED Bars"
+    case prismGlow = "Prism Glow"
+    case radial = "Radial"
+    case mirror = "Mirror"
+
+    var id: String { rawValue }
+}
+
+private enum RendererViewportMode: String {
+    case plan = "Plan"
+    case isometric = "Isometric"
+
+    var cameraPose: (yaw: CGFloat, pitch: CGFloat, distance: CGFloat) {
+        switch self {
+        case .plan:
+            (0, CGFloat.pi / 2 - 0.045, 4.55)
+        case .isometric:
+            (-0.72, 0.42, 4.25)
+        }
+    }
+}
+
+private struct PlayerDetailRow: Identifiable {
+    let title: String
+    let value: String
+    var hasTopDivider = false
+
+    var id: String { "\(title)-\(hasTopDivider ? "divided" : "plain")" }
+}
+
+struct PlayerDetailRowContent: Equatable {
+    let title: String
+    let value: String
+    var hasTopDivider = false
+}
+
+enum LocalFilePlayerRowsModel {
+    static func rows(metadata: AudioSourceMetadata) -> [PlayerDetailRowContent] {
+        var rows = [
+            PlayerDetailRowContent(title: "Format", value: formatText(for: metadata)),
+            PlayerDetailRowContent(title: "Channels", value: channelCountText(metadata.channelCount)),
+            PlayerDetailRowContent(title: "Layout", value: layoutText(count: metadata.channelCount, layoutName: metadata.layoutName)),
+            PlayerDetailRowContent(title: "Length", value: metadata.durationText)
+        ]
+        if let note = metadata.formatNote?.trimmedNilIfBlank {
+            rows.insert(PlayerDetailRowContent(title: "Note", value: note), at: 1)
+        }
+        return rows
+    }
+
+    static func rows(track: LocalMusicTrack) -> [PlayerDetailRowContent] {
+        [
+            PlayerDetailRowContent(title: "Format", value: localTrackFormatText(for: track)),
+            PlayerDetailRowContent(title: "Channels", value: channelCountText(track.channelCount)),
+            PlayerDetailRowContent(title: "Layout", value: layoutText(count: track.channelCount, layoutName: track.layoutName)),
+            PlayerDetailRowContent(title: "Length", value: track.durationText)
+        ]
+    }
+
+    private static func formatText(for metadata: AudioSourceMetadata) -> String {
+        if metadata.containerName.localizedCaseInsensitiveContains("Matroska"),
+           !metadata.codecName.isEmpty {
+            return metadata.codecName.localizedCaseInsensitiveContains("Matroska")
+                ? metadata.codecName
+                : "Matroska \(metadata.codecName)"
+        }
+
+        return metadata.codecName.isEmpty ? metadata.containerName : metadata.codecName
+    }
+
+    private static func localTrackFormatText(for track: LocalMusicTrack) -> String {
+        let container = track.url.pathExtension.uppercased()
+        return container.isEmpty ? "Local file" : container
+    }
+
+    private static func channelCountText(_ count: Int) -> String {
+        count > 0 ? "\(count)" : "-"
+    }
+
+    private static func layoutText(count: Int, layoutName: String) -> String {
+        guard count > 0 else { return "-" }
+        return layoutName.trimmedNilIfBlank ?? "\(count).0"
+    }
+}
+
+private struct VUMeterAppearance {
+    let visualGain: Double
+    let activityCompression: Double
+    let elementScale: Double
+    let maxSizeRatio: Double
+    let outlineWeight: Double
+    let colorMode: VUMeterColorMode
+    let normalizesVisualEnergy: Bool
+
+    static let `default` = VUMeterAppearance(
+        visualGain: 1,
+        activityCompression: 0.65,
+        elementScale: 1,
+        maxSizeRatio: 3,
+        outlineWeight: 1,
+        colorMode: .systemGreen,
+        normalizesVisualEnergy: true
+    )
+
+    var resolvedVisualGain: Double {
+        min(max(visualGain, 0.25), 12)
+    }
+
+    var resolvedActivityCompression: Double {
+        min(max(activityCompression, 0), 1)
+    }
+
+    var resolvedElementScale: Double {
+        min(max(elementScale, 0.6), 9.0)
+    }
+
+    var resolvedMaxSizeRatio: Double {
+        min(max(maxSizeRatio, 1), 20)
+    }
+
+    var resolvedOutlineWeight: CGFloat {
+        CGFloat(min(max(outlineWeight, 0.5), 3))
+    }
+
+    var resolvedPanelFillScale: CGFloat {
+        let normalized = log(resolvedElementScale / 0.6) / log(9.0 / 0.6)
+        return CGFloat(0.35 + min(max(normalized, 0), 1) * 0.65)
+    }
+}
+
+private enum VUMeterControlScale {
+    static let sliderRange: ClosedRange<Double> = -10...10
+    static let inputGainCenter = 0.8024107461495135
+    static let monitorGainCenter = 1.048937176783776
+    static let rendererGainCenter = 3.025362846691562
+    static let activityCompressionCenter = 0.0
+    static let elementScaleCenter = 6.733140080428954
+    static let maxSizeRatioCenter = 14.66689430312875
+    static let outlineWeightCenter = 1.339100201072386
+
+    static func clampedOffset(_ value: Double) -> Double {
+        min(max(value, sliderRange.lowerBound), sliderRange.upperBound)
+    }
+
+    static func gain(center: Double, offset: Double) -> Double {
+        let multiplier = pow(2.0, clampedOffset(offset) / 10.0 * 1.35)
+        return min(max(center * multiplier, 0.25), 12.0)
+    }
+
+    static func activityCompression(offset: Double) -> Double {
+        let positive = max(clampedOffset(offset), 0) / 10.0
+        return min(max(activityCompressionCenter + positive * 0.85, 0), 1)
+    }
+
+    static func elementScale(offset: Double) -> Double {
+        let multiplier = pow(2.0, clampedOffset(offset) / 10.0 * 0.65)
+        return min(max(elementScaleCenter * multiplier, 0.6), 9.0)
+    }
+
+    static func maxSizeRatio(offset: Double) -> Double {
+        let multiplier = pow(2.0, clampedOffset(offset) / 10.0 * 0.45)
+        return min(max(maxSizeRatioCenter * multiplier, 1.0), 20.0)
+    }
+
+    static func outlineWeight(offset: Double) -> Double {
+        min(max(outlineWeightCenter + clampedOffset(offset) * 0.085, 0.5), 3.0)
+    }
+}
+
+struct VUMeterVerticalBarLayout {
+    static func frames(count: Int, rect: CGRect) -> [CGRect] {
+        let count = max(1, count)
+        let denseLayout = count > 8
+        let baseGap = denseLayout
+            ? min(CGFloat(5), max(CGFloat(1.5), rect.width * 0.006))
+            : min(CGFloat(10), max(CGFloat(3), rect.width * 0.012))
+        let maxGap = count > 1 ? (rect.width * 0.35) / CGFloat(count - 1) : 0
+        let gap = count > 1 ? min(baseGap, maxGap) : 0
+        let availableWidth = max(CGFloat(1), rect.width - gap * CGFloat(max(count - 1, 0)))
+        let rawColumnWidth = availableWidth / CGFloat(count)
+        let columnWidth = max(CGFloat(1), min(rawColumnWidth, rect.height * 0.5))
+        let groupWidth = columnWidth * CGFloat(count) + gap * CGFloat(max(count - 1, 0))
+        let startX = rect.midX - groupWidth / 2
+
+        return (0..<count).map { index in
+            CGRect(
+                x: startX + CGFloat(index) * (columnWidth + gap),
+                y: rect.minY,
+                width: columnWidth,
+                height: rect.height
+            )
+        }
+    }
+}
+
+enum VUMeterChannelLabel {
+    static func text(for channel: SurroundChannel) -> String {
+        switch channel.role {
+        case .frontLeft:
+            "L"
+        case .frontRight:
+            "R"
+        case .center:
+            "C"
+        case .lfe:
+            "LFE"
+        case .lfe2:
+            "LFE2"
+        case .sideLeft:
+            "Ls"
+        case .sideRight:
+            "Rs"
+        case .rearLeft:
+            "Lb"
+        case .rearRight:
+            "Rb"
+        case .rearCenter:
+            "Cb"
+        case .wideLeft:
+            "Lw"
+        case .wideRight:
+            "Rw"
+        case .frontLeftCenter:
+            "Lc"
+        case .frontRightCenter:
+            "Rc"
+        case .topFrontLeft:
+            "TFL"
+        case .topFrontCenter:
+            "TFC"
+        case .topFrontRight:
+            "TFR"
+        case .topMiddleLeft:
+            "TML"
+        case .topMiddleCenter:
+            "TMC"
+        case .topMiddleRight:
+            "TMR"
+        case .topRearLeft:
+            "TRL"
+        case .topRearCenter:
+            "TRC"
+        case .topRearRight:
+            "TRR"
+        case .discrete(let index):
+            "\(index + 1)"
         }
     }
 }
@@ -98,16 +398,75 @@ private struct LabButtonStyle: ButtonStyle {
     }
 }
 
+private struct PlayerArtworkView: View {
+    let url: URL?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+
+            if let url {
+                if url.isFileURL, let image = NSImage(contentsOf: url) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        default:
+                            artworkPlaceholder
+                        }
+                    }
+                }
+            } else {
+                artworkPlaceholder
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous))
+    }
+
+    private var artworkPlaceholder: some View {
+        Image(systemName: "music.note")
+            .font(.system(size: 20, weight: .bold))
+            .foregroundStyle(LabTheme.textSoft)
+    }
+}
+
 struct ContentView: View {
     @StateObject private var model = OrbisonicViewModel()
     @AppStorage("Orbisonic.hasConfirmedLoopbackSetup") private var hasConfirmedLoopbackSetup = false
     @State private var selectedStageTab: StageTab = .input
     @State private var selectedLocalMusicPanel: LocalMusicPanel = .music
-    @AppStorage("Orbisonic.vuMeterStyle") private var selectedVUMeterStyle: VUMeterVisualStyle = .squareFlicker
+    @AppStorage("Orbisonic.vuMeterStyle") private var selectedVUMeterStyle: VUMeterVisualStyle = .verticalBars
+    @AppStorage("Orbisonic.audioMotionVUStyle") private var selectedAudioMotionVUStyle: AudioMotionVUStyle = .prismGlow
+    @AppStorage("Orbisonic.vuMeterInputVisualGainOffset") private var vuMeterInputVisualGain = 0.0
+    @AppStorage("Orbisonic.vuMeterMonitorVisualGainOffset") private var vuMeterMonitorVisualGain = 0.0
+    @AppStorage("Orbisonic.vuMeterRendererVisualGainOffset") private var vuMeterRendererVisualGain = 0.0
+    @AppStorage("Orbisonic.vuMeterActivityCompressionOffset") private var vuMeterActivityCompression = 0.0
+    @AppStorage("Orbisonic.vuMeterElementScaleOffset") private var vuMeterElementScale = 0.0
+    @AppStorage("Orbisonic.vuMeterMaxSizeRatioOffset") private var vuMeterMaxSizeRatio = 0.0
+    @AppStorage("Orbisonic.vuMeterOutlineWeightOffset") private var vuMeterOutlineWeight = 0.0
+    @AppStorage("Orbisonic.vuMeterColorMode") private var vuMeterColorMode: VUMeterColorMode = .classic
+    @AppStorage("Orbisonic.vuMeterNormalizesVisualEnergy") private var vuMeterNormalizesVisualEnergy = false
+    @AppStorage("Orbisonic.vuMeterScaleVersion") private var vuMeterScaleVersion = 0
     @State private var showsLoopbackSetupDialog = false
+    @State private var showsResetWebControlTokenDialog = false
+    @State private var routingVUOptionsExpanded = false
+    @State private var analyzerVUSettingsExpanded = false
+    @State private var showsSaveQueuePlaylistDialog = false
+    @State private var saveQueuePlaylistName = ""
+    private let outputLanePanelMinHeight: CGFloat = 216
+    private let localMusicSettingsPanelMinHeight: CGFloat = 300
 
     var body: some View {
-        HStack(spacing: 24) {
+        HStack(alignment: .top, spacing: 24) {
             sidebar
                 .frame(width: 360)
             stage
@@ -149,12 +508,37 @@ struct ContentView: View {
             }
             Button("Remind Me Later", role: .cancel) {}
         } message: {
-            Text("Install Orbisonic Inputs to use Roon and Aux Cable live capture. Roon itself is optional; install it only if you want Roon playback. Local Files works without Roon.")
+            Text("Install Orbisonic Inputs to use Roon, Spotify, and Aux Cable live capture. Roon and Spotify Connect are optional source helpers. Local Files works without live inputs.")
+        }
+        .confirmationDialog(
+            "Reset Control Token",
+            isPresented: $showsResetWebControlTokenDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Token", role: .destructive) {
+                model.resetWebControlToken()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This immediately invalidates previously copied control URLs. Open or copy the new control URL after reset.")
         }
         .onAppear {
+            migrateCenteredVUMeterDefaultsIfNeeded()
             if !hasConfirmedLoopbackSetup {
                 showsLoopbackSetupDialog = true
             }
+        }
+        .sheet(isPresented: $showsSaveQueuePlaylistDialog) {
+            SavePlaylistDialog(
+                name: $saveQueuePlaylistName,
+                onCancel: {
+                    showsSaveQueuePlaylistDialog = false
+                },
+                onSave: {
+                    model.saveSessionQueueAsPlaylist(named: saveQueuePlaylistName)
+                    showsSaveQueuePlaylistDialog = false
+                }
+            )
         }
     }
 
@@ -179,12 +563,6 @@ struct ContentView: View {
                 stageTabBar
             }
 
-            Text(model.statusMessage)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(LabTheme.textSoft)
-                .lineLimit(2)
-                .frame(height: 34, alignment: .topLeading)
-
             selectedStageContent
         }
         .padding(24)
@@ -207,10 +585,12 @@ struct ContentView: View {
             tabPage { inputTab }
         case .routing:
             tabPage { routingTab }
-        case .output:
-            tabPage { outputTab }
         case .renderer:
             tabPage { rendererTab }
+        case .output:
+            tabPage { outputTab }
+        case .analyzerVU:
+            containedTabPage { analyzerVUTab }
         case .localMusic:
             containedTabPage { localMusicTab }
         case .diagnostics:
@@ -245,11 +625,23 @@ struct ContentView: View {
         )
     }
 
+    private func migrateCenteredVUMeterDefaultsIfNeeded() {
+        guard vuMeterScaleVersion < 2 else { return }
+        vuMeterInputVisualGain = 0
+        vuMeterMonitorVisualGain = 0
+        vuMeterRendererVisualGain = 0
+        vuMeterActivityCompression = 0
+        vuMeterElementScale = 0
+        vuMeterMaxSizeRatio = 0
+        vuMeterOutlineWeight = 0
+        vuMeterScaleVersion = 2
+        AppLogger.shared.notice(category: "settings", "Migrated VU slider offsets to centered defaults.")
+    }
+
     private var inputTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             settingsPanel(title: "Source Selector") {
-                sourceModeSelector
-                routingPrimaryControls
+                sourceSelectorPanel
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -260,54 +652,87 @@ struct ContentView: View {
             routingFlowGraphic
 
             routingCompactMeters
+
+            DisclosureGroup(isExpanded: $routingVUOptionsExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    analyzerVUStylePicker
+                    vuMeterVisualGainSliders
+                    vuMeterAppearanceSliders
+                }
+                .padding(.top, 10)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 12, weight: .bold))
+                    Text("VU Options")
+                        .font(.system(size: 12, weight: .bold))
+                    Spacer()
+                    Text(selectedAudioMotionVUStyle.rawValue)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(LabTheme.text)
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                            .stroke(LabTheme.line, lineWidth: 1)
+                    )
+            )
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    @ViewBuilder
-    private var routingPrimaryControls: some View {
-        switch model.sourceMode {
-        case .roon, .aux:
-            HStack(spacing: 10) {
-                Button(action: livePrimaryAction) {
-                    Label(livePrimaryTitle, systemImage: livePrimaryIcon)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true))
+    private var analyzerVUTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            analyzerVUSettingsPanel
 
-                Button(action: model.stopSelectedLiveMonitor) {
-                    Label("Stop Monitor", systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle())
-                .disabled(!model.liveMonitorState.isCapturing)
-            }
-
-            infoRow(title: "Device", value: model.selectedSourceDeviceStatusText)
-            infoRow(title: "Status", value: model.liveSignalStatus)
-
-        case .filePlayback:
-            EmptyView()
-
-        case .testTone:
-            EmptyView()
+            AudioMotionVUMeterPanel(
+                title: "Renderer VU",
+                subtitle: rendererVUMeterSubtitle,
+                style: selectedAudioMotionVUStyle,
+                appearance: rendererVUMeterAppearance,
+                meterStore: model.rendererMeterStore
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var sourceModeSelector: some View {
-        HStack(spacing: 6) {
-            ForEach(primarySourceModes) { mode in
-                Button {
-                    model.selectSourceMode(mode)
-                } label: {
-                    Text(mode.rawValue)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: model.sourceMode == mode))
+    private var analyzerVUSettingsPanel: some View {
+        DisclosureGroup(isExpanded: $analyzerVUSettingsExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                analyzerVUStylePicker
+                vuSliderRow(
+                    title: "Renderer Visual Gain",
+                    valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
+                    lowText: "-10",
+                    highText: "+10",
+                    binding: rendererVUMeterVisualGainBinding,
+                    range: VUMeterControlScale.sliderRange
+                )
             }
+            .padding(.top, 10)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 12, weight: .bold))
+                Text("Meter Settings")
+                    .font(.system(size: 12, weight: .bold))
+                Spacer()
+                Text(selectedAudioMotionVUStyle.rawValue)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(LabTheme.text)
         }
-        .padding(4)
+        .padding(14)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
                 .fill(Color.black.opacity(0.16))
@@ -316,6 +741,221 @@ struct ContentView: View {
                         .stroke(LabTheme.line, lineWidth: 1)
                 )
         )
+    }
+
+    private var analyzerVUStylePicker: some View {
+        HStack(spacing: 10) {
+            ForEach(AudioMotionVUStyle.allCases) { style in
+                Button {
+                    selectedAudioMotionVUStyle = style
+                } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        AudioMotionVUStylePreview(style: style)
+                            .frame(height: 38)
+
+                        Text(style.rawValue)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(LabTheme.text)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 3)
+                }
+                .buttonStyle(LabButtonStyle(isActive: selectedAudioMotionVUStyle == style))
+            }
+        }
+    }
+
+    private var sourceSelectorPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                Text("Source")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+
+                Spacer()
+
+                Text(selectedSourceStatusText)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(selectedSourceStatusColor.opacity(0.14))
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .stroke(selectedSourceStatusColor.opacity(0.45), lineWidth: 1)
+                            )
+                    )
+            }
+
+            HStack(spacing: 8) {
+                ForEach(primarySourceModes) { mode in
+                    sourceModeButton(for: mode)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(selectedSourceHeadline)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(LabTheme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(selectedSourceDetailText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .lineLimit(3)
+            }
+        }
+    }
+
+    private func sourceModeButton(for mode: SourceMode) -> some View {
+        Button {
+            model.selectSourceMode(mode)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(mode.rawValue)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+                Text(sourceButtonSubtitle(for: mode))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(LabButtonStyle(isActive: model.sourceMode == mode, accent: sourceButtonAccent(for: mode)))
+    }
+
+    private var selectedSourceStatusText: String {
+        if model.isLiveMonitorTransitioning {
+            return "⏳ Switching"
+        }
+        if case .error = model.liveMonitorState, model.sourceMode.isLiveInput {
+            return "Unavailable"
+        }
+        if case .unavailable = model.liveMonitorState, model.sourceMode.isLiveInput {
+            return "Unavailable"
+        }
+        if model.sourceMode.isLiveInput {
+            switch model.liveMonitorState {
+            case .monitoring:
+                return "Playing"
+            case .silent:
+                return "⏳ Waiting"
+            case .muted:
+                return "Muted"
+            case .stopped:
+                return "Ready"
+            case .unavailable, .error:
+                return "Unavailable"
+            }
+        }
+        if model.sourceMode == .testTone {
+            return model.isTestTonePlaying ? "Playing" : "Ready"
+        }
+        return model.isPlaying ? "Playing" : "Ready"
+    }
+
+    private var selectedSourceStatusColor: Color {
+        if model.isLiveMonitorTransitioning {
+            return LabTheme.amber
+        }
+        if model.sourceMode.isLiveInput {
+            switch model.liveMonitorState {
+            case .monitoring:
+                return LabTheme.cyan
+            case .silent, .stopped, .muted:
+                return LabTheme.amber
+            case .unavailable, .error:
+                return LabTheme.red
+            }
+        }
+        return model.isPlaying || model.isTestTonePlaying ? LabTheme.cyan : LabTheme.blue
+    }
+
+    private var selectedSourceHeadline: String {
+        switch model.sourceMode {
+        case .roon:
+            return model.liveMonitorState.isCapturing ? "Roon input is active." : "Roon is selected."
+        case .spotify:
+            return model.liveMonitorState.isCapturing ? "Spotify input is active." : "Spotify is selected."
+        case .aux:
+            return model.liveMonitorState.isCapturing ? "Aux Cable input is active." : "Aux Cable is selected."
+        case .filePlayback:
+            return model.sourceMetadata == nil ? "Open a local file or scan the library." : "Local file playback is ready."
+        case .testTone:
+            return "Diagnostics source is selected."
+        }
+    }
+
+    private var selectedSourceDetailText: String {
+        switch model.sourceMode {
+        case .roon:
+            return model.liveSignalStatus
+        case .spotify:
+            if model.spotifyReceiverStatus.isRunning {
+                return "\(model.spotifyReceiverStatus.message) \(model.liveSignalStatus)"
+            }
+            return model.spotifyReceiverStatus.message
+        case .aux:
+            return model.liveSignalStatus
+        case .filePlayback:
+            return model.sourceMetadata == nil ? "Use the Player below to choose files and control playback." : model.sourceFlowDetail
+        case .testTone:
+            return "Test tones remain available for diagnostics."
+        }
+    }
+
+    private func sourceButtonSubtitle(for mode: SourceMode) -> String {
+        guard model.sourceMode == mode else {
+            return sourceSelectorDescriptor(for: mode)
+        }
+
+        if mode.isLiveInput {
+            switch model.liveMonitorState {
+            case .monitoring:
+                return "signal present"
+            case .silent:
+                return "waiting"
+            case .muted:
+                return "muted"
+            case .stopped:
+                return "ready"
+            case .unavailable, .error:
+                return "unavailable"
+            }
+        }
+
+        if mode == .filePlayback {
+            return model.sourceMetadata == nil ? "choose file" : "ready"
+        }
+
+        return model.isTestTonePlaying ? "playing" : "ready"
+    }
+
+    private func sourceButtonAccent(for mode: SourceMode) -> Color {
+        guard model.sourceMode == mode else {
+            return LabTheme.cyan
+        }
+        return selectedSourceStatusColor
+    }
+
+    private func sourceSelectorDescriptor(for mode: SourceMode) -> String {
+        switch mode {
+        case .roon:
+            "multichannel input"
+        case .spotify:
+            "Connect input"
+        case .aux:
+            "app/system input"
+        case .filePlayback:
+            "file playback"
+        case .testTone:
+            "diagnostic"
+        }
     }
 
     private var primarySourceModes: [SourceMode] {
@@ -328,10 +968,7 @@ struct ContentView: View {
                 Button(route.deviceName) {
                     model.selectInputRoute(route)
                 }
-                .disabled(
-                    (model.sourceMode == .roon && !route.isRoonLoopback)
-                    || (model.sourceMode == .aux && !route.isAuxLoopback)
-                )
+                .disabled(model.sourceMode.isLiveInput && !model.sourceMode.acceptsInputRoute(route))
             }
         } label: {
             HStack {
@@ -425,7 +1062,8 @@ struct ContentView: View {
                     routingOutputCard(
                         title: "Output 1",
                         subtitle: "Monitor",
-                        detail: model.outputRoute.targetName,
+                        device: model.monitorOutputNowText,
+                        status: model.monitorOutputStatusText,
                         icon: "headphones",
                         accent: LabTheme.blue
                     )
@@ -433,7 +1071,9 @@ struct ContentView: View {
                     routingOutputCard(
                         title: "Output 2",
                         subtitle: "Renderer",
-                        detail: model.rendererSelectionText,
+                        device: model.rendererOutputNowText,
+                        matrix: model.rendererSceneOutputText,
+                        status: model.rendererOutputStatusText,
                         icon: "dot.radiowaves.left.and.right",
                         accent: LabTheme.cyan
                     )
@@ -499,7 +1139,9 @@ struct ContentView: View {
     private func routingOutputCard(
         title: String,
         subtitle: String,
-        detail: String,
+        device: String,
+        matrix: String? = nil,
+        status: String,
         icon: String,
         accent: Color
     ) -> some View {
@@ -517,16 +1159,17 @@ struct ContentView: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(LabTheme.text)
                     .lineLimit(1)
-                Text(detail)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(LabTheme.textSoft)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                routingOutputCardRow(label: "Device", value: device)
+                if let matrix {
+                    routingOutputCardRow(label: "Matrix", value: matrix)
+                }
+                routingOutputCardRow(label: "Status", value: status)
             }
             Spacer(minLength: 0)
         }
-        .frame(height: 58)
+        .frame(minHeight: matrix == nil ? 72 : 90)
         .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
                 .fill(accent.opacity(0.10))
@@ -537,33 +1180,52 @@ struct ContentView: View {
         )
     }
 
+    private func routingOutputCardRow(label: String, value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+                .frame(width: 44, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(LabTheme.textSoft)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
     private var routingCompactMeters: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                CompactSquareVUMeterPanel(
+                AudioMotionVUMeterPanel(
                     title: "Input",
                     subtitle: inputVUMeterSubtitle,
-                    accent: LabTheme.cyan,
-                    style: selectedVUMeterStyle,
-                    meterStore: model.meterStore
+                    style: selectedAudioMotionVUStyle,
+                    appearance: inputVUMeterAppearance,
+                    meterStore: model.meterStore,
+                    minMeterHeight: 132,
+                    showsMeterPills: false
                 )
 
-                CompactSquareVUMeterPanel(
+                AudioMotionVUMeterPanel(
                     title: "Monitor",
                     subtitle: monitorVUMeterSubtitle,
-                    accent: LabTheme.blue,
-                    style: selectedVUMeterStyle,
-                    meterStore: model.monitorMeterStore
+                    style: selectedAudioMotionVUStyle,
+                    appearance: monitorVUMeterAppearance,
+                    meterStore: model.monitorMeterStore,
+                    minMeterHeight: 132,
+                    showsMeterPills: false
                 )
             }
 
-            CompactSquareVUMeterPanel(
+            AudioMotionVUMeterPanel(
                 title: "Renderer",
                 subtitle: rendererVUMeterSubtitle,
-                accent: LabTheme.amber,
-                style: selectedVUMeterStyle,
+                style: selectedAudioMotionVUStyle,
+                appearance: rendererVUMeterAppearance,
                 meterStore: model.rendererMeterStore,
-                minHeight: 112
+                minMeterHeight: 150,
+                showsMeterPills: false
             )
         }
     }
@@ -571,24 +1233,24 @@ struct ContentView: View {
     private var outputTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Output 1: Monitor") {
-                    monitorOutputMenu
-                    appleSpatialHeadTrackingToggle
-                    infoRow(title: "Output", value: model.outputNowText)
-                    infoRow(title: "Selection", value: model.monitorOutputSelectionText)
-                    infoRow(title: "System", value: model.systemOutputNowText)
-                    infoRow(title: "Target", value: model.targetFlowTitle)
-                    infoRow(title: "Detail", value: model.targetFlowDetail)
+                settingsPanel(title: "Monitor", minHeight: outputLanePanelMinHeight) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        monitorOutputMenu
+                        outputLaneRow(label: "Device", value: model.monitorOutputNowText)
+                        outputLaneRow(label: "Status", value: model.monitorOutputStatusText, isStatus: true)
+                    }
                 }
-                .frame(maxWidth: .infinity, minHeight: 236, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                settingsPanel(title: "Output 2: Renderer") {
-                    infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
-                    infoRow(title: "Channels", value: outputChannelText)
-                    infoRow(title: "Renderer", value: model.rendererText)
-                    infoRow(title: "Safety", value: model.outputSafetyText)
+                settingsPanel(title: "Renderer", minHeight: outputLanePanelMinHeight) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        rendererOutputMenu
+                        outputLaneRow(label: "Device", value: model.rendererOutputNowText)
+                        outputLaneRow(label: "Matrix", value: model.rendererSceneOutputText)
+                        outputLaneRow(label: "Status", value: model.rendererOutputStatusText, isStatus: true)
+                    }
                 }
-                .frame(maxWidth: .infinity, minHeight: 236, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -596,6 +1258,10 @@ struct ContentView: View {
 
     private var monitorOutputMenu: some View {
         Menu {
+            Button("not set") {
+                model.selectNoMonitorOutput()
+            }
+
             Button("System Default") {
                 model.selectSystemMonitorOutput()
             }
@@ -603,9 +1269,10 @@ struct ContentView: View {
             Divider()
 
             ForEach(model.availableOutputRoutes) { route in
-                Button(route.deviceName) {
+                Button(outputMenuTitle(for: route)) {
                     model.selectMonitorOutputRoute(route)
                 }
+                .disabled(!route.isSelectableOutputTarget)
             }
         } label: {
             HStack {
@@ -627,26 +1294,46 @@ struct ContentView: View {
         .buttonStyle(LabButtonStyle(isActive: true))
     }
 
-    private var appleSpatialHeadTrackingToggle: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("Apple Spatial Head Tracking", isOn: $model.headTrackingEnabled)
-                .toggleStyle(.switch)
-                .tint(LabTheme.cyan)
+    private var rendererOutputMenu: some View {
+        Menu {
+            Button("not set") {
+                model.selectNoRendererOutput()
+            }
 
-            Text("For supported Apple Spatial Audio headphones: AirPods 3, AirPods 4, AirPods Pro, AirPods Max, and compatible Beats models.")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(LabTheme.textSoft)
-                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+
+            ForEach(model.availableOutputRoutes) { route in
+                Button(outputMenuTitle(for: route)) {
+                    model.selectRendererOutputRoute(route)
+                }
+                .disabled(!route.isSelectableOutputTarget)
+            }
+        } label: {
+            HStack {
+                Text("RENDERER")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft)
+                Spacer()
+                Text(model.rendererOutputSelectionText)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(LabTheme.cyan)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                .fill(Color.black.opacity(0.14))
-                .overlay(
-                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                        .stroke(LabTheme.line, lineWidth: 1)
-                )
-        )
+        .buttonStyle(LabButtonStyle(isActive: true))
+    }
+
+    private func outputMenuTitle(for route: OutputRouteInfo) -> String {
+        if route.routeRisk.blocksLiveMonitoring {
+            return "\(route.deviceName) - blocked loopback"
+        }
+
+        return route.deviceName
     }
 
     private var vuMeterTab: some View {
@@ -656,6 +1343,7 @@ struct ContentView: View {
                     title: "Input",
                     subtitle: inputVUMeterSubtitle,
                     style: selectedVUMeterStyle,
+                    appearance: inputVUMeterAppearance,
                     meterStore: model.meterStore,
                     minHeight: 220
                 )
@@ -664,17 +1352,19 @@ struct ContentView: View {
                     title: "Monitor",
                     subtitle: monitorVUMeterSubtitle,
                     style: selectedVUMeterStyle,
+                    appearance: monitorVUMeterAppearance,
                     meterStore: model.monitorMeterStore,
                     minHeight: 220
                 )
             }
 
-            DenseVUMeterPanel(
+            AudioMotionVUMeterPanel(
                 title: "Renderer",
                 subtitle: rendererVUMeterSubtitle,
-                style: selectedVUMeterStyle,
+                style: selectedAudioMotionVUStyle,
+                appearance: rendererVUMeterAppearance,
                 meterStore: model.rendererMeterStore,
-                minHeight: 240
+                minMeterHeight: 260
             )
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -687,7 +1377,7 @@ struct ContentView: View {
                     selectedVUMeterStyle = style
                 } label: {
                     VStack(alignment: .leading, spacing: 9) {
-                        VUMeterStylePreview(style: style)
+                        VUMeterStylePreview(style: style, appearance: previewVUMeterAppearance)
                             .frame(height: 46)
 
                         VStack(alignment: .leading, spacing: 2) {
@@ -707,6 +1397,83 @@ struct ContentView: View {
         }
     }
 
+    private var inputVUMeterAppearance: VUMeterAppearance {
+        vuMeterAppearance(visualGain: VUMeterControlScale.gain(center: VUMeterControlScale.inputGainCenter, offset: vuMeterInputVisualGain))
+    }
+
+    private var monitorVUMeterAppearance: VUMeterAppearance {
+        vuMeterAppearance(visualGain: VUMeterControlScale.gain(center: VUMeterControlScale.monitorGainCenter, offset: vuMeterMonitorVisualGain))
+    }
+
+    private var rendererVUMeterAppearance: VUMeterAppearance {
+        vuMeterAppearance(visualGain: VUMeterControlScale.gain(center: VUMeterControlScale.rendererGainCenter, offset: vuMeterRendererVisualGain))
+    }
+
+    private var previewVUMeterAppearance: VUMeterAppearance {
+        rendererVUMeterAppearance
+    }
+
+    private func vuMeterAppearance(visualGain: Double) -> VUMeterAppearance {
+        VUMeterAppearance(
+            visualGain: visualGain,
+            activityCompression: VUMeterControlScale.activityCompression(offset: vuMeterActivityCompression),
+            elementScale: VUMeterControlScale.elementScale(offset: vuMeterElementScale),
+            maxSizeRatio: VUMeterControlScale.maxSizeRatio(offset: vuMeterMaxSizeRatio),
+            outlineWeight: VUMeterControlScale.outlineWeight(offset: vuMeterOutlineWeight),
+            colorMode: vuMeterColorMode,
+            normalizesVisualEnergy: vuMeterNormalizesVisualEnergy
+        )
+    }
+
+    private var inputVUMeterVisualGainBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterInputVisualGain) },
+            set: { vuMeterInputVisualGain = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
+    private var monitorVUMeterVisualGainBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterMonitorVisualGain) },
+            set: { vuMeterMonitorVisualGain = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
+    private var rendererVUMeterVisualGainBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterRendererVisualGain) },
+            set: { vuMeterRendererVisualGain = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
+    private var vuMeterActivityCompressionBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterActivityCompression) },
+            set: { vuMeterActivityCompression = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
+    private var vuMeterElementScaleBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterElementScale) },
+            set: { vuMeterElementScale = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
+    private var vuMeterMaxSizeRatioBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterMaxSizeRatio) },
+            set: { vuMeterMaxSizeRatio = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
+    private var vuMeterOutlineWeightBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterOutlineWeight) },
+            set: { vuMeterOutlineWeight = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
     private var inputVUMeterSubtitle: String {
         let sourceText = model.sourceMode.isLiveInput ? model.inputRoute.displayName : model.loadedFileName
         let count = model.meterStore.channelMeters.count
@@ -715,7 +1482,7 @@ struct ContentView: View {
 
     private var monitorVUMeterSubtitle: String {
         let count = model.monitorMeterStore.channelMeters.count
-        return "\(model.outputNowText) • \(count) ch"
+        return "\(model.monitorOutputNowText) • \(count) ch"
     }
 
     private var rendererVUMeterSubtitle: String {
@@ -726,73 +1493,73 @@ struct ContentView: View {
     private var rendererTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Renderer Preset") {
-                    rendererPresetMenu
-                    infoRow(title: "Preset", value: model.rendererPreset.name)
-                    infoRow(title: "Status", value: model.rendererPresetIsDirty ? "Edited, not saved" : model.rendererPresetStatus)
-                    infoRow(title: "Folder", value: model.rendererPresetDirectoryText)
-
-                    HStack(spacing: 10) {
-                        Button(action: model.saveRendererPreset) {
-                            Label("Save JSON", systemImage: "square.and.arrow.down")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle(isActive: model.rendererPresetIsDirty))
-
-                        Button(action: { model.reloadRendererPresets() }) {
-                            Label("Reload", systemImage: "arrow.clockwise")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle())
-
-                        Button(action: model.revealRendererPresetFolder) {
-                            Label("Folder", systemImage: "folder")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle())
-                    }
+                settingsPanel(title: "Mode") {
+                    rendererModeSelector
                 }
 
-                settingsPanel(title: "Geometry") {
-                    tuningSlider(title: "Input Bed Radius", value: $model.rendererBedRadius, range: 0.25...1.75, format: "%.2f")
-                    infoRow(title: "Output", value: model.rendererLayoutText)
-                    infoRow(title: "Layout", value: model.sourceMetadata?.layoutName ?? "No source loaded")
-                    infoRow(title: "Inputs", value: "\(model.rendererScene.inputSpeakers.count) cubes")
-                    infoRow(title: "Speakers", value: "\(model.rendererPreset.outputTopology.fullRangeCount) solid shell spheres")
+                settingsPanel(title: "Renderer") {
+                    infoRow(title: "Input", value: rendererInputChannelText)
+                    infoRow(title: "Layout", value: rendererSourceLayoutText)
                     infoRow(title: "Matrix", value: model.rendererText)
+                    infoRow(title: "Output", value: model.rendererSelectionText)
+                    infoRow(title: "Inspect", value: model.rendererMatrixInspectionText)
                 }
             }
 
-            SonicSphereRendererSceneView(
-                sceneModel: model.rendererScene,
-                isPlaying: model.isPlaying
-            )
-            .frame(minHeight: 430)
-            .background(
-                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.22))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                    .stroke(LabTheme.line, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
-
-            HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Renderer Feed") {
-                    infoRow(title: "Mode", value: model.sourceMode == .testTone ? "Test tone render" : (model.sourceMode.isLiveInput ? "Live input render" : "Local player render"))
-                    infoRow(title: "Target", value: model.rendererTargetText)
-                    infoRow(title: "Objects", value: model.renderFlowDetail)
-                }
-
-                settingsPanel(title: "Monitor Path") {
-                    infoRow(title: "Output", value: "Two-channel downmix")
-                    infoRow(title: "Device", value: model.outputNowText)
-                    infoRow(title: "Scope", value: "Independent from Sonic Sphere matrix")
-                }
+            settingsPanel(title: "Safe Tuning") {
+                rendererTuningControls
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var rendererModeSelector: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Always Mono", isOn: $model.rendererAlwaysMono)
+                .toggleStyle(.switch)
+                .tint(LabTheme.cyan)
+
+            Picker("2-channel", selection: $model.rendererTwoChannelPreference) {
+                ForEach(RendererTwoChannelPreference.allCases) { preference in
+                    Text(preference.displayName).tag(preference)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                ForEach(RendererRenderMode.allCases) { mode in
+                    Button {
+                        model.setRendererRenderMode(mode)
+                    } label: {
+                        Text(mode.displayName)
+                            .font(.system(size: 12, weight: .bold))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LabButtonStyle(isActive: model.rendererRenderMode == mode))
+                }
+            }
+
+            if let warning = model.rendererScene.validationMessages.last,
+               model.rendererScene.renderMode != model.rendererScene.requestedRenderMode {
+                Text(warning)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(LabTheme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Text("Using")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft)
+                Spacer()
+                Text(model.rendererScene.renderMode.statusName)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.cyan)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
     }
 
     private var rendererPresetMenu: some View {
@@ -804,22 +1571,106 @@ struct ContentView: View {
             }
         } label: {
             HStack {
-                Text("JSON PRESET")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(LabTheme.textSoft)
-                Spacer()
                 Text(model.rendererPreset.name)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(LabTheme.text)
                     .lineLimit(1)
-                    .truncationMode(.middle)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(LabTheme.cyan)
+                    .truncationMode(.tail)
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .bold))
             }
-            .frame(maxWidth: .infinity)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(LabTheme.text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 3)
         }
-        .buttonStyle(LabButtonStyle(isActive: true))
+        .buttonStyle(LabButtonStyle())
+    }
+
+    private var rendererPresetActions: some View {
+        HStack(spacing: 8) {
+            Button {
+                model.saveRendererPreset()
+            } label: {
+                Label(model.rendererPresetIsDirty ? "Save Tuning" : "Save", systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(LabButtonStyle(isActive: model.rendererPresetIsDirty))
+
+            Button {
+                model.resetRendererTuning()
+            } label: {
+                Label("Reset", systemImage: "arrow.counterclockwise")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(LabButtonStyle())
+        }
+    }
+
+    private var rendererTuningControls: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            centeredTuningSlider(title: "Seam Support", value: $model.rendererSeamSupportGain, bounds: 0...1, defaultValue: FeyRendererOptions.default.seamSupportGain, format: "%.2f")
+            centeredTuningSlider(title: "Upper Bias dB/Z", value: $model.rendererUpperBiasDbPerUnitZ, bounds: -3...4, defaultValue: FeyRendererOptions.default.upperBiasDbPerUnitZ, format: "%.1f")
+            centeredTuningSlider(title: "Stereo Rear Fill", value: $model.rendererStereoRearFill, bounds: 0...0.35, defaultValue: FeyRendererOptions.default.stereoRearFill, format: "%.2f")
+            centeredTuningSlider(title: "Center Side Support", value: $model.rendererCenterSideSupportGain, bounds: 0...0.7, defaultValue: FeyRendererOptions.default.centerSideSupportGain, format: "%.2f")
+            centeredTuningSlider(title: "Adjacent Bleed", value: $model.rendererAdjacentBleed, bounds: 0...0.12, defaultValue: FeyRendererOptions.default.adjacentBleed, format: "%.2f")
+            centeredTuningSlider(title: "Max Speaker Share", value: $model.rendererMaxSingleSpeakerPowerShare, bounds: 0.08...0.35, defaultValue: FeyRendererOptions.default.maxSingleSpeakerPowerShare, format: "%.2f")
+            centeredTuningSlider(title: "Rendered Trim dB", value: $model.rendererRenderedOutputTrimDb, bounds: -12...0, defaultValue: FeyRendererOptions.default.renderedOutputTrimDb, format: "%.1f")
+            centeredTuningSlider(title: "LFE Trim dB", value: $model.rendererLfeTrimDb, bounds: -12...6, defaultValue: FeyRendererOptions.default.lfeTrimDb, format: "%.1f")
+            centeredTuningSlider(title: "Auro Lower Bias dB/Z", value: $model.rendererAuroLowerUpperBiasDbPerUnitZ, bounds: -3...4, defaultValue: FeyRendererOptions.default.defaultUpperBiasDbPerUnitZ, format: "%.1f")
+            centeredTuningSlider(title: "Auro Height Bias dB/Z", value: $model.rendererAuroHeightUpperBiasDbPerUnitZ, bounds: -3...4, defaultValue: FeyRendererOptions.default.heightUpperBiasDbPerUnitZ, format: "%.1f")
+            centeredTuningSlider(title: "Auro Height Max Share", value: $model.rendererAuroHeightMaxSingleSpeakerPowerShare, bounds: 0.08...0.35, defaultValue: FeyRendererOptions.default.heightMaxSingleSpeakerPowerShare, format: "%.2f")
+            centeredTuningSlider(title: "Auro Top Max Share", value: $model.rendererAuroTopMaxSingleSpeakerPowerShare, bounds: 0.08...0.35, defaultValue: FeyRendererOptions.default.topMaxSingleSpeakerPowerShare, format: "%.2f")
+        }
+    }
+
+    private var rendererInputChannelText: String {
+        if let metadata = model.sourceMetadata {
+            return "\(metadata.channelCount)"
+        }
+
+        let count = model.rendererScene.matrix.inputCount
+        return count > 0 ? "\(count)" : "No source loaded"
+    }
+
+    private var rendererSourceLayoutText: String {
+        if let metadata = model.sourceMetadata {
+            return metadata.layoutName
+        }
+
+        return model.rendererScene.renderMode.displayName
+    }
+
+    private var rendererViewportGrid: some View {
+        HStack(alignment: .top, spacing: 18) {
+            rendererViewportPanel(title: "Plan", mode: .plan)
+            rendererViewportPanel(title: "Isometric", mode: .isometric)
+        }
+    }
+
+    private func rendererViewportPanel(title: String, mode: RendererViewportMode) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(LabTheme.text)
+
+            SonicSphereRendererSceneView(
+                sceneModel: model.rendererScene,
+                isPlaying: model.isPlaying,
+                viewportMode: mode,
+                isInteractive: false
+            )
+            .frame(minHeight: 300)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.22))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .stroke(LabTheme.line, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var headerCard: some View {
@@ -850,10 +1701,22 @@ struct ContentView: View {
     }
 
     private var secondaryTransportTitle: String {
-        model.sourceMode.isLiveInput ? model.sourceMode.stopMonitorLabel : "Stop"
+        "Stop"
     }
 
     private var statusChipText: String {
+        if model.isLocalFileLoading {
+            return "LOADING"
+        }
+        if model.isDiagnosticTransitioning {
+            return "SETTLING"
+        }
+        if model.isRoonTransportCommandInFlight {
+            return "SENDING"
+        }
+        if model.isLiveMonitorTransitioning {
+            return "STARTING"
+        }
         if model.sourceMode.isLiveInput {
             return model.liveMonitorState.statusLabel
         }
@@ -864,20 +1727,30 @@ struct ContentView: View {
     }
 
     private var statusChipIsActive: Bool {
+        if transportIsBusy {
+            return true
+        }
         if model.sourceMode.isLiveInput {
             return model.liveMonitorState == .monitoring
         }
         return model.isPlaying || model.isTestTonePlaying
     }
 
+    private var transportIsBusy: Bool {
+        model.isLocalFileLoading ||
+            model.isDiagnosticTransitioning ||
+            model.isRoonTransportCommandInFlight ||
+            model.isLiveMonitorTransitioning
+    }
+
     private var livePrimaryTitle: String {
         if model.liveMonitorState.isMuted {
-            return "Resume Monitor"
+            return "Resume"
         }
         if model.liveMonitorState.isCapturing {
-            return model.sourceMode.muteActionLabel
+            return "Mute"
         }
-        return model.sourceMode.monitorActionLabel
+        return "Monitor"
     }
 
     private var livePrimaryIcon: String {
@@ -917,6 +1790,10 @@ struct ContentView: View {
             return "Aux Cable"
         }
 
+        if model.sourceMode == .spotify {
+            return model.spotifyNowPlaying?.displayTitle ?? "Spotify"
+        }
+
         if model.sourceMode == .filePlayback, let track = model.selectedLocalMusicTrack {
             return track.displayTitle
         }
@@ -938,11 +1815,15 @@ struct ContentView: View {
         }
 
         if model.sourceMode == .testTone {
-            return model.testToneStatus
+            return model.testToneStatus.isEmpty ? "Test Tone" : model.testToneStatus
         }
 
         if model.sourceMode == .aux {
-            return model.selectedSourceDeviceStatusText
+            return "Controlled in the source app."
+        }
+
+        if model.sourceMode == .spotify {
+            return model.spotifyNowPlaying?.artistText ?? "Controlled from Spotify Connect."
         }
 
         if model.sourceMode == .filePlayback, let track = model.selectedLocalMusicTrack {
@@ -953,7 +1834,20 @@ struct ContentView: View {
             return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
         }
 
-        return "Choose Roon, Aux Cable, or Local Files."
+        return "Choose Roon, Spotify, Aux Cable, or Local Files."
+    }
+
+    private var nowPlayingArtworkURL: URL? {
+        switch model.sourceMode {
+        case .roon:
+            model.roonArtworkURL
+        case .spotify:
+            model.spotifyArtworkURL
+        case .filePlayback:
+            model.currentLocalArtworkURL
+        case .aux, .testTone:
+            nil
+        }
     }
 
     private var nowPlayingSessionCard: some View {
@@ -978,20 +1872,25 @@ struct ContentView: View {
                         )
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(nowPlayingTitle)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(LabTheme.text)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-                        .frame(height: 50, alignment: .bottomLeading)
+                HStack(alignment: .center, spacing: 12) {
+                    PlayerArtworkView(url: nowPlayingArtworkURL)
+                        .frame(width: 58, height: 58)
 
-                    Text(nowPlayingSubtitle)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(height: 18, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(nowPlayingTitle)
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(LabTheme.text)
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                            .frame(height: 42, alignment: .bottomLeading)
+
+                        Text(nowPlayingSubtitle)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(LabTheme.textSoft)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(height: 18, alignment: .leading)
+                    }
                 }
 
                 HStack(spacing: 10) {
@@ -1000,103 +1899,247 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(LabButtonStyle(isActive: true))
+                    .disabled(transportIsBusy)
 
                     Button(action: secondaryNowPlayingAction) {
                         Label(secondaryTransportTitle, systemImage: "stop.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(LabButtonStyle())
+                    .disabled(transportIsBusy)
                 }
+
+                sphereVolumeControl
 
                 if model.sourceMode == .roon {
                     roonTransportControls
+                } else if model.sourceMode == .spotify {
+                    spotifyTransportControls
                 } else if model.sourceMode == .filePlayback {
                     localMusicNowPlayingControls
                 }
 
-                HStack {
-                    Text(model.formattedCurrentTime())
-                    Spacer()
-                    Text(model.formattedDuration())
-                }
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundStyle(LabTheme.textSoft)
+                if showsPlayerProgress {
+                    HStack {
+                        Text(model.formattedCurrentTime())
+                        Spacer()
+                        Text(model.formattedDuration())
+                    }
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(LabTheme.textSoft)
 
-                Slider(
-                    value: $model.scrubProgress,
-                    in: 0...1,
-                    onEditingChanged: model.scrubEditingChanged
-                )
+                    Slider(
+                        value: $model.scrubProgress,
+                        in: 0...1,
+                        onEditingChanged: model.scrubEditingChanged
+                    )
+                    .tint(LabTheme.cyan)
+                }
+
+                Divider()
+                    .overlay(Color.white.opacity(0.08))
+
+                playerDetailContent
+            }
+        }
+    }
+
+    private var sphereVolumeControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Volume")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                Spacer()
+                Text(model.sphereOutputVolumeText)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(LabTheme.cyan)
+            }
+
+            Slider(value: $model.sphereOutputVolumePercent, in: 0...100)
                 .tint(LabTheme.cyan)
-                .disabled(model.sourceMode.isLiveInput || model.sourceMode == .testTone)
+                .help("Rendered Sonic Sphere output volume, capped by the renderer safety limit")
+        }
+    }
 
-                Divider()
-                    .overlay(Color.white.opacity(0.08))
+    private var showsPlayerProgress: Bool {
+        model.sourceMode == .filePlayback && model.sourceMetadata != nil
+    }
 
-                if model.sourceMode == .roon {
-                    if let nowPlaying = model.roonNowPlaying {
-                        VStack(alignment: .leading, spacing: 8) {
-                            transportRow(title: "Roon", value: model.roonAudioPathText)
-                            transportRow(title: "Format", value: nowPlaying.tidyFormatText)
-                            if let signalPath = model.roonSignalPath {
-                                transportRow(title: "Source Channels", value: signalPath.sourceChannelText)
-                                transportRow(title: "Roon Map", value: signalPath.statusText)
-                            }
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            transportRow(title: "Roon", value: model.roonAudioPathText)
-                            Text(model.roonNowPlayingStatus)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(LabTheme.textSoft)
-                                .lineLimit(2)
-                                .frame(minHeight: 36, alignment: .topLeading)
-                        }
+    @ViewBuilder
+    private var playerDetailContent: some View {
+        let rows = playerDetailRows
+        if rows.isEmpty {
+            Text(playerDetailPlaceholder)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(LabTheme.textSoft)
+                .lineLimit(2)
+                .frame(minHeight: 36, alignment: .topLeading)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(rows) { row in
+                    if row.hasTopDivider {
+                        Divider()
+                            .overlay(Color.white.opacity(0.08))
+                            .padding(.vertical, 2)
                     }
-                } else if model.sourceMode == .aux {
-                    VStack(alignment: .leading, spacing: 8) {
-                        transportRow(title: "Device", value: model.selectedSourceDeviceStatusText)
-                        transportRow(title: "Signal", value: model.liveSignalStatus)
-                        transportRow(title: "Buffer", value: model.liveBufferStatus)
-                        transportRow(title: "Control", value: "Playback is controlled in the source app.")
-                    }
-                } else if let metadata = model.sourceMetadata {
-                    VStack(alignment: .leading, spacing: 8) {
-                        transportRow(title: "Codec", value: "\(metadata.containerName) / \(metadata.codecName)")
-                        transportRow(title: "Layout", value: metadata.layoutName)
-                        transportRow(title: "Channels", value: compactChannelText(for: metadata))
-                        transportRow(title: "Rate", value: metadata.sampleRateText)
-                        transportRow(title: "Length", value: metadata.durationText)
-                    }
-                } else {
-                    Text("Load a surround mix to see file metadata here.")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .lineLimit(2)
-                        .frame(minHeight: 36, alignment: .topLeading)
-                }
-
-                Divider()
-                    .overlay(Color.white.opacity(0.08))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    transportRow(title: "Input", value: nowPlayingInputText)
-                    transportRow(title: "System Input", value: model.systemInputNowText)
-                    transportRow(title: "Output", value: model.outputRoute.deviceName)
-                    transportRow(title: "Renderer", value: model.rendererText)
+                    transportRow(title: row.title, value: row.value)
                 }
             }
         }
     }
 
-    private var nowPlayingInputText: String {
-        if model.sourceMode.isLiveInput {
-            return model.selectedSourceDeviceStatusText
+    private var playerDetailRows: [PlayerDetailRow] {
+        switch model.sourceMode {
+        case .roon:
+            return roonPlayerRows
+        case .spotify:
+            return spotifyPlayerRows
+        case .aux:
+            return auxPlayerRows
+        case .filePlayback:
+            return localFilePlayerRows
+        case .testTone:
+            return testTonePlayerRows
         }
-        if model.sourceMode == .testTone {
-            return "Diagnostics"
+    }
+
+    private var roonPlayerRows: [PlayerDetailRow] {
+        var rows: [PlayerDetailRow] = []
+
+        if let setupRow = liveInputSetupRow {
+            rows.append(setupRow)
+        } else if let zoneName = model.roonBridgeSnapshot.selectedZone?.displayName, !zoneName.isEmpty {
+            rows.append(PlayerDetailRow(title: "Zone", value: zoneName))
+        } else {
+            rows.append(PlayerDetailRow(title: "Status", value: model.roonTransportStatusText))
         }
-        return model.currentLocalMusicTrack?.displayTitle ?? model.loadedFileName
+
+        if let nowPlaying = model.roonNowPlaying {
+            rows.append(PlayerDetailRow(title: "Format", value: nowPlaying.tidyFormatText))
+        } else if !model.roonNowPlayingStatus.isEmpty {
+            rows.append(PlayerDetailRow(title: "Metadata", value: model.roonNowPlayingStatus))
+        }
+
+        if let signalPathText = roonSignalPathDetailText {
+            rows.append(PlayerDetailRow(title: "Signal Path", value: signalPathText))
+        } else if shouldShowLiveSignalRow {
+            rows.append(PlayerDetailRow(title: "Signal", value: model.liveSignalStatus))
+        }
+
+        if shouldShowLiveBufferRow {
+            rows.append(PlayerDetailRow(title: "Buffer", value: model.liveBufferStatus))
+        }
+
+        return rows
+    }
+
+    private var spotifyPlayerRows: [PlayerDetailRow] {
+        var rows: [PlayerDetailRow] = []
+        if let setupRow = liveInputSetupRow {
+            rows.append(setupRow)
+        }
+        rows.append(PlayerDetailRow(title: "Format", value: "Spotify Connect 320 kbps"))
+        rows.append(PlayerDetailRow(title: "Channels", value: "2"))
+        rows.append(PlayerDetailRow(title: "Layout", value: "Stereo"))
+        rows.append(contentsOf: model.spotifySourceHealthLines.map { PlayerDetailRow(title: $0.title, value: $0.value) })
+        rows.append(PlayerDetailRow(title: "Length", value: model.spotifyNowPlaying?.durationText ?? "-"))
+        return rows
+    }
+
+    private var auxPlayerRows: [PlayerDetailRow] {
+        var rows: [PlayerDetailRow] = []
+        if let setupRow = liveInputSetupRow {
+            rows.append(setupRow)
+        }
+        rows.append(PlayerDetailRow(title: "Signal", value: model.liveSignalStatus))
+        if shouldShowLiveBufferRow {
+            rows.append(PlayerDetailRow(title: "Buffer", value: model.liveBufferStatus))
+        }
+        return rows
+    }
+
+    private var localFilePlayerRows: [PlayerDetailRow] {
+        if let metadata = model.sourceMetadata {
+            return LocalFilePlayerRowsModel.rows(metadata: metadata).map(playerDetailRow)
+        }
+
+        if let track = model.currentQueueTrack ?? model.currentLocalMusicTrack ?? model.selectedLocalMusicTrack {
+            return LocalFilePlayerRowsModel.rows(track: track).map(playerDetailRow)
+        }
+
+        return []
+    }
+
+    private func playerDetailRow(_ row: PlayerDetailRowContent) -> PlayerDetailRow {
+        PlayerDetailRow(title: row.title, value: row.value, hasTopDivider: row.hasTopDivider)
+    }
+
+    private var testTonePlayerRows: [PlayerDetailRow] {
+        guard model.activeDiagnosticText != "Ready." || model.isTestTonePlaying else {
+            return []
+        }
+
+        return [PlayerDetailRow(title: "Diagnostics", value: model.activeDiagnosticText)]
+    }
+
+    private var playerDetailPlaceholder: String {
+        switch model.sourceMode {
+        case .filePlayback:
+            "Load a surround mix to see file metadata here."
+        case .testTone:
+            "Use Diagnostics to run a tone or channel walk."
+        default:
+            "Start monitoring to see live signal status."
+        }
+    }
+
+    private var liveInputSetupRow: PlayerDetailRow? {
+        guard let expectedLoopback = model.sourceMode.expectedLoopback,
+              model.inputRoute.uid != expectedLoopback.deviceUID
+        else {
+            return nil
+        }
+
+        return PlayerDetailRow(title: "Setup", value: model.selectedSourceDeviceStatusText)
+    }
+
+    private var shouldShowLiveSignalRow: Bool {
+        guard model.sourceMode.isLiveInput else { return false }
+        let signalStatus = model.liveSignalStatus
+        return signalStatus != "No live input."
+            && !signalStatus.localizedCaseInsensitiveContains("Signal present")
+    }
+
+    private var shouldShowLiveBufferRow: Bool {
+        guard model.sourceMode.isLiveInput,
+              model.liveBufferStatus != "No live buffer."
+        else {
+            return false
+        }
+
+        return model.liveMonitorState != .monitoring
+            || model.liveBufferStatus.localizedCaseInsensitiveContains("priming")
+    }
+
+    private var roonSignalPathDetailText: String? {
+        guard let signalPath = model.roonSignalPath else {
+            return nil
+        }
+
+        let mapText = signalPath.statusText
+            .replacingOccurrences(of: "BlackHole", with: "Orbisonic")
+        let hasMap = mapText != "-"
+
+        if signalPath.sourceChannelText != "-", hasMap {
+            return "\(signalPath.sourceChannelText) • \(mapText)"
+        }
+
+        if hasMap {
+            return mapText
+        }
+
+        return signalPath.sourceChannelText == "-" ? nil : signalPath.sourceChannelText
     }
 
     private func primaryNowPlayingAction() {
@@ -1191,6 +2234,59 @@ struct ContentView: View {
         }
     }
 
+    private var spotifyTransportControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                spotifyTransportButton(systemImage: "backward.fill", help: "Previous in Spotify", action: model.playPreviousSpotifyTrack)
+                spotifyTransportButton(
+                    systemImage: (model.spotifyNowPlaying?.isPlaying ?? false) ? "pause.fill" : "play.fill",
+                    help: (model.spotifyNowPlaying?.isPlaying ?? false) ? "Pause Spotify" : "Play Spotify",
+                    isActive: model.spotifyNowPlaying?.isPlaying ?? false,
+                    action: model.toggleSpotifyTransport
+                )
+                spotifyTransportButton(systemImage: "gobackward.15", help: "Seek back 15 seconds", action: { model.seekSpotifyBy(seconds: -15) })
+                spotifyTransportButton(systemImage: "goforward.15", help: "Seek forward 15 seconds", action: { model.seekSpotifyBy(seconds: 15) })
+                spotifyTransportButton(systemImage: "forward.fill", help: "Next in Spotify", action: model.playNextSpotifyTrack)
+            }
+
+            Text(spotifyCompactStatusText)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(model.spotifyReceiverStatus.isRunning ? LabTheme.cyan : LabTheme.textSoft)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var spotifyCompactStatusText: String {
+        var parts: [String] = []
+        if let nowPlaying = model.spotifyNowPlaying {
+            if nowPlaying.positionText != "-" || nowPlaying.durationText != "-" {
+                parts.append("\(nowPlaying.positionText) / \(nowPlaying.durationText)")
+            }
+        }
+        if parts.isEmpty {
+            parts.append(model.spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect Server" })?.value ?? "Spotify Connect")
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    private func spotifyTransportButton(
+        systemImage: String,
+        help: String,
+        isActive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .bold))
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(LabButtonStyle(isActive: isActive))
+        .disabled(!model.spotifyReceiverStatus.isRunning)
+        .help(help)
+    }
+
     private func roonTransportButton(
         systemImage: String,
         help: String,
@@ -1204,7 +2300,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(LabButtonStyle(isActive: isActive))
-        .disabled(!model.canSendRoonTransport(control))
+        .disabled(model.isRoonTransportCommandInFlight || !model.canSendRoonTransport(control))
         .help(help)
     }
 
@@ -1313,7 +2409,23 @@ struct ContentView: View {
 
     private var localMusicQueuePanel: some View {
         settingsPanel(title: "Session Queue") {
-            infoRow(title: "Queue", value: model.localMusicQueueText)
+            HStack {
+                Spacer(minLength: 0)
+
+                Button(action: model.clearSessionQueue) {
+                    Label("Clear Queue", systemImage: "trash")
+                        .frame(width: 112)
+                }
+                .buttonStyle(LabButtonStyle())
+                .disabled(model.sessionQueue.isEmpty)
+
+                Button(action: beginSaveSessionQueuePlaylist) {
+                    Label("Save Playlist", systemImage: "square.and.arrow.down")
+                        .frame(width: 124)
+                }
+                .buttonStyle(LabButtonStyle(isActive: true))
+                .disabled(model.sessionQueue.isEmpty)
+            }
 
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(spacing: 6) {
@@ -1331,6 +2443,17 @@ struct ContentView: View {
             .frame(minHeight: localMusicListMinHeight, maxHeight: .infinity)
             .background(localMusicListBackground)
         }
+    }
+
+    private func beginSaveSessionQueuePlaylist() {
+        saveQueuePlaylistName = Self.defaultQueuePlaylistName()
+        showsSaveQueuePlaylistDialog = true
+    }
+
+    private static func defaultQueuePlaylistName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        return "Session Queue \(formatter.string(from: Date()))"
     }
 
     private var localMusicSearchSortBar: some View {
@@ -1595,8 +2718,35 @@ struct ContentView: View {
 
     private var settingsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
+            settingsPanel(title: "Web Pages") {
+                infoRow(title: "Status", value: model.webServerStatus)
+                webURLRow(title: "Public", url: model.webPublicPageURL)
+                webURLRow(title: "Control", url: model.webControlPageURL)
+
+                HStack(alignment: .center, spacing: 10) {
+                    Text("SECURITY")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .frame(width: 110, alignment: .leading)
+
+                    Text("Resetting invalidates old control URLs immediately.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button {
+                        showsResetWebControlTokenDialog = true
+                    } label: {
+                        Label("Reset Control Token", systemImage: "key.horizontal")
+                    }
+                    .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.red))
+                    .disabled(model.webControlPageURL.isEmpty)
+                    .help("Generate a new control URL token")
+                }
+            }
+
             HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Watch Folders") {
+                settingsPanel(title: "Watch Folders", minHeight: localMusicSettingsPanelMinHeight) {
                     HStack(spacing: 10) {
                         Button(action: model.chooseWatchFolder) {
                             Label("Add Folder", systemImage: "folder.badge.plus")
@@ -1628,8 +2778,9 @@ struct ContentView: View {
                         removeAction: model.removeWatchFolder
                     )
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                settingsPanel(title: "M3U Playlists") {
+                settingsPanel(title: "M3U Playlists", minHeight: localMusicSettingsPanelMinHeight) {
                     HStack(spacing: 10) {
                         Button(action: model.chooseM3UPlaylist) {
                             Label("Add M3U", systemImage: "text.badge.plus")
@@ -1661,6 +2812,7 @@ struct ContentView: View {
                         removeAction: model.removeM3UPlaylist
                     )
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
 
             settingsPanel(title: "Album Art And Local Database") {
@@ -1679,10 +2831,208 @@ struct ContentView: View {
                 infoRow(title: "Art Cache", value: model.localMusicArtworkDirectoryPath)
             }
 
-            settingsPanel(title: "Meter Style") {
-                vuMeterStylePicker
+            settingsPanel(title: "Max Volume Limiter") {
+                tuningSlider(
+                    title: "Max Output Volume",
+                    value: $model.sphereOutputSafetyLimitPercent,
+                    range: 0...100,
+                    format: "%.0f"
+                )
+                infoRow(title: "Current Effective Volume", value: model.sphereEffectiveOutputVolumeText)
+            }
+
+            settingsPanel(title: "Logs And Diagnostics") {
+                HStack(spacing: 10) {
+                    Button(action: model.saveDiagnosticBundle) {
+                        Label("Export Log", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LabButtonStyle(isActive: true))
+                }
+                infoRow(title: "Log File", value: AppLogger.logFilePath)
             }
         }
+    }
+
+    private var vuMeterColorModePicker: some View {
+        HStack(spacing: 10) {
+            ForEach(VUMeterColorMode.allCases) { mode in
+                Button {
+                    vuMeterColorMode = mode
+                } label: {
+                    HStack(spacing: 8) {
+                        vuMeterColorSwatch(mode)
+                        Text(mode.rawValue)
+                            .font(.system(size: 12, weight: .bold))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
+                }
+                .buttonStyle(LabButtonStyle(isActive: vuMeterColorMode == mode))
+            }
+        }
+    }
+
+    private var vuMeterVisualGainSliders: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            vuSliderRow(
+                title: "Input Visual Gain",
+                valueText: signedOffsetText(vuMeterInputVisualGain, suffix: String(format: " / %.2fx", inputVUMeterAppearance.resolvedVisualGain)),
+                lowText: "-10",
+                highText: "+10",
+                binding: inputVUMeterVisualGainBinding,
+                range: VUMeterControlScale.sliderRange
+            )
+            vuSliderRow(
+                title: "Monitor Visual Gain",
+                valueText: signedOffsetText(vuMeterMonitorVisualGain, suffix: String(format: " / %.2fx", monitorVUMeterAppearance.resolvedVisualGain)),
+                lowText: "-10",
+                highText: "+10",
+                binding: monitorVUMeterVisualGainBinding,
+                range: VUMeterControlScale.sliderRange
+            )
+            vuSliderRow(
+                title: "Renderer Visual Gain",
+                valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
+                lowText: "-10",
+                highText: "+10",
+                binding: rendererVUMeterVisualGainBinding,
+                range: VUMeterControlScale.sliderRange
+            )
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                .fill(Color.black.opacity(0.14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+        )
+    }
+
+    private var vuMeterAppearanceSliders: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle("Normalize Visual Energy", isOn: $vuMeterNormalizesVisualEnergy)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(LabTheme.text)
+
+            vuSliderRow(
+                title: "VU Activity Compression",
+                valueText: signedOffsetText(vuMeterActivityCompression, suffix: String(format: " / %.0f%%", previewVUMeterAppearance.resolvedActivityCompression * 100)),
+                lowText: "-10",
+                highText: "+10",
+                binding: vuMeterActivityCompressionBinding,
+                range: VUMeterControlScale.sliderRange
+            )
+            vuSliderRow(
+                title: "VU Element Size",
+                valueText: signedOffsetText(vuMeterElementScale, suffix: String(format: " / %.2fx", previewVUMeterAppearance.resolvedElementScale)),
+                lowText: "-10",
+                highText: "+10",
+                binding: vuMeterElementScaleBinding,
+                range: VUMeterControlScale.sliderRange
+            )
+            vuSliderRow(
+                title: "VU Size Ratio",
+                valueText: signedOffsetText(vuMeterMaxSizeRatio, suffix: String(format: " / %.1fx", previewVUMeterAppearance.resolvedMaxSizeRatio)),
+                lowText: "-10",
+                highText: "+10",
+                binding: vuMeterMaxSizeRatioBinding,
+                range: VUMeterControlScale.sliderRange
+            )
+            vuSliderRow(
+                title: "VU Outline Weight",
+                valueText: signedOffsetText(vuMeterOutlineWeight, suffix: String(format: " / %.1f px", Double(previewVUMeterAppearance.resolvedOutlineWeight))),
+                lowText: "-10",
+                highText: "+10",
+                binding: vuMeterOutlineWeightBinding,
+                range: VUMeterControlScale.sliderRange
+            )
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                .fill(Color.black.opacity(0.14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+        )
+    }
+
+    private func vuSliderRow(
+        title: String,
+        valueText: String,
+        lowText: String,
+        highText: String,
+        binding: Binding<Double>,
+        range: ClosedRange<Double>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                Spacer()
+                Text(valueText)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(LabTheme.cyan)
+            }
+
+            Slider(value: binding, in: range)
+                .tint(LabTheme.cyan)
+
+            HStack {
+                Text(lowText)
+                Spacer()
+                Text(highText)
+            }
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(LabTheme.textSoft)
+        }
+    }
+
+    private func signedOffsetText(_ value: Double, suffix: String = "") -> String {
+        "\(String(format: "%+.0f", VUMeterControlScale.clampedOffset(value)))\(suffix)"
+    }
+
+    private func vuMeterColorSwatch(_ mode: VUMeterColorMode) -> some View {
+        Canvas { context, size in
+            let rect = CGRect(origin: .zero, size: size)
+            let colors: [Color]
+            switch mode {
+            case .systemGreen:
+                colors = [
+                    Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255),
+                    Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255)
+                ]
+            case .white:
+                colors = [Color.white.opacity(0.64), Color.white]
+            case .sparkle:
+                colors = [LabTheme.cyan, LabTheme.blue, Color(red: 244 / 255, green: 114 / 255, blue: 182 / 255)]
+            case .classic:
+                colors = [
+                    Color(red: 24 / 255, green: 132 / 255, blue: 8 / 255),
+                    Color(red: 189 / 255, green: 222 / 255, blue: 41 / 255),
+                    Color(red: 239 / 255, green: 49 / 255, blue: 16 / 255)
+                ]
+            }
+
+            context.fill(
+                Path(roundedRect: rect, cornerRadius: 4),
+                with: .linearGradient(Gradient(colors: colors), startPoint: rect.origin, endPoint: CGPoint(x: rect.maxX, y: rect.maxY))
+            )
+            context.stroke(
+                Path(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 4),
+                with: .color(LabTheme.text.opacity(0.7)),
+                lineWidth: 1
+            )
+        }
+        .frame(width: 22, height: 16)
     }
 
     private func settingsPathList(
@@ -1735,6 +3085,44 @@ struct ContentView: View {
         }
     }
 
+    private func webURLRow(title: String, url: String) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+                .frame(width: 110, alignment: .leading)
+
+            Text(url.isEmpty ? "Starting web server..." : url)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(LabTheme.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .fill(Color.black.opacity(0.18))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                                .stroke(LabTheme.line, lineWidth: 1)
+                        )
+                )
+
+            Button {
+                model.copyWebURLToPasteboard(url)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 13, weight: .bold))
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(LabButtonStyle())
+            .disabled(url.isEmpty)
+            .help("Copy \(title.lowercased()) URL")
+        }
+    }
+
     private var diagnosticsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
@@ -1744,24 +3132,104 @@ struct ContentView: View {
                     actionTitle: "Walk Monitor",
                     meterTitle: "Monitor VU",
                     meterSubtitle: "2-channel monitor walk",
-                    meterAccent: LabTheme.blue,
+                    meterAppearance: monitorVUMeterAppearance,
                     meterStore: model.monitorMeterStore,
                     action: model.startMonitorChannelWalk
                 )
 
                 diagnosticWalkPanel(
-                    title: "Output To Renderer Channel Walk",
+                    title: "Renderer Channel Walk",
                     channelText: "\(model.rendererOutputChannelWalkCount) ch",
                     actionTitle: "Walk Renderer",
-                    meterTitle: "Output VU",
+                    meterTitle: "Renderer VU",
                     meterSubtitle: "30.1 renderer walk",
-                    meterAccent: LabTheme.amber,
+                    meterAppearance: rendererVUMeterAppearance,
                     meterStore: model.rendererMeterStore,
                     action: model.startRendererOutputChannelWalk
                 )
             }
+
+            diagnosticSpeakerTonePanel
+
+            settingsPanel(title: "Build") {
+                infoRow(title: "Version", value: AppBuildInfo.version)
+                infoRow(title: "Build", value: AppBuildInfo.buildNumber)
+                infoRow(title: "Commit", value: AppBuildInfo.gitCommit)
+                infoRow(title: "Built", value: AppBuildInfo.buildDate)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var diagnosticSpeakerTonePanel: some View {
+        settingsPanel(title: "Test Tone") {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Menu {
+                        ForEach(1...model.diagnosticSpeakerChannelCount, id: \.self) { channel in
+                            Button("Channel \(channel)") {
+                                model.selectDiagnosticSpeakerChannel(channel)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text("CHANNEL")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(LabTheme.textSoft)
+                            Spacer()
+                            Text("\(model.selectedDiagnosticSpeakerChannel)")
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundStyle(LabTheme.text)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(LabTheme.cyan)
+                        }
+                    }
+                    .buttonStyle(LabButtonStyle())
+
+                    HStack(spacing: 10) {
+                        Button(action: model.playSelectedDiagnosticSpeakerTone) {
+                            Label("Play Tone", systemImage: "speaker.wave.2.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
+
+                        Button(action: { model.stopTestTone() }) {
+                            Image(systemName: "stop.fill")
+                                .frame(width: 32, height: 32)
+                        }
+                        .buttonStyle(LabButtonStyle())
+                        .disabled(!model.isTestTonePlaying)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("CHANNEL \(model.selectedDiagnosticSpeakerChannel)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(LabTheme.textSoft)
+                    Text(model.isTestTonePlaying ? "PLAYING" : "READY")
+                        .font(.system(size: 18, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(model.isTestTonePlaying ? LabTheme.cyan : LabTheme.text)
+                    if !model.testToneStatus.isEmpty {
+                        Text(model.testToneStatus)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(LabTheme.textSoft)
+                            .lineLimit(2)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .fill(model.isTestTonePlaying ? LabTheme.cyan.opacity(0.10) : Color.black.opacity(0.14))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                                .stroke(model.isTestTonePlaying ? LabTheme.cyan.opacity(0.42) : LabTheme.line, lineWidth: 1)
+                        )
+                )
+            }
+        }
     }
 
     private func diagnosticWalkPanel(
@@ -1770,7 +3238,7 @@ struct ContentView: View {
         actionTitle: String,
         meterTitle: String,
         meterSubtitle: String,
-        meterAccent: Color,
+        meterAppearance: VUMeterAppearance,
         meterStore: ChannelMeterStore,
         action: @escaping () -> Void
     ) -> some View {
@@ -1811,7 +3279,7 @@ struct ContentView: View {
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(LabTheme.text)
                         .lineLimit(1)
-                    Text(model.testToneStatus)
+                    Text(model.diagnosticWalkStatus)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(LabTheme.textSoft)
                         .lineLimit(2)
@@ -1820,13 +3288,14 @@ struct ContentView: View {
 
             infoRow(title: "Output", value: model.outputNowText)
 
-            CompactSquareVUMeterPanel(
+            AudioMotionVUMeterPanel(
                 title: meterTitle,
                 subtitle: meterSubtitle,
-                accent: meterAccent,
-                style: selectedVUMeterStyle,
+                style: selectedAudioMotionVUStyle,
+                appearance: meterAppearance,
                 meterStore: meterStore,
-                minHeight: 112
+                minMeterHeight: 126,
+                showsMeterPills: false
             )
         }
     }
@@ -1937,6 +3406,67 @@ struct ContentView: View {
         }
     }
 
+    private func centeredTuningSlider(
+        title: String,
+        value: Binding<Double>,
+        bounds: ClosedRange<Double>,
+        defaultValue: Double,
+        format: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                Spacer()
+                Text(String(format: format, value.wrappedValue))
+                    .foregroundStyle(LabTheme.cyan)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+            }
+
+            Slider(value: centeredTuningBinding(value: value, bounds: bounds, defaultValue: defaultValue), in: -1...1)
+                .tint(LabTheme.cyan)
+
+            HStack {
+                Text(String(format: format, bounds.lowerBound))
+                Spacer()
+                Text("Default \(String(format: format, defaultValue))")
+                Spacer()
+                Text(String(format: format, bounds.upperBound))
+            }
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(LabTheme.textSoft)
+        }
+    }
+
+    private func centeredTuningBinding(
+        value: Binding<Double>,
+        bounds: ClosedRange<Double>,
+        defaultValue: Double
+    ) -> Binding<Double> {
+        Binding(
+            get: {
+                let clamped = min(max(value.wrappedValue, bounds.lowerBound), bounds.upperBound)
+                if clamped < defaultValue {
+                    let span = max(defaultValue - bounds.lowerBound, 0.000_001)
+                    return (clamped - defaultValue) / span
+                }
+                let span = max(bounds.upperBound - defaultValue, 0.000_001)
+                return (clamped - defaultValue) / span
+            },
+            set: { position in
+                let clampedPosition = min(max(position, -1), 1)
+                let next: Double
+                if clampedPosition < 0 {
+                    next = defaultValue + clampedPosition * max(defaultValue - bounds.lowerBound, 0)
+                } else {
+                    next = defaultValue + clampedPosition * max(bounds.upperBound - defaultValue, 0)
+                }
+                value.wrappedValue = min(max(next, bounds.lowerBound), bounds.upperBound)
+            }
+        )
+    }
+
     private func infoRow(title: String, value: String) -> some View {
         HStack(alignment: .top) {
             Text(title.uppercased())
@@ -1953,8 +3483,34 @@ struct ContentView: View {
         }
     }
 
+    private func outputLaneRow(label: String, value: String, isStatus: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+                .frame(width: 72, alignment: .leading)
+            Text(value)
+                .font(.system(size: 12, weight: isStatus ? .bold : .semibold))
+                .foregroundStyle(isStatus ? LabTheme.cyan : LabTheme.text)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(isStatus ? .tail : .middle)
+                .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+        }
+    }
+
+    private func outputLaneHelperText(_ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(LabTheme.textSoft)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func settingsPanel<Content: View>(
         title: String,
+        minHeight: CGFloat? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1963,7 +3519,7 @@ struct ContentView: View {
                 .foregroundStyle(LabTheme.text)
             content()
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
@@ -1977,11 +3533,53 @@ struct ContentView: View {
 
 }
 
+private struct SavePlaylistDialog: View {
+    @Binding var name: String
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Save Playlist")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(LabTheme.text)
+
+            TextField("Playlist Name", text: $name)
+                .textFieldStyle(.plain)
+                .foregroundStyle(LabTheme.text)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .fill(Color.black.opacity(0.18))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                                .stroke(LabTheme.line, lineWidth: 1)
+                        )
+                )
+
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(LabButtonStyle())
+
+                Button("Save", action: onSave)
+                    .buttonStyle(LabButtonStyle(isActive: true))
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .background(LabTheme.bg)
+    }
+}
+
 private struct CompactSquareVUMeterPanel: View {
     let title: String
-    let subtitle: String
     let accent: Color
     let style: VUMeterVisualStyle
+    let appearance: VUMeterAppearance
     @ObservedObject var meterStore: ChannelMeterStore
     var minHeight: CGFloat = 96
 
@@ -1993,17 +3591,7 @@ private struct CompactSquareVUMeterPanel: View {
                     .foregroundStyle(LabTheme.text)
                     .lineLimit(1)
 
-                Text(subtitle)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(LabTheme.textSoft)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
                 Spacer(minLength: 0)
-
-                Text("\(sortedMeters.count) CH")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(accent)
             }
             .frame(height: 18, alignment: .leading)
 
@@ -2015,7 +3603,8 @@ private struct CompactSquareVUMeterPanel: View {
                         time: context.date.timeIntervalSinceReferenceDate,
                         context: &canvasContext,
                         size: size,
-                        preferredCellSize: VUMeterLayout.preferredCellSize
+                        preferredCellSize: VUMeterLayout.preferredCellSize,
+                        appearance: appearance
                     )
                 }
                 .frame(minHeight: minHeight)
@@ -2096,24 +3685,12 @@ private struct LiveSurroundVUView: View {
                                     .fill(Color.white.opacity(0.06))
                                     .overlay(
                                         RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                            .stroke(LabTheme.line, lineWidth: 1)
+                                            .stroke(LabTheme.text.opacity(0.62), lineWidth: 1)
                                     )
                                     .frame(width: 54, height: 144)
                                 RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
                                     .fill(meterGradient(for: meter.channel.role))
                                     .frame(width: 54, height: max(12, 144 * CGFloat(meter.level)))
-                            }
-                            VStack(spacing: 2) {
-                                Text(meter.channel.shortLabel)
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundStyle(LabTheme.text)
-                                    .lineLimit(1)
-                                    .frame(width: 54)
-                                Text("\(Int(meter.level * 100))%")
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(LabTheme.textSoft)
-                                    .lineLimit(1)
-                                    .frame(width: 54)
                             }
                         }
                         .frame(width: 64)
@@ -2165,10 +3742,591 @@ private struct LiveSurroundVUView: View {
     }
 }
 
+private struct AudioMotionVUMeterPanel: View {
+    let title: String
+    let subtitle: String
+    let style: AudioMotionVUStyle
+    let appearance: VUMeterAppearance
+    @ObservedObject var meterStore: ChannelMeterStore
+    var minMeterHeight: CGFloat = 520
+    var showsMeterPills = true
+
+    private var sortedMeters: [ChannelMeter] {
+        meterStore.channelMeters.sorted { lhs, rhs in
+            if lhs.channel.role.displayOrder == rhs.channel.role.displayOrder {
+                return lhs.channel.index < rhs.channel.index
+            }
+            return lhs.channel.role.displayOrder < rhs.channel.role.displayOrder
+        }
+    }
+
+    private var activeCount: Int {
+        sortedMeters.filter { $0.level >= 0.005 }.count
+    }
+
+    private var hotCount: Int {
+        sortedMeters.filter { $0.level >= 0.72 }.count
+    }
+
+    private var energyPercent: Int {
+        Int(AudioMotionVUMeterRenderer.energyPercent(for: sortedMeters, appearance: appearance).rounded())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(LabTheme.text)
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 0)
+
+                if showsMeterPills {
+                    meterPill("CH", sortedMeters.count)
+                    meterPill("E", energyPercent, accent: LabTheme.amber)
+                    meterPill("A", activeCount)
+                    meterPill("HOT", hotCount, accent: hotCount > 0 ? LabTheme.amber : LabTheme.textSoft)
+                }
+            }
+
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                Canvas { context, size in
+                    AudioMotionVUMeterRenderer.draw(
+                        meters: sortedMeters,
+                        style: style,
+                        time: timeline.date.timeIntervalSinceReferenceDate,
+                        context: &context,
+                        size: size,
+                        appearance: appearance
+                    )
+                }
+                .frame(maxWidth: .infinity, minHeight: minMeterHeight, maxHeight: minMeterHeight == 520 ? .infinity : minMeterHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                        .fill(Color.black.opacity(0.28))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                                .stroke(LabTheme.line, lineWidth: 1)
+                        )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                .fill(LabTheme.panelSoft)
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+        )
+    }
+
+    private func meterPill(_ label: String, _ value: Int, accent: Color = LabTheme.cyan) -> some View {
+        HStack(spacing: 5) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+            Text("\(value)")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(accent)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                .fill(Color.black.opacity(0.16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct AudioMotionVUStylePreview: View {
+    let style: AudioMotionVUStyle
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
+            Canvas { context, size in
+                let levels: [Float] = [0.18, 0.72, 0.46, 0.92, 0.31, 0.64, 0.24, 0.82]
+                let meters = levels.enumerated().map { index, level in
+                    ChannelMeter(
+                        channel: SurroundChannel(index: index, role: .discrete(index)),
+                        level: level
+                    )
+                }
+                AudioMotionVUMeterRenderer.draw(
+                    meters: meters,
+                    style: style,
+                    time: timeline.date.timeIntervalSinceReferenceDate,
+                    context: &context,
+                    size: size,
+                    appearance: .default,
+                    showLabels: false
+                )
+            }
+        }
+    }
+}
+
+private enum AudioMotionVUMeterRenderer {
+    static func draw(
+        meters: [ChannelMeter],
+        style: AudioMotionVUStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        size: CGSize,
+        appearance: VUMeterAppearance,
+        showLabels: Bool = true
+    ) {
+        let bounds = CGRect(origin: .zero, size: size)
+        drawBackground(in: bounds, context: &context)
+
+        guard !meters.isEmpty else {
+            context.draw(
+                Text("NO INPUT CHANNELS")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(LabTheme.textSoft),
+                at: CGPoint(x: size.width / 2, y: size.height / 2)
+            )
+            return
+        }
+
+        let levels = activityLevels(for: meters, appearance: appearance)
+
+        switch style {
+        case .classicSpectrum, .ledBars, .prismGlow:
+            drawSpectrumBars(
+                meters: meters,
+                levels: levels,
+                style: style,
+                time: time,
+                context: &context,
+                bounds: bounds,
+                showLabels: showLabels
+            )
+        case .mirror:
+            drawMirrorBars(
+                meters: meters,
+                levels: levels,
+                time: time,
+                context: &context,
+                bounds: bounds,
+                showLabels: showLabels
+            )
+        case .radial:
+            drawRadialBars(
+                meters: meters,
+                levels: levels,
+                time: time,
+                context: &context,
+                bounds: bounds,
+                showLabels: showLabels
+            )
+        }
+    }
+
+    static func energyPercent(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> Double {
+        Double(sonicEnergy(levels: activityLevels(for: meters, appearance: appearance)) * 100)
+    }
+
+    private static func drawBackground(in bounds: CGRect, context: inout GraphicsContext) {
+        context.fill(
+            Path(bounds),
+            with: .linearGradient(
+                Gradient(colors: [
+                    Color(red: 1 / 255, green: 6 / 255, blue: 8 / 255),
+                    Color(red: 9 / 255, green: 19 / 255, blue: 25 / 255),
+                    Color.black.opacity(0.92)
+                ]),
+                startPoint: CGPoint(x: bounds.midX, y: bounds.minY),
+                endPoint: CGPoint(x: bounds.midX, y: bounds.maxY)
+            )
+        )
+
+        let gridCount = 8
+        for line in 1..<gridCount {
+            let y = bounds.minY + bounds.height * CGFloat(line) / CGFloat(gridCount)
+            var path = Path()
+            path.move(to: CGPoint(x: bounds.minX, y: y))
+            path.addLine(to: CGPoint(x: bounds.maxX, y: y))
+            context.stroke(path, with: .color(LabTheme.line.opacity(0.35)), lineWidth: 1)
+        }
+    }
+
+    private static func drawSpectrumBars(
+        meters: [ChannelMeter],
+        levels: [Float],
+        style: AudioMotionVUStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        bounds: CGRect,
+        showLabels: Bool
+    ) {
+        let content = bounds.insetBy(dx: max(18, bounds.width * 0.026), dy: max(18, bounds.height * 0.045))
+        let labelHeight: CGFloat = showLabels ? 28 : 8
+        let reflectionHeight = style == .classicSpectrum ? content.height * 0.16 : content.height * 0.2
+        let meterRect = CGRect(
+            x: content.minX,
+            y: content.minY,
+            width: content.width,
+            height: max(1, content.height - reflectionHeight - labelHeight - 10)
+        )
+        let bars = VUMeterVerticalBarLayout.frames(count: levels.count, rect: meterRect)
+
+        for index in 0..<min(levels.count, bars.count, meters.count) {
+            let level = clampedLevel(levels[index])
+            let barRect = bars[index]
+            drawBarShell(rect: barRect, context: &context)
+
+            if style == .ledBars {
+                drawLedBar(level: level, index: index, rect: barRect, time: time, context: &context)
+            } else {
+                drawFilledBar(level: level, index: index, rect: barRect, style: style, time: time, context: &context)
+            }
+
+            drawPeakCap(level: level, index: index, rect: barRect, style: style, time: time, context: &context)
+            drawReflection(level: level, index: index, rect: barRect, style: style, time: time, context: &context)
+
+            if showLabels, shouldShowLabel(index: index, count: meters.count) {
+                context.draw(
+                    Text(VUMeterChannelLabel.text(for: meters[index].channel))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(LabTheme.textSoft),
+                    at: CGPoint(x: barRect.midX, y: content.maxY - 6),
+                    anchor: .bottom
+                )
+            }
+        }
+    }
+
+    private static func drawMirrorBars(
+        meters: [ChannelMeter],
+        levels: [Float],
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        bounds: CGRect,
+        showLabels: Bool
+    ) {
+        let content = bounds.insetBy(dx: max(18, bounds.width * 0.026), dy: max(20, bounds.height * 0.055))
+        let labelHeight: CGFloat = showLabels ? 26 : 8
+        let meterRect = CGRect(x: content.minX, y: content.minY, width: content.width, height: content.height - labelHeight)
+        let bars = VUMeterVerticalBarLayout.frames(count: levels.count, rect: meterRect)
+        let centerY = meterRect.midY
+
+        var centerLine = Path()
+        centerLine.move(to: CGPoint(x: meterRect.minX, y: centerY))
+        centerLine.addLine(to: CGPoint(x: meterRect.maxX, y: centerY))
+        context.stroke(centerLine, with: .color(LabTheme.cyan.opacity(0.18)), lineWidth: 1)
+
+        for index in 0..<min(levels.count, bars.count, meters.count) {
+            let level = clampedLevel(levels[index])
+            let barRect = bars[index]
+            let halfHeight = meterRect.height * 0.46 * CGFloat(level)
+            let corner = min(4, barRect.width * 0.25)
+            let upper = CGRect(x: barRect.minX, y: centerY - halfHeight, width: barRect.width, height: halfHeight)
+            let lower = CGRect(x: barRect.minX, y: centerY, width: barRect.width, height: halfHeight)
+            let color = barColor(level: level, index: index, style: .mirror, time: time)
+
+            context.fill(Path(roundedRect: barRect, cornerRadius: corner), with: .color(Color.white.opacity(0.026)))
+            var glow = context
+            glow.addFilter(.shadow(color: color.opacity(0.38), radius: 10, x: 0, y: 0))
+            glow.fill(Path(roundedRect: upper, cornerRadius: corner), with: .color(color.opacity(0.84)))
+            glow.fill(Path(roundedRect: lower, cornerRadius: corner), with: .color(color.opacity(0.48)))
+            drawPeakCap(level: level, index: index, rect: CGRect(x: barRect.minX, y: meterRect.minY, width: barRect.width, height: meterRect.height / 2), style: .mirror, time: time, context: &context)
+
+            if showLabels, shouldShowLabel(index: index, count: meters.count) {
+                context.draw(
+                    Text(VUMeterChannelLabel.text(for: meters[index].channel))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(LabTheme.textSoft),
+                    at: CGPoint(x: barRect.midX, y: content.maxY - 4),
+                    anchor: .bottom
+                )
+            }
+        }
+    }
+
+    private static func drawRadialBars(
+        meters: [ChannelMeter],
+        levels: [Float],
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        bounds: CGRect,
+        showLabels: Bool
+    ) {
+        let content = bounds.insetBy(dx: max(22, bounds.width * 0.04), dy: max(22, bounds.height * 0.06))
+        let center = CGPoint(x: content.midX, y: content.midY)
+        let minDimension = min(content.width, content.height)
+        let innerRadius = minDimension * 0.19
+        let outerRadius = minDimension * 0.46
+        let maxLength = outerRadius - innerRadius
+        let count = max(1, levels.count)
+        let lineWidth = max(3, min(18, minDimension / CGFloat(max(count, 8)) * 0.58))
+
+        context.stroke(
+            Path(ellipseIn: CGRect(x: center.x - innerRadius, y: center.y - innerRadius, width: innerRadius * 2, height: innerRadius * 2)),
+            with: .color(LabTheme.line.opacity(0.58)),
+            lineWidth: 1
+        )
+        context.stroke(
+            Path(ellipseIn: CGRect(x: center.x - outerRadius, y: center.y - outerRadius, width: outerRadius * 2, height: outerRadius * 2)),
+            with: .color(LabTheme.line.opacity(0.28)),
+            lineWidth: 1
+        )
+
+        for index in 0..<min(levels.count, meters.count) {
+            let level = clampedLevel(levels[index])
+            let angle = -.pi / 2 + CGFloat(index) / CGFloat(count) * .pi * 2
+            let start = point(center: center, radius: innerRadius, angle: angle)
+            let end = point(center: center, radius: innerRadius + maxLength * (0.12 + CGFloat(level) * 0.88), angle: angle)
+            let color = barColor(level: level, index: index, style: .radial, time: time)
+            var bar = Path()
+            bar.move(to: start)
+            bar.addLine(to: end)
+
+            var glow = context
+            glow.addFilter(.shadow(color: color.opacity(0.46), radius: 12, x: 0, y: 0))
+            glow.stroke(bar, with: .color(color.opacity(0.86)), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+
+            if showLabels, count <= 16 {
+                let labelPoint = point(center: center, radius: outerRadius + 18, angle: angle)
+                context.draw(
+                    Text(VUMeterChannelLabel.text(for: meters[index].channel))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(LabTheme.textSoft),
+                    at: labelPoint,
+                    anchor: .center
+                )
+            }
+        }
+    }
+
+    private static func drawBarShell(rect: CGRect, context: inout GraphicsContext) {
+        let radius = min(4, rect.width * 0.24)
+        let shell = Path(roundedRect: rect, cornerRadius: radius)
+        context.fill(shell, with: .color(Color.white.opacity(0.03)))
+        context.stroke(shell, with: .color(LabTheme.line.opacity(0.45)), lineWidth: 1)
+    }
+
+    private static func drawFilledBar(
+        level: Float,
+        index: Int,
+        rect: CGRect,
+        style: AudioMotionVUStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext
+    ) {
+        guard level > 0 else { return }
+
+        let radius = min(4, rect.width * 0.24)
+        let fillHeight = max(rect.width * 0.8, rect.height * CGFloat(level))
+        let fillRect = CGRect(
+            x: rect.minX,
+            y: rect.maxY - min(rect.height, fillHeight),
+            width: rect.width,
+            height: min(rect.height, fillHeight)
+        )
+        let path = Path(roundedRect: fillRect, cornerRadius: radius)
+        let colors = gradientColors(level: level, index: index, style: style, time: time)
+
+        var glow = context
+        glow.addFilter(.shadow(color: barColor(level: level, index: index, style: style, time: time).opacity(0.42), radius: style == .prismGlow ? 14 : 7, x: 0, y: 0))
+        glow.fill(
+            path,
+            with: .linearGradient(
+                Gradient(colors: colors),
+                startPoint: CGPoint(x: fillRect.midX, y: fillRect.maxY),
+                endPoint: CGPoint(x: fillRect.midX, y: fillRect.minY)
+            )
+        )
+    }
+
+    private static func drawLedBar(
+        level: Float,
+        index: Int,
+        rect: CGRect,
+        time: TimeInterval,
+        context: inout GraphicsContext
+    ) {
+        let segments = max(10, min(32, Int(rect.height / 9)))
+        let gap: CGFloat = 2
+        let segmentHeight = max(2, (rect.height - gap * CGFloat(segments - 1)) / CGFloat(segments))
+        let litSegments = Int((CGFloat(level) * CGFloat(segments)).rounded(.up))
+
+        for segment in 0..<segments {
+            let y = rect.maxY - CGFloat(segment + 1) * segmentHeight - CGFloat(segment) * gap
+            let segmentRect = CGRect(x: rect.minX, y: y, width: rect.width, height: segmentHeight)
+            let lit = segment < litSegments
+            let segmentLevel = Float(segment + 1) / Float(segments)
+            let color = lit
+                ? barColor(level: max(level, segmentLevel), index: index, style: .ledBars, time: time)
+                : Color.white.opacity(0.055)
+            context.fill(
+                Path(roundedRect: segmentRect, cornerRadius: min(2, segmentHeight * 0.35)),
+                with: .color(color.opacity(lit ? 0.9 : 1))
+            )
+        }
+    }
+
+    private static func drawPeakCap(
+        level: Float,
+        index: Int,
+        rect: CGRect,
+        style: AudioMotionVUStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext
+    ) {
+        guard level > 0.01 else { return }
+
+        let capY = rect.maxY - rect.height * CGFloat(level)
+        let capRect = CGRect(
+            x: rect.minX - min(2, rect.width * 0.1),
+            y: max(rect.minY, capY - 2),
+            width: rect.width + min(4, rect.width * 0.2),
+            height: 3
+        )
+        let color = level > 0.92 ? LabTheme.red : barColor(level: level, index: index, style: style, time: time)
+        context.fill(Path(roundedRect: capRect, cornerRadius: 1.5), with: .color(color.opacity(0.95)))
+    }
+
+    private static func drawReflection(
+        level: Float,
+        index: Int,
+        rect: CGRect,
+        style: AudioMotionVUStyle,
+        time: TimeInterval,
+        context: inout GraphicsContext
+    ) {
+        guard level > 0, style != .ledBars else { return }
+
+        let height = min(rect.height * 0.28, rect.height * CGFloat(level) * 0.34)
+        let reflection = CGRect(x: rect.minX, y: rect.maxY + 6, width: rect.width, height: height)
+        let color = barColor(level: level, index: index, style: style, time: time)
+        context.fill(
+            Path(roundedRect: reflection, cornerRadius: min(4, rect.width * 0.2)),
+            with: .linearGradient(
+                Gradient(colors: [color.opacity(0.22), color.opacity(0.0)]),
+                startPoint: CGPoint(x: reflection.midX, y: reflection.minY),
+                endPoint: CGPoint(x: reflection.midX, y: reflection.maxY)
+            )
+        )
+    }
+
+    private static func shouldShowLabel(index: Int, count: Int) -> Bool {
+        if count <= 16 { return true }
+        let stride = Int(ceil(Double(count) / 16.0))
+        return index.isMultiple(of: max(stride, 1))
+    }
+
+    private static func activityLevels(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> [Float] {
+        let gained = meters.map { clampedLevel(Float(Double($0.level) * appearance.resolvedVisualGain)) }
+        let compression = Float(appearance.resolvedActivityCompression)
+        guard compression > 0 || appearance.normalizesVisualEnergy else { return gained }
+
+        let currentEnergy = sonicEnergy(levels: gained)
+        let targetEnergy: Float = 0.52
+        let normalizeScale = appearance.normalizesVisualEnergy && currentEnergy > 0
+            ? min(8, max(0.25, targetEnergy / currentEnergy))
+            : 1
+        let normalizeBlend: Float = appearance.normalizesVisualEnergy ? 1 : compression
+        let gamma = max(0.22, 1 - compression * 0.68)
+        let activeFloor = compression * 0.18
+
+        return gained.map { level in
+            guard level >= 0.002 else { return 0 }
+
+            let normalized = min(1, level * (1 + (normalizeScale - 1) * normalizeBlend))
+            guard compression > 0 else { return normalized }
+
+            let lifted = Float(pow(Double(normalized), Double(gamma)))
+            return min(1, max(normalized, activeFloor + lifted * (1 - activeFloor)))
+        }
+    }
+
+    private static func sonicEnergy(levels: [Float]) -> Float {
+        guard !levels.isEmpty else { return 0 }
+        let sum = levels.reduce(Double(0)) { partial, level in
+            partial + Double(level * level)
+        }
+        return clampedLevel(Float(sqrt(sum / Double(levels.count))))
+    }
+
+    private static func gradientColors(level: Float, index: Int, style: AudioMotionVUStyle, time: TimeInterval) -> [Color] {
+        switch style {
+        case .classicSpectrum, .mirror:
+            return [
+                Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255),
+                Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255),
+                LabTheme.amber,
+                level > 0.9 ? LabTheme.red : LabTheme.amber.opacity(0.9)
+            ]
+        case .ledBars:
+            return [barColor(level: level, index: index, style: style, time: time)]
+        case .prismGlow, .radial:
+            let base = prismColor(index: index, time: time)
+            return [
+                base.opacity(0.7),
+                Color(hue: shiftedHue(index: index, time: time) + 0.08, saturation: 0.78, brightness: 1),
+                level > 0.94 ? LabTheme.red : Color.white.opacity(0.92)
+            ]
+        }
+    }
+
+    private static func barColor(level: Float, index: Int, style: AudioMotionVUStyle, time: TimeInterval) -> Color {
+        switch style {
+        case .classicSpectrum, .mirror:
+            if level > 0.94 { return LabTheme.red }
+            if level > 0.76 { return LabTheme.amber }
+            if level > 0.45 { return Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255) }
+            return Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
+        case .ledBars:
+            if level > 0.94 { return LabTheme.red }
+            if level > 0.72 { return LabTheme.amber }
+            return LabTheme.cyan
+        case .prismGlow, .radial:
+            return prismColor(index: index, time: time)
+        }
+    }
+
+    private static func prismColor(index: Int, time: TimeInterval) -> Color {
+        Color(
+            hue: shiftedHue(index: index, time: time),
+            saturation: 0.72,
+            brightness: 0.96
+        )
+    }
+
+    private static func shiftedHue(index: Int, time: TimeInterval) -> Double {
+        let raw = Double(index) * 0.085 + time * 0.025
+        return raw - floor(raw)
+    }
+
+    private static func point(center: CGPoint, radius: CGFloat, angle: CGFloat) -> CGPoint {
+        CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+    }
+
+    private static func clampedLevel(_ level: Float) -> Float {
+        min(max(level, 0), 1)
+    }
+}
+
 private struct DenseVUMeterPanel: View {
     let title: String
     let subtitle: String
     let style: VUMeterVisualStyle
+    let appearance: VUMeterAppearance
     @ObservedObject var meterStore: ChannelMeterStore
     var minHeight: CGFloat
 
@@ -2189,6 +4347,10 @@ private struct DenseVUMeterPanel: View {
         sortedMeters.filter { $0.level >= 0.72 }.count
     }
 
+    private var energyPercent: Int {
+        Int(DenseVUMeterRenderer.energyPercent(for: sortedMeters, appearance: appearance).rounded())
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -2206,6 +4368,7 @@ private struct DenseVUMeterPanel: View {
                 Spacer(minLength: 0)
 
                 meterPill("CH", sortedMeters.count)
+                meterPill("E", energyPercent, accent: LabTheme.amber)
                 meterPill("A", activeCount)
                 meterPill("HOT", hotCount, accent: hotCount > 0 ? LabTheme.amber : LabTheme.textSoft)
             }
@@ -2218,7 +4381,8 @@ private struct DenseVUMeterPanel: View {
                         time: timeline.date.timeIntervalSinceReferenceDate,
                         context: &context,
                         size: size,
-                        preferredCellSize: VUMeterLayout.preferredCellSize
+                        preferredCellSize: VUMeterLayout.preferredCellSize,
+                        appearance: appearance
                     )
                 }
             }
@@ -2268,6 +4432,7 @@ private struct DenseVUMeterPanel: View {
 
 private struct VUMeterStylePreview: View {
     let style: VUMeterVisualStyle
+    let appearance: VUMeterAppearance
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -2287,6 +4452,7 @@ private struct VUMeterStylePreview: View {
                     context: &context,
                     size: size,
                     preferredCellSize: VUMeterLayout.preferredCellSize,
+                    appearance: appearance,
                     showLabels: false
                 )
             }
@@ -2310,6 +4476,7 @@ private enum DenseVUMeterRenderer {
         context: inout GraphicsContext,
         size: CGSize,
         preferredCellSize: CGFloat? = nil,
+        appearance: VUMeterAppearance = .default,
         showLabels: Bool = true
     ) {
         let background = Path(CGRect(origin: .zero, size: size))
@@ -2325,37 +4492,57 @@ private enum DenseVUMeterRenderer {
             return
         }
 
+        let levels = activityLevels(for: meters, appearance: appearance)
+
+        if style.isBars {
+            drawVerticalBars(
+                meters: meters,
+                levels: levels,
+                time: time,
+                appearance: appearance,
+                context: &context,
+                size: size
+            )
+            return
+        }
+
+        let fillScale = appearance.resolvedPanelFillScale
+
         if style.isHex {
-            let cells = hexCells(count: meters.count, size: size, preferredCellSize: preferredCellSize)
-            for (meter, cell) in zip(meters, cells) {
-                drawHex(meter: meter, cell: cell, style: style, time: time, context: &context, showLabels: showLabels)
+            let cells = hexCells(count: meters.count, size: size, fillScale: fillScale)
+            for index in 0..<min(meters.count, cells.count, levels.count) {
+                drawHex(meter: meters[index], level: levels[index], cell: cells[index], style: style, time: time, appearance: appearance, context: &context, showLabels: showLabels)
             }
         } else {
-            let cells = squareCells(count: meters.count, size: size, preferredCellSize: preferredCellSize)
-            for (meter, cell) in zip(meters, cells) {
-                drawSquare(meter: meter, cell: cell, style: style, time: time, context: &context, showLabels: showLabels)
+            let cells = squareCells(count: meters.count, size: size, fillScale: fillScale)
+            for index in 0..<min(meters.count, cells.count, levels.count) {
+                drawSquare(meter: meters[index], level: levels[index], cell: cells[index], style: style, time: time, appearance: appearance, context: &context, showLabels: showLabels)
             }
         }
     }
 
-    private static func squareCells(count: Int, size: CGSize, preferredCellSize: CGFloat?) -> [DenseMeterCell] {
-        let constrained = preferredCellSize != nil
-        let padding = meterPadding(for: size, constrained: constrained)
+    static func energyPercent(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> Double {
+        Double(sonicEnergy(levels: activityLevels(for: meters, appearance: appearance)) * 100)
+    }
+
+    private static func squareCells(count: Int, size: CGSize, fillScale: CGFloat) -> [DenseMeterCell] {
+        let resolvedFillScale = min(max(fillScale, 0.2), 1)
+        let padding = meterPadding(for: size, constrained: true)
         let aspect = size.width / max(size.height, 1)
         var best: (cols: Int, rows: Int, side: CGFloat, gap: CGFloat, score: CGFloat)?
 
         for cols in 1...max(count, 1) {
             let rows = Int(ceil(Double(count) / Double(cols)))
-            let gapRatio: CGFloat = constrained ? VUMeterLayout.gapRatio : (count > 50 ? 0.11 : count > 20 ? 0.14 : 0.18)
+            let gapRatio = VUMeterLayout.gapRatio
             let rawSide = min(
                 (size.width - padding * 2) / (CGFloat(cols) + gapRatio * CGFloat(max(cols - 1, 0))),
                 (size.height - padding * 2) / (CGFloat(rows) + gapRatio * CGFloat(max(rows - 1, 0)))
             )
-            let side = preferredCellSize.map { min(rawSide, $0) } ?? rawSide
+            let side = rawSide * resolvedFillScale
             guard side > 1 else { continue }
 
             let gridAspect = CGFloat(cols) / CGFloat(max(rows, 1))
-            let undersizePenalty = constrained && side < VUMeterLayout.minimumCellSize
+            let undersizePenalty = side < VUMeterLayout.minimumCellSize
                 ? (VUMeterLayout.minimumCellSize - side) * 4
                 : 0
             let score = side - abs(log(gridAspect / aspect)) * 5 - undersizePenalty
@@ -2384,25 +4571,26 @@ private enum DenseVUMeterRenderer {
         }
     }
 
-    private static func hexCells(count: Int, size: CGSize, preferredCellSize: CGFloat?) -> [DenseMeterCell] {
-        let constrained = preferredCellSize != nil
-        let padding = meterPadding(for: size, constrained: constrained)
-        let gapRatio: CGFloat = constrained ? VUMeterLayout.gapRatio : (count > 50 ? 0.12 : count > 20 ? 0.16 : 0.2)
+    private static func hexCells(count: Int, size: CGSize, fillScale: CGFloat) -> [DenseMeterCell] {
+        let resolvedFillScale = min(max(fillScale, 0.2), 1)
+        let padding = meterPadding(for: size, constrained: true)
+        let gapRatio = VUMeterLayout.gapRatio
         let sqrt3 = CGFloat(sqrt(3.0))
         var best: (cols: Int, rows: Int, radius: CGFloat, score: CGFloat)?
 
         for cols in 1...max(count, 1) {
             let rows = Int(ceil(Double(count) / Double(cols)))
-            let widthFactor = CGFloat(cols) * sqrt3 + CGFloat(max(cols - 1, 0)) * gapRatio + (rows > 1 ? sqrt3 / 2 : 0)
+            let rowOffsetFactor = rows > 1 ? (sqrt3 + gapRatio) / 2 : 0
+            let widthFactor = CGFloat(cols) * sqrt3 + CGFloat(max(cols - 1, 0)) * gapRatio + rowOffsetFactor
             let heightFactor = CGFloat(2) + CGFloat(max(rows - 1, 0)) * (1.5 + gapRatio)
             let rawRadius = min((size.width - padding * 2) / widthFactor, (size.height - padding * 2) / heightFactor)
-            let radius = preferredCellSize.map { min(rawRadius, $0 / 2) } ?? rawRadius
+            let radius = rawRadius * resolvedFillScale
             guard radius > 1 else { continue }
 
             let usedWidth = radius * widthFactor
             let usedHeight = radius * heightFactor
             let diameter = radius * 2
-            let undersizePenalty = constrained && diameter < VUMeterLayout.minimumCellSize
+            let undersizePenalty = diameter < VUMeterLayout.minimumCellSize
                 ? (VUMeterLayout.minimumCellSize - diameter) * 2
                 : 0
             let score = radius - abs(log((usedWidth / max(usedHeight, 1)) / (size.width / max(size.height, 1)))) * 4 - undersizePenalty
@@ -2418,7 +4606,8 @@ private enum DenseVUMeterRenderer {
         let hexWidth = sqrt3 * radius
         let stepX = hexWidth + gap
         let stepY = radius * 1.5 + gap
-        let usedWidth = CGFloat(best.cols) * hexWidth + CGFloat(max(best.cols - 1, 0)) * gap + (best.rows > 1 ? hexWidth / 2 : 0)
+        let rowOffset = best.rows > 1 ? stepX / 2 : 0
+        let usedWidth = CGFloat(best.cols) * hexWidth + CGFloat(max(best.cols - 1, 0)) * gap + rowOffset
         let usedHeight = radius * 2 + CGFloat(max(best.rows - 1, 0)) * stepY
         let startX = (size.width - usedWidth) / 2 + hexWidth / 2
         let startY = (size.height - usedHeight) / 2 + radius
@@ -2427,7 +4616,7 @@ private enum DenseVUMeterRenderer {
             let col = index % best.cols
             let row = index / best.cols
             let center = CGPoint(
-                x: startX + CGFloat(col) * stepX + (row.isMultiple(of: 2) ? 0 : hexWidth / 2),
+                x: startX + CGFloat(col) * stepX + (row.isMultiple(of: 2) ? 0 : rowOffset),
                 y: startY + CGFloat(row) * stepY
             )
             return DenseMeterCell(
@@ -2448,54 +4637,125 @@ private enum DenseVUMeterRenderer {
         return min(VUMeterLayout.panelPadding, max(10, min(size.width, size.height) * 0.22))
     }
 
+    private static func drawVerticalBars(
+        meters: [ChannelMeter],
+        levels: [Float],
+        time: TimeInterval,
+        appearance: VUMeterAppearance,
+        context: inout GraphicsContext,
+        size: CGSize
+    ) {
+        let count = max(1, min(meters.count, levels.count))
+        let padding = meterPadding(for: size, constrained: true)
+        let rect = CGRect(
+            x: padding,
+            y: padding,
+            width: max(1, size.width - padding * 2),
+            height: max(1, size.height - padding * 2)
+        )
+        let barFrames = VUMeterVerticalBarLayout.frames(count: count, rect: rect)
+
+        for index in 0..<count {
+            let level = levels[index]
+            let columnRect = barFrames[index]
+            let columnWidth = columnRect.width
+            let shell = Path(roundedRect: columnRect, cornerRadius: min(3, columnWidth * 0.22))
+            context.fill(shell, with: .color(Color.white.opacity(0.035)))
+            context.stroke(
+                shell,
+                with: .color(outlineColor(level: level).opacity(outlineOpacity(level: level, appearance: appearance))),
+                lineWidth: appearance.resolvedOutlineWeight
+            )
+
+            guard level > 0 else { continue }
+            let fillHeight = max(columnWidth * 0.6, columnRect.height * fillFraction(level: level, appearance: appearance))
+            let fillRect = CGRect(
+                x: columnRect.minX,
+                y: columnRect.maxY - min(columnRect.height, fillHeight),
+                width: columnRect.width,
+                height: min(columnRect.height, fillHeight)
+            )
+            context.fill(
+                Path(roundedRect: fillRect, cornerRadius: min(3, columnWidth * 0.22)),
+                with: .color(meterColor(level: level, seed: CGFloat(index) * 0.09, time: time, colorMode: appearance.colorMode).opacity(0.26 + Double(level) * 0.64))
+            )
+        }
+    }
+
     private static func drawSquare(
         meter: ChannelMeter,
+        level: Float,
         cell: DenseMeterCell,
         style: VUMeterVisualStyle,
         time: TimeInterval,
+        appearance: VUMeterAppearance,
         context: inout GraphicsContext,
         showLabels: Bool
     ) {
-        let level = clampedLevel(meter.level)
         let shell = Path(roundedRect: cell.rect, cornerRadius: max(2, cell.size * 0.055))
-        context.fill(shell, with: .color(Color.white.opacity(0.035)))
-        context.stroke(shell, with: .color(level >= 0.96 ? LabTheme.red.opacity(0.85) : LabTheme.line.opacity(0.8 + Double(level))), lineWidth: 1)
+        let gain = appearance.resolvedVisualGain
+        context.fill(shell, with: .color(Color.white.opacity(min(0.18, 0.03 + 0.015 * gain))))
+        context.stroke(
+            shell,
+            with: .color(outlineColor(level: level).opacity(outlineOpacity(level: level, appearance: appearance))),
+            lineWidth: appearance.resolvedOutlineWeight
+        )
 
         if style.isFlicker {
-            drawSquareFlicker(level: level, cell: cell, time: time, context: &context)
+            drawSquareFlicker(level: level, cell: cell, time: time, appearance: appearance, context: &context)
         } else {
-            let inner = cell.size * (0.1 + CGFloat(level) * 0.72)
+            let inner = cell.size * fillFraction(level: level, appearance: appearance)
             let rect = CGRect(x: cell.center.x - inner / 2, y: cell.center.y - inner / 2, width: inner, height: inner)
-            context.fill(Path(roundedRect: rect, cornerRadius: max(1, inner * 0.06)), with: .color(meterColor(level: level).opacity(0.24 + Double(level) * 0.68)))
+            context.fill(
+                Path(roundedRect: rect, cornerRadius: max(1, inner * 0.06)),
+                with: .color(meterColor(level: level, seed: CGFloat(cell.index) * 0.13, time: time, colorMode: appearance.colorMode).opacity(0.24 + Double(level) * 0.68))
+            )
         }
 
-        drawLabelIfNeeded(meter.channel.shortLabel, level: level, cell: cell, context: &context, showLabels: showLabels)
+        _ = meter
+        _ = showLabels
     }
 
     private static func drawHex(
         meter: ChannelMeter,
+        level: Float,
         cell: DenseMeterCell,
         style: VUMeterVisualStyle,
         time: TimeInterval,
+        appearance: VUMeterAppearance,
         context: inout GraphicsContext,
         showLabels: Bool
     ) {
-        let level = clampedLevel(meter.level)
         let shell = hexPath(center: cell.center, radius: cell.radius)
-        context.fill(shell, with: .color(Color.white.opacity(0.032)))
-        context.stroke(shell, with: .color(level >= 0.96 ? LabTheme.red.opacity(0.85) : LabTheme.line.opacity(0.85 + Double(level))), lineWidth: max(1, cell.radius * 0.035))
+        let gain = appearance.resolvedVisualGain
+        context.fill(shell, with: .color(Color.white.opacity(min(0.16, 0.028 + 0.013 * gain))))
+        context.stroke(
+            shell,
+            with: .color(outlineColor(level: level).opacity(outlineOpacity(level: level, appearance: appearance))),
+            lineWidth: max(appearance.resolvedOutlineWeight, cell.radius * 0.035)
+        )
 
         if style.isFlicker {
-            drawHexRipple(level: level, cell: cell, time: time, context: &context)
+            drawHexRipple(level: level, cell: cell, time: time, appearance: appearance, context: &context)
         } else {
-            let inner = cell.radius * (0.16 + CGFloat(level) * 0.7)
-            context.fill(hexPath(center: cell.center, radius: inner), with: .color(meterColor(level: level).opacity(0.24 + Double(level) * 0.68)))
+            let inner = cell.radius * fillFraction(level: level, appearance: appearance)
+            context.fill(
+                hexPath(center: cell.center, radius: inner),
+                with: .color(meterColor(level: level, seed: CGFloat(cell.index) * 0.13, time: time, colorMode: appearance.colorMode).opacity(0.24 + Double(level) * 0.68))
+            )
         }
 
-        drawLabelIfNeeded(meter.channel.shortLabel, level: level, cell: cell, context: &context, showLabels: showLabels)
+        _ = meter
+        _ = showLabels
     }
 
-    private static func drawSquareFlicker(level: Float, cell: DenseMeterCell, time: TimeInterval, context: inout GraphicsContext) {
+    private static func drawSquareFlicker(
+        level: Float,
+        cell: DenseMeterCell,
+        time: TimeInterval,
+        appearance: VUMeterAppearance,
+        context: inout GraphicsContext
+    ) {
         let energy = pow(CGFloat(level), 1.4)
         let block = max(CGFloat(2), floor(cell.size / (energy > 0.5 ? 8 : 10)))
         let inset = cell.size * 0.12
@@ -2508,7 +4768,10 @@ private enum DenseVUMeterRenderer {
             width: coreSize,
             height: coreSize
         )
-        context.fill(Path(roundedRect: coreRect, cornerRadius: max(1, block)), with: .color(meterColor(level: level).opacity(0.06 + Double(energy) * 0.32)))
+        context.fill(
+            Path(roundedRect: coreRect, cornerRadius: max(1, block)),
+            with: .color(meterColor(level: level, seed: CGFloat(cell.index) * 0.17, time: time, colorMode: appearance.colorMode).opacity(0.06 + Double(energy) * 0.32))
+        )
 
         let pixels = max(1, Int(1 + energy * min(20, cell.size / 2.4)))
         let speed = 0.35 + energy * 15
@@ -2520,11 +4783,20 @@ private enum DenseVUMeterRenderer {
             let x = cell.rect.minX + inset + noise(seed * 101 + jitter * 7) * field
             let y = cell.rect.minY + inset + noise(seed * 209 + jitter * 11) * field
             let rect = CGRect(x: floor(x / block) * block, y: floor(y / block) * block, width: block, height: block)
-            context.fill(Path(rect), with: .color(pixelColor(level: level, seed: seed).opacity(0.12 + Double(level) * 0.7)))
+            context.fill(
+                Path(rect),
+                with: .color(pixelColor(level: level, seed: seed, time: time, colorMode: appearance.colorMode).opacity(0.12 + Double(level) * 0.7))
+            )
         }
     }
 
-    private static func drawHexRipple(level: Float, cell: DenseMeterCell, time: TimeInterval, context: inout GraphicsContext) {
+    private static func drawHexRipple(
+        level: Float,
+        cell: DenseMeterCell,
+        time: TimeInterval,
+        appearance: VUMeterAppearance,
+        context: inout GraphicsContext
+    ) {
         let energy = pow(CGFloat(level), 1.35)
         let maxRadius = cell.radius * 0.84
         let block = max(CGFloat(2), floor(cell.radius / (energy > 0.55 ? 4.2 : 5.4)))
@@ -2556,25 +4828,12 @@ private enum DenseVUMeterRenderer {
                 let alpha = (ring + secondary + centerBloom) * shimmer * (0.08 + pow(CGFloat(level), 0.92) * 0.8)
 
                 guard alpha >= 0.025 else { continue }
-                clipped.fill(Path(CGRect(x: x, y: y, width: block, height: block)), with: .color(pixelColor(level: level, seed: min(seed + ring * energy * 0.55, 1)).opacity(Double(alpha))))
+                clipped.fill(
+                    Path(CGRect(x: x, y: y, width: block, height: block)),
+                    with: .color(pixelColor(level: level, seed: min(seed + ring * energy * 0.55, 1), time: time, colorMode: appearance.colorMode).opacity(Double(alpha)))
+                )
             }
         }
-    }
-
-    private static func drawLabelIfNeeded(
-        _ label: String,
-        level: Float,
-        cell: DenseMeterCell,
-        context: inout GraphicsContext,
-        showLabels: Bool
-    ) {
-        guard showLabels, cell.size >= 42 else { return }
-        context.draw(
-            Text(label)
-                .font(.system(size: min(11, max(8, cell.size * 0.15)), weight: .bold, design: .monospaced))
-                .foregroundColor(level >= 0.58 ? LabTheme.bg.opacity(0.84) : LabTheme.textSoft.opacity(0.78)),
-            at: cell.center
-        )
     }
 
     private static func hexPath(center: CGPoint, radius: CGFloat) -> Path {
@@ -2599,19 +4858,136 @@ private enum DenseVUMeterRenderer {
         min(max(level, 0), 1)
     }
 
-    private static func meterColor(level: Float) -> Color {
-        if level > 0.9 { return LabTheme.red }
-        if level > 0.72 { return LabTheme.amber }
-        if level > 0.34 { return LabTheme.blue }
-        return LabTheme.cyan
+    private static func activityLevels(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> [Float] {
+        let gained = meters.map { visualLevel($0.level, appearance: appearance) }
+        let compression = Float(appearance.resolvedActivityCompression)
+        guard compression > 0 || appearance.normalizesVisualEnergy else { return gained }
+
+        let currentEnergy = sonicEnergy(levels: gained)
+        let targetEnergy: Float = 0.48
+        let normalizeScale = appearance.normalizesVisualEnergy && currentEnergy > 0
+            ? min(8, max(0.25, targetEnergy / currentEnergy))
+            : 1
+        let normalizeBlend: Float = appearance.normalizesVisualEnergy ? 1 : compression
+        let gamma = max(0.22, 1 - compression * 0.72)
+        let activeFloor = compression * 0.22
+
+        return gained.map { level in
+            guard level >= 0.002 else { return 0 }
+
+            let normalized = min(1, level * (1 + (normalizeScale - 1) * normalizeBlend))
+            guard compression > 0 else { return normalized }
+
+            let lifted = Float(pow(Double(normalized), Double(gamma)))
+            return min(1, max(normalized, activeFloor + lifted * (1 - activeFloor)))
+        }
     }
 
-    private static func pixelColor(level: Float, seed: CGFloat) -> Color {
-        if level > 0.9, seed > 0.35 { return LabTheme.red }
-        if level > 0.72, seed > 0.22 { return LabTheme.amber }
-        if level > 0.5, seed > 0.82 { return Color(red: 244 / 255, green: 114 / 255, blue: 182 / 255) }
-        if level > 0.34, seed > 0.18 { return LabTheme.blue }
-        return LabTheme.cyan
+    private static func sonicEnergy(levels: [Float]) -> Float {
+        guard !levels.isEmpty else { return 0 }
+        let sum = levels.reduce(Double(0)) { partial, level in
+            partial + Double(level * level)
+        }
+        return clampedLevel(Float(sqrt(sum / Double(levels.count))))
+    }
+
+    private static func fillFraction(level: Float, appearance: VUMeterAppearance) -> CGFloat {
+        let maxFraction: CGFloat = 0.86
+        let minFraction = maxFraction / max(CGFloat(appearance.resolvedMaxSizeRatio), 1)
+        return minFraction + CGFloat(clampedLevel(level)) * (maxFraction - minFraction)
+    }
+
+    private static func visualLevel(_ level: Float, appearance: VUMeterAppearance) -> Float {
+        clampedLevel(Float(Double(level) * appearance.resolvedVisualGain))
+    }
+
+    private static func outlineColor(level: Float) -> Color {
+        _ = level
+        return LabTheme.text
+    }
+
+    private static func outlineOpacity(level: Float, appearance: VUMeterAppearance) -> Double {
+        let weightLift = min(Double(appearance.resolvedOutlineWeight) * 0.07, 0.18)
+        return min(0.94, 0.42 + Double(level) * 0.34 + weightLift)
+    }
+
+    private static func meterColor(
+        level: Float,
+        seed: CGFloat,
+        time: TimeInterval,
+        colorMode: VUMeterColorMode
+    ) -> Color {
+        switch colorMode {
+        case .systemGreen:
+            if level > 0.94 { return LabTheme.red }
+            if level > 0.76 { return LabTheme.amber }
+            if level > 0.42 { return Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255) }
+            return Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
+        case .white:
+            if level > 0.94 { return LabTheme.red }
+            if level > 0.78 { return LabTheme.amber }
+            let value = 0.56 + Double(level) * 0.44
+            return Color(red: value, green: value, blue: value)
+        case .sparkle:
+            return sparkleColor(level: level, seed: seed, time: time)
+        case .classic:
+            return classicWinampColor(level: level)
+        }
+    }
+
+    private static func pixelColor(
+        level: Float,
+        seed: CGFloat,
+        time: TimeInterval,
+        colorMode: VUMeterColorMode
+    ) -> Color {
+        switch colorMode {
+        case .sparkle:
+            return sparkleColor(level: level, seed: seed, time: time)
+        case .classic:
+            return classicWinampColor(level: min(1, level + Float(seed) * 0.08))
+        case .white:
+            if level > 0.94, seed > 0.35 { return LabTheme.red }
+            if level > 0.78, seed > 0.22 { return LabTheme.amber }
+            let value = 0.52 + Double(level) * 0.48
+            return Color(red: value, green: value, blue: value)
+        case .systemGreen:
+            if level > 0.94, seed > 0.35 { return LabTheme.red }
+            if level > 0.76, seed > 0.22 { return LabTheme.amber }
+            if level > 0.48, seed > 0.82 { return Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255) }
+            return Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
+        }
+    }
+
+    private static func sparkleColor(level: Float, seed: CGFloat, time: TimeInterval) -> Color {
+        if level > 0.96, seed > 0.72 { return LabTheme.red }
+        let rawHue = time * 0.075 + Double(seed) * 0.82 + Double(level) * 0.18
+        let hue = rawHue - floor(rawHue)
+        return Color(hue: hue, saturation: 0.72 + Double(level) * 0.2, brightness: 0.72 + Double(level) * 0.28)
+    }
+
+    private static func classicWinampColor(level: Float) -> Color {
+        let colors: [(Double, Double, Double)] = [
+            (24, 132, 8),
+            (41, 148, 0),
+            (49, 156, 8),
+            (57, 181, 16),
+            (50, 190, 16),
+            (41, 206, 16),
+            (148, 222, 33),
+            (189, 222, 41),
+            (214, 181, 33),
+            (222, 165, 24),
+            (198, 123, 8),
+            (214, 115, 0),
+            (214, 102, 0),
+            (214, 90, 0),
+            (206, 41, 16),
+            (239, 49, 16)
+        ]
+        let index = min(colors.count - 1, max(0, Int(round(Double(clampedLevel(level)) * Double(colors.count - 1)))))
+        let color = colors[index]
+        return Color(red: color.0 / 255, green: color.1 / 255, blue: color.2 / 255)
     }
 
     private static func rippleBand(normalized: CGFloat, travel: CGFloat, width: CGFloat) -> CGFloat {
@@ -2629,6 +5005,8 @@ private enum DenseVUMeterRenderer {
 private struct SonicSphereRendererSceneView: NSViewRepresentable {
     let sceneModel: RendererSceneModel
     let isPlaying: Bool
+    var viewportMode: RendererViewportMode = .isometric
+    var isInteractive = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -2637,7 +5015,9 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
     func makeNSView(context: Context) -> CenteredOrbitSceneView {
         let view = CenteredOrbitSceneView()
         view.orbitCoordinator = context.coordinator
+        view.isOrbitInteractionEnabled = isInteractive
         context.coordinator.sceneView = view
+        context.coordinator.configure(viewportMode: viewportMode, isInteractive: isInteractive)
         view.allowsCameraControl = false
         view.autoenablesDefaultLighting = false
         view.backgroundColor = NSColor(calibratedRed: 0.006, green: 0.014, blue: 0.017, alpha: 1.0)
@@ -2653,14 +5033,18 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
             makeInputSpeaker: makeInputSpeaker,
             makeListener: makeListener
         )
-        let pan = NSPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
-        view.addGestureRecognizer(pan)
-        let magnify = NSMagnificationGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMagnify(_:)))
-        view.addGestureRecognizer(magnify)
+        if isInteractive {
+            let pan = NSPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
+            view.addGestureRecognizer(pan)
+            let magnify = NSMagnificationGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMagnify(_:)))
+            view.addGestureRecognizer(magnify)
+        }
         return view
     }
 
     func updateNSView(_ nsView: CenteredOrbitSceneView, context: Context) {
+        nsView.isOrbitInteractionEnabled = isInteractive
+        context.coordinator.configure(viewportMode: viewportMode, isInteractive: isInteractive)
         context.coordinator.updateScene(
             sceneModel: sceneModel,
             isPlaying: isPlaying,
@@ -2711,34 +5095,36 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
 
     private func makeLamellaSphere() -> SCNNode {
         let container = SCNNode()
+        let sectorCount = 22
+        let ringCount = 19
+        let skewRadians = 45.0 * Double.pi / 180
 
-        let sphere = SCNSphere(radius: 1)
-        sphere.segmentCount = 64
-        let sphereMaterial = material(
-            color: NSColor(calibratedRed: 0.37, green: 0.92, blue: 0.83, alpha: 0.32),
-            emission: NSColor(calibratedRed: 0.10, green: 0.35, blue: 0.32, alpha: 0.22),
-            fillMode: .lines
-        )
-        sphere.firstMaterial = sphereMaterial
-        container.addChildNode(SCNNode(geometry: sphere))
-
-        let lamellaAngles = stride(from: -60.0, through: 60.0, by: 15.0)
-        for angle in lamellaAngles {
+        for ring in 1...ringCount {
+            let y = -1.0 + 2.0 * Double(ring) / Double(ringCount + 1)
             let node = torusNode(
-                radius: cos(abs(angle) * .pi / 180),
+                radius: sqrt(max(0, 1 - y * y)),
                 color: NSColor(calibratedRed: 0.34, green: 0.90, blue: 0.84, alpha: 0.52)
             )
-            node.position.y = CGFloat(sin(angle * .pi / 180))
+            node.position.y = CGFloat(y)
             container.addChildNode(node)
         }
 
-        for angle in stride(from: 0.0, to: 180.0, by: 22.5) {
-            let node = torusNode(
-                radius: 1,
+        for sector in 0..<sectorCount {
+            let baseAzimuth = Double(sector) * 2.0 * Double.pi / Double(sectorCount)
+            let points = (0...96).map { step -> SCNVector3 in
+                let y = -0.985 + 1.97 * Double(step) / 96.0
+                let radius = sqrt(max(0, 1 - y * y))
+                let azimuth = baseAzimuth + skewRadians * y / 2.0
+                return SCNVector3(
+                    Float(cos(azimuth) * radius),
+                    Float(y),
+                    Float(sin(azimuth) * radius)
+                )
+            }
+            let node = polylineNode(
+                points: points,
                 color: NSColor(calibratedRed: 0.24, green: 0.54, blue: 0.95, alpha: 0.30)
             )
-            node.eulerAngles.x = CGFloat.pi / 2
-            node.eulerAngles.y = CGFloat(angle * .pi / 180)
             container.addChildNode(node)
         }
 
@@ -2811,6 +5197,17 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         return SCNNode(geometry: torus)
     }
 
+    private func polylineNode(points: [SCNVector3], color: NSColor) -> SCNNode {
+        let source = SCNGeometrySource(vertices: points)
+        let indices = (0..<max(points.count - 1, 0)).flatMap { index in
+            [Int32(index), Int32(index + 1)]
+        }
+        let element = SCNGeometryElement(indices: indices, primitiveType: .line)
+        let geometry = SCNGeometry(sources: [source], elements: [element])
+        geometry.firstMaterial = material(color: color, emission: color.withAlphaComponent(0.18))
+        return SCNNode(geometry: geometry)
+    }
+
     private func material(
         color: NSColor,
         emission: NSColor,
@@ -2837,13 +5234,28 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         private var yaw: CGFloat = 0
         private var pitch: CGFloat = 0.34
         private var distance: CGFloat = 4.15
+        private var viewportMode: RendererViewportMode = .isometric
+        private var isInteractive = true
         private var panStartYaw: CGFloat = 0
         private var panStartPitch: CGFloat = 0
         private var magnifyStartDistance: CGFloat = 4.15
 
+        func configure(viewportMode: RendererViewportMode, isInteractive: Bool) {
+            let modeChanged = self.viewportMode != viewportMode
+            let interactionChanged = self.isInteractive != isInteractive
+            self.viewportMode = viewportMode
+            self.isInteractive = isInteractive
+
+            if modeChanged || interactionChanged || !isInteractive {
+                applyViewportPose()
+                updateCamera()
+            }
+        }
+
         func attach(cameraNode: SCNNode, contentRoot: SCNNode) {
             self.cameraNode = cameraNode
             self.contentRoot = contentRoot
+            applyViewportPose()
             updateCamera()
         }
 
@@ -2904,6 +5316,8 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         }
 
         @objc func handlePan(_ gesture: NSPanGestureRecognizer) {
+            guard isInteractive else { return }
+
             switch gesture.state {
             case .began:
                 panStartYaw = yaw
@@ -2919,6 +5333,8 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         }
 
         @objc func handleMagnify(_ gesture: NSMagnificationGestureRecognizer) {
+            guard isInteractive else { return }
+
             switch gesture.state {
             case .began:
                 magnifyStartDistance = distance
@@ -2931,8 +5347,17 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         }
 
         func handleScroll(deltaY: CGFloat) {
+            guard isInteractive else { return }
+
             distance = (distance + deltaY * 0.018).clamped(to: 2.2...7.4)
             updateCamera()
+        }
+
+        private func applyViewportPose() {
+            let pose = viewportMode.cameraPose
+            yaw = pose.yaw
+            pitch = pose.pitch
+            distance = pose.distance
         }
 
         private func updateCamera() {
@@ -2949,8 +5374,14 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
 
 private final class CenteredOrbitSceneView: SCNView {
     weak var orbitCoordinator: SonicSphereRendererSceneView.Coordinator?
+    var isOrbitInteractionEnabled = true
 
     override func scrollWheel(with event: NSEvent) {
+        guard isOrbitInteractionEnabled else {
+            super.scrollWheel(with: event)
+            return
+        }
+
         orbitCoordinator?.handleScroll(deltaY: event.scrollingDeltaY)
     }
 }

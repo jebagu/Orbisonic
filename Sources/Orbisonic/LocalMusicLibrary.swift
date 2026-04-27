@@ -137,13 +137,16 @@ final class LocalMusicLibrary {
     private let fileManager: FileManager
     private let databaseURL: URL
     private let artworkDirectoryURL: URL
+    private let playlistDirectoryURL: URL
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
         let supportURL = Self.applicationSupportURL(fileManager: fileManager)
         databaseURL = supportURL.appendingPathComponent("local-music-library.json", isDirectory: false)
         artworkDirectoryURL = supportURL.appendingPathComponent("Album Artwork", isDirectory: true)
+        playlistDirectoryURL = supportURL.appendingPathComponent("Playlists", isDirectory: true)
         try? fileManager.createDirectory(at: artworkDirectoryURL, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
     }
 
     var databasePath: String {
@@ -154,13 +157,22 @@ final class LocalMusicLibrary {
         artworkDirectoryURL.path
     }
 
+    var playlistDirectoryPath: String {
+        playlistDirectoryURL.path
+    }
+
     func load() -> LocalMusicDatabase {
         guard let data = try? Data(contentsOf: databaseURL) else {
             return LocalMusicDatabase()
         }
 
         do {
-            return try JSONDecoder().decode(LocalMusicDatabase.self, from: data)
+            let database = try JSONDecoder().decode(LocalMusicDatabase.self, from: data)
+            let repaired = repairStaleMatroskaMetadata(in: database)
+            if repaired != database {
+                save(repaired)
+            }
+            return repaired
         } catch {
             AppLogger.shared.error(category: "local-music", "Failed to decode local music database: \(error.localizedDescription)")
             return LocalMusicDatabase()
@@ -192,6 +204,27 @@ final class LocalMusicLibrary {
         return LocalMusicScanResult(
             tracks: tracks.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending },
             playlists: playlists.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        )
+    }
+
+    func saveSessionPlaylist(name: String, tracks: [LocalMusicTrack]) throws -> LocalMusicPlaylist {
+        try fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
+
+        let fileStem = Self.sanitizedFileStem(name)
+        let playlistURL = uniquePlaylistURL(fileStem: fileStem)
+        let lines = ["#EXTM3U"] + tracks.flatMap { track in
+            [
+                "#EXTINF:\(Int(track.duration.rounded(.down))),\(track.displayTitle)",
+                track.path
+            ]
+        }
+        let contents = lines.joined(separator: "\n") + "\n"
+        try contents.write(to: playlistURL, atomically: true, encoding: .utf8)
+
+        return LocalMusicPlaylist(
+            name: playlistURL.deletingPathExtension().lastPathComponent,
+            path: playlistURL.path,
+            trackPaths: tracks.map(\.path)
         )
     }
 
@@ -315,6 +348,10 @@ final class LocalMusicLibrary {
     }
 
     private func metadata(for url: URL, rootPath: String?, extractsAlbumArt: Bool) -> LocalMusicTrack {
+        if MatroskaFLACSupport.isMatroska(url) {
+            return matroskaMetadata(for: url, rootPath: rootPath, extractsAlbumArt: extractsAlbumArt)
+        }
+
         let asset = AVURLAsset(url: url)
         let commonMetadata = asset.commonMetadata
         let title = Self.metadataString(for: .commonKeyTitle, in: commonMetadata)
@@ -360,6 +397,106 @@ final class LocalMusicLibrary {
         }
     }
 
+    private func repairStaleMatroskaMetadata(in database: LocalMusicDatabase) -> LocalMusicDatabase {
+        var repaired = database
+        var changed = false
+        repaired.tracks = database.tracks.map { track in
+            guard track.channelCount <= 0,
+                  MatroskaFLACSupport.isMatroska(track.url),
+                  fileManager.fileExists(atPath: track.path)
+            else {
+                return track
+            }
+
+            changed = true
+            return matroskaMetadata(
+                for: track.url,
+                rootPath: track.rootPath,
+                extractsAlbumArt: database.settings.extractsAlbumArt
+            )
+        }
+
+        return changed ? repaired : database
+    }
+
+    private func matroskaMetadata(for url: URL, rootPath: String?, extractsAlbumArt: Bool) -> LocalMusicTrack {
+        do {
+            let streamInfo = try MatroskaAudioProbe().probe(url: url)
+            let layout = SurroundLayoutDetector.fallbackLayout(for: streamInfo.channelCount)
+            return LocalMusicTrack(
+                path: url.path,
+                rootPath: rootPath,
+                fileName: url.lastPathComponent,
+                title: streamInfo.tags.title,
+                artist: streamInfo.tags.artist,
+                album: streamInfo.tags.album,
+                channelCount: streamInfo.channelCount,
+                channelSummary: layout.channelSummary,
+                layoutName: layout.name,
+                sampleRate: streamInfo.sampleRate,
+                duration: streamInfo.duration,
+                artworkPath: extractsAlbumArt ? extractMatroskaArtwork(for: url) : nil
+            )
+        } catch {
+            AppLogger.shared.error(category: "local-music", "Matroska metadata scan failed file=\(url.path) error=\(error.localizedDescription)")
+            return LocalMusicTrack(
+                path: url.path,
+                rootPath: rootPath,
+                fileName: url.lastPathComponent,
+                title: nil,
+                artist: nil,
+                album: nil,
+                channelCount: 0,
+                channelSummary: "",
+                layoutName: "-",
+                sampleRate: 0,
+                duration: 0,
+                artworkPath: extractsAlbumArt ? extractMatroskaArtwork(for: url) : nil
+            )
+        }
+    }
+
+    private func extractMatroskaArtwork(for url: URL) -> String? {
+        guard let ffmpegURL = FFmpegToolLocator.ffmpegURL() else { return nil }
+
+        let filename = "\(Self.stableIdentifier(for: url.path)).jpg"
+        let destinationURL = artworkDirectoryURL.appendingPathComponent(filename, isDirectory: false)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            return destinationURL.path
+        }
+
+        let process = Process()
+        process.executableURL = ffmpegURL
+        process.arguments = [
+            "-y",
+            "-v", "error",
+            "-i", url.path,
+            "-map", "0:v:0",
+            "-frames:v", "1",
+            destinationURL.path
+        ]
+
+        let pipe = Pipe()
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            AppLogger.shared.debug(category: "local-music", "Matroska artwork extraction could not start file=\(url.path) error=\(error.localizedDescription)")
+            return nil
+        }
+
+        guard process.terminationStatus == 0,
+              fileManager.fileExists(atPath: destinationURL.path)
+        else {
+            try? fileManager.removeItem(at: destinationURL)
+            return nil
+        }
+
+        return destinationURL.path
+    }
+
     private func extractArtwork(for url: URL, metadata: [AVMetadataItem]) -> String? {
         guard let artworkData = AVMetadataItem
             .metadataItems(from: metadata, withKey: AVMetadataKey.commonKeyArtwork, keySpace: .common)
@@ -403,7 +540,7 @@ final class LocalMusicLibrary {
 
     static func isSupportedAudioFile(_ url: URL) -> Bool {
         let supportedExtensions: Set<String> = [
-            "wav", "wave", "flac", "aif", "aiff", "m4a", "caf", "mp3"
+            "wav", "wave", "flac", "aif", "aiff", "m4a", "caf", "mp3", "mkv", "mka"
         ]
 
         return supportedExtensions.contains(url.pathExtension.lowercased())
@@ -430,6 +567,29 @@ final class LocalMusicLibrary {
         return String(hash, radix: 16)
     }
 
+    private static func sanitizedFileStem(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
+        let scalars = value.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "-"
+        }
+        let stem = String(scalars)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "  ", with: " ")
+        return stem.isEmpty ? "Session Queue" : stem
+    }
+
+    private func uniquePlaylistURL(fileStem: String) -> URL {
+        var candidate = playlistDirectoryURL.appendingPathComponent(fileStem, isDirectory: false).appendingPathExtension("m3u")
+        var suffix = 2
+        while fileManager.fileExists(atPath: candidate.path) {
+            candidate = playlistDirectoryURL
+                .appendingPathComponent("\(fileStem) \(suffix)", isDirectory: false)
+                .appendingPathExtension("m3u")
+            suffix += 1
+        }
+        return candidate
+    }
+
     private static func applicationSupportURL(fileManager: FileManager) -> URL {
         if let url = try? fileManager.url(
             for: .applicationSupportDirectory,
@@ -448,7 +608,7 @@ final class LocalMusicLibrary {
     }
 }
 
-private extension String {
+extension String {
     var trimmedNilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

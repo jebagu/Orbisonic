@@ -4,7 +4,6 @@ struct SpatialTuning {
     var preset: SpatialPreset
     var frontAngle: Double
     var rearAngle: Double
-    var headTrackingEnabled: Bool
 
     static let `default` = SpatialPreset.immersiveWrap.defaults
 

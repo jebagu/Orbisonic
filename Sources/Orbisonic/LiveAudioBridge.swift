@@ -603,6 +603,61 @@ final class LiveAudioPipe {
         return noErr
     }
 
+    func render(
+        matrix: RendererMatrix,
+        audioBufferList: UnsafeMutablePointer<AudioBufferList>,
+        frameCount: AVAudioFrameCount
+    ) -> OSStatus {
+        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+        let frames = Int(frameCount)
+        guard frames > 0,
+              matrix.inputCount == rings.count,
+              matrix.outputCount > 0
+        else {
+            clear(audioBufferList: audioBufferList, frameCount: frames)
+            return noErr
+        }
+
+        var inputScratch = Array(
+            repeating: Array(repeating: Float(0), count: frames),
+            count: matrix.inputCount
+        )
+
+        for inputIndex in 0..<matrix.inputCount {
+            inputScratch[inputIndex].withUnsafeMutableBufferPointer { destination in
+                guard let baseAddress = destination.baseAddress else { return }
+                _ = rings[inputIndex].read(into: baseAddress, frameCount: frames)
+            }
+        }
+
+        for buffer in buffers {
+            guard let rawData = buffer.mData else { continue }
+            let sampleCount = min(
+                Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride,
+                frames
+            )
+            rawData.assumingMemoryBound(to: Float.self).initialize(repeating: 0, count: sampleCount)
+        }
+
+        let outputLimit = min(buffers.count, matrix.outputCount)
+        for outputIndex in 0..<outputLimit {
+            guard let rawData = buffers[outputIndex].mData else { continue }
+            let output = rawData.assumingMemoryBound(to: Float.self)
+
+            for inputIndex in 0..<matrix.inputCount {
+                let gain = Float(matrix.gains[inputIndex][outputIndex])
+                guard abs(gain) > 0.000_001 else { continue }
+
+                let input = inputScratch[inputIndex]
+                for frame in 0..<frames {
+                    output[frame] += input[frame] * gain
+                }
+            }
+        }
+
+        return noErr
+    }
+
     func latestMeterLevels() -> [Float] {
         meterLock.lock()
         let levels = meterLevels
@@ -646,5 +701,18 @@ final class LiveAudioPipe {
         let rms = sqrtf(energy / Float(frameCount))
         let db = 20 * log10f(max(rms, 0.000_01))
         return min(max((db + 60) / 60, 0), 1)
+    }
+
+    private func clear(audioBufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
+        guard frameCount > 0 else { return }
+
+        for buffer in UnsafeMutableAudioBufferListPointer(audioBufferList) {
+            guard let rawData = buffer.mData else { continue }
+            let sampleCount = min(
+                Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride,
+                frameCount
+            )
+            rawData.assumingMemoryBound(to: Float.self).initialize(repeating: 0, count: sampleCount)
+        }
     }
 }

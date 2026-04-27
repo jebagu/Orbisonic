@@ -32,6 +32,12 @@ struct OutputRouteInfo: Equatable, Identifiable {
         normalized(deviceName).contains("blackhole") || normalized(manufacturer).contains("existential")
     }
 
+    var isDanteVirtualSoundcard: Bool {
+        let combined = normalized(deviceName) + " " + normalized(manufacturer)
+        return combined.contains("dante virtual soundcard")
+            || (combined.contains("dante") && combined.contains("audinate"))
+    }
+
     var isOrbisonicLoopback: Bool {
         OrbisonicLoopbackDevice.allCases.contains { $0.deviceUID == uid }
     }
@@ -47,11 +53,27 @@ struct OutputRouteInfo: Equatable, Identifiable {
             return .feedbackLoop(deviceName)
         }
 
+        if isDanteVirtualSoundcard {
+            return .safe
+        }
+
         if transportName == "Virtual" {
             return .virtualOutput(deviceName)
         }
 
         return .safe
+    }
+
+    var isSelectableOutputTarget: Bool {
+        isAvailable && !routeRisk.blocksLiveMonitoring
+    }
+
+    var isPreferredRendererOutput: Bool {
+        isSelectableOutputTarget && isDanteVirtualSoundcard
+    }
+
+    var isRendererCapableOutput: Bool {
+        isSelectableOutputTarget && outputChannelCount > 2
     }
 
     var isHeadphones: Bool {
@@ -63,11 +85,17 @@ struct OutputRouteInfo: Equatable, Identifiable {
     }
 
     var targetName: String {
+        if isDanteVirtualSoundcard {
+            return "Dante Renderer"
+        }
         if isBlackHole {
             return "BlackHole Virtual Route"
         }
         if isOrbisonicLoopback {
             return "Orbisonic Loopback"
+        }
+        if isRendererCapableOutput {
+            return "Multichannel Renderer"
         }
         if isHeadphones {
             return "Headphones"
@@ -103,11 +131,17 @@ struct OutputRouteInfo: Equatable, Identifiable {
     }
 
     var targetDetail: String {
+        if isDanteVirtualSoundcard {
+            return "Sonic Sphere renderer output."
+        }
         if isBlackHole {
             return "Virtual loopback is the active macOS target, so the app is feeding BlackHole right now."
         }
         if isOrbisonicLoopback {
             return "Orbisonic is pointed at one of its input loopbacks. Choose a monitor or renderer output."
+        }
+        if isRendererCapableOutput {
+            return "\(deviceName) is available as a multichannel renderer target."
         }
         if isHeadphones {
             return "Current route looks headphone-safe for the binaural render."
@@ -168,8 +202,12 @@ struct InputRouteInfo: Equatable, Identifiable {
         role == .auxLoopback
     }
 
+    var isSpotifyLoopback: Bool {
+        role == .spotifyLoopback
+    }
+
     var isOrbisonicLoopback: Bool {
-        isRoonLoopback || isAuxLoopback
+        isRoonLoopback || isSpotifyLoopback || isAuxLoopback
     }
 
     var role: InputDeviceRole {
@@ -177,12 +215,8 @@ struct InputRouteInfo: Equatable, Identifiable {
             return .unavailable
         }
 
-        if uid == OrbisonicLoopbackDevice.roonInput.deviceUID {
-            return .roonLoopback
-        }
-
-        if uid == OrbisonicLoopbackDevice.auxCable.deviceUID {
-            return .auxLoopback
+        if let loopback = OrbisonicLoopbackDevice.allCases.first(where: { $0.deviceUID == uid }) {
+            return loopback.inputRole
         }
 
         if normalized(deviceName).contains("blackhole") || normalized(manufacturer).contains("existential") {
@@ -234,15 +268,10 @@ enum OutputRouteMonitor {
     }
 
     static func availableOutputRoutes() -> [OutputRouteInfo] {
-        deviceIDs()
+        let routes = deviceIDs()
             .compactMap(outputRoute(deviceID:))
             .filter(\.isAvailable)
-            .sorted { lhs, rhs in
-                if lhs.routeRisk.blocksLiveMonitoring != rhs.routeRisk.blocksLiveMonitoring {
-                    return !lhs.routeRisk.blocksLiveMonitoring
-                }
-                return lhs.deviceName.localizedStandardCompare(rhs.deviceName) == .orderedAscending
-            }
+        return OutputRouteSelectionPolicy.sortedOutputRoutes(routes)
     }
 
     static func outputRoute(uid: String) -> OutputRouteInfo? {

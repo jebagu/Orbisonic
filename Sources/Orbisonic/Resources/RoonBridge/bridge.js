@@ -7,11 +7,17 @@ const path = require("path");
 let RoonApi;
 let RoonApiStatus;
 let RoonApiTransport;
+let RoonApiImage;
 
 try {
   RoonApi = require("node-roon-api");
   RoonApiStatus = require("node-roon-api-status");
   RoonApiTransport = require("node-roon-api-transport");
+  try {
+    RoonApiImage = require("node-roon-api-image");
+  } catch {
+    RoonApiImage = null;
+  }
 } catch (error) {
   console.error(`[roon-bridge] Missing dependency: ${error.message}`);
   console.error("[roon-bridge] Run npm install in the RoonBridge support directory.");
@@ -26,6 +32,7 @@ const selectedZoneFile = path.join(process.cwd(), "selected-zone.json");
 
 let coreInfo = null;
 let transport = null;
+let imageService = null;
 let statusService = null;
 let zones = [];
 let selectedZoneId = readSelectedZoneId();
@@ -179,6 +186,28 @@ function respondJSON(response, statusCode, body) {
   response.end(payload);
 }
 
+function respondImage(imageKey, response) {
+  if (!imageService || !imageKey) {
+    respondJSON(response, 503, { ok: false, error: "Roon image service is not available." });
+    return;
+  }
+
+  imageService.get_image(imageKey, { scale: "fit", width: 600, height: 600, format: "jpg" }, (error, contentType, body) => {
+    if (error || !body) {
+      respondJSON(response, 502, { ok: false, error: String(error || "No image returned.") });
+      return;
+    }
+
+    const payload = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    response.writeHead(200, {
+      "Content-Type": contentType || "image/jpeg",
+      "Cache-Control": "public, max-age=3600",
+      "Content-Length": payload.length
+    });
+    response.end(payload);
+  });
+}
+
 function readBody(request) {
   return new Promise((resolve, reject) => {
     let payload = "";
@@ -258,6 +287,11 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && url.pathname.startsWith("/image/")) {
+    respondImage(decodeURIComponent(url.pathname.slice("/image/".length)), response);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/zone/select") {
     try {
       const body = await readBody(request);
@@ -308,6 +342,7 @@ const roon = new RoonApi({
       display_version: core.display_version
     };
     transport = core.services.RoonApiTransport;
+    imageService = RoonApiImage ? core.services.RoonApiImage : null;
     mark("paired", `Paired with ${core.display_name}.`);
 
     transport.subscribe_zones((cmd, data) => {
@@ -341,6 +376,7 @@ const roon = new RoonApi({
     const name = core && core.display_name ? core.display_name : "Roon Core";
     coreInfo = null;
     transport = null;
+    imageService = null;
     zones = [];
     mark("unpaired", `${name} is no longer paired.`);
   }
@@ -348,7 +384,7 @@ const roon = new RoonApi({
 
 statusService = new RoonApiStatus(roon);
 roon.init_services({
-  required_services: [RoonApiTransport],
+  required_services: RoonApiImage ? [RoonApiTransport, RoonApiImage] : [RoonApiTransport],
   provided_services: [statusService]
 });
 mark("waiting_for_authorization", "Open Roon Settings > Extensions and enable Orbisonic Roon Bridge.");

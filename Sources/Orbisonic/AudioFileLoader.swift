@@ -61,7 +61,32 @@ final class AudioFileLoader {
     func load(url: URL) throws -> LoadedAudioFile {
         AppLogger.shared.info(category: "loader", "Opening file: \(url.path)")
 
-        let file = try AVAudioFile(forReading: url)
+        var readURL = url
+        var temporaryDecodedURL: URL?
+        var matroskaStreamInfo: MatroskaAudioStreamInfo?
+        var tags = AudioMetadataBuilder.tags(for: url)
+
+        if MatroskaFLACSupport.isMatroska(url) {
+            let streamInfo = try MatroskaAudioProbe().probe(url: url)
+            let decodedURL = try MatroskaFLACDemuxer().demuxToCAF(url: url, streamInfo: streamInfo)
+            readURL = decodedURL
+            temporaryDecodedURL = decodedURL
+            matroskaStreamInfo = streamInfo
+            tags = streamInfo.tags
+            AppLogger.shared.info(
+                category: "loader",
+                "Decoded Matroska FLAC stream index=\(streamInfo.streamIndex) channels=\(streamInfo.channelCount) " +
+                    "sampleRate=\(streamInfo.sampleRate) bitDepth=\(streamInfo.bitDepth)"
+            )
+        }
+
+        defer {
+            if let temporaryDecodedURL {
+                try? FileManager.default.removeItem(at: temporaryDecodedURL)
+            }
+        }
+
+        let file = try AVAudioFile(forReading: readURL)
         let inputFormat = file.processingFormat
         let channelCount = inputFormat.channelCount
 
@@ -81,7 +106,7 @@ final class AudioFileLoader {
 
         AppLogger.shared.info(
             category: "loader",
-            "Detected source format codec=\(AudioMetadataBuilder.build(for: file, layout: detectedLayout, duration: 0).codecName) " +
+            "Detected source format codec=\(AudioMetadataBuilder.build(for: file, layout: detectedLayout, duration: 0, sourceURL: url, containerName: matroskaStreamInfo == nil ? nil : "Matroska", codecName: matroskaStreamInfo?.codecName, bitDepth: matroskaStreamInfo?.bitDepth, tags: tags).codecName) " +
                 "sampleRate=\(inputFormat.sampleRate) channelCount=\(channelCount) layout=\(detectedLayout.name) channels=\(detectedLayout.channelSummary)"
         )
 
@@ -157,7 +182,16 @@ final class AudioFileLoader {
         }
 
         let duration = Double(surroundBuffer.frameLength) / surroundFormat.sampleRate
-        let metadata = AudioMetadataBuilder.build(for: file, layout: detectedLayout, duration: duration)
+        let metadata = AudioMetadataBuilder.build(
+            for: file,
+            layout: detectedLayout,
+            duration: duration,
+            sourceURL: url,
+            containerName: matroskaStreamInfo == nil ? nil : "Matroska",
+            codecName: matroskaStreamInfo?.codecName,
+            bitDepth: matroskaStreamInfo?.bitDepth,
+            tags: tags
+        )
 
         AppLogger.shared.notice(
             category: "loader",

@@ -1,0 +1,17 @@
+[package]
+name = "orbisonic-librespot-ffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+data-encoding = "2"
+futures-util = "0.3"
+librespot = { path = "../librespot", default-features = false, features = ["native-tls", "rodio-backend", "with-dns-sd"] }
+sha1 = "0.10"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
