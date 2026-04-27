@@ -2,7 +2,7 @@ import AVFoundation
 import CoreAudio
 import CoreAudioTypes
 
-struct LoadedAudioFile {
+struct LoadedAudioFile: @unchecked Sendable {
     let url: URL
     let monoFormat: AVAudioFormat
     let sampleRate: Double
@@ -18,6 +18,8 @@ struct LoadedAudioFile {
 }
 
 enum AudioFileLoaderError: LocalizedError {
+    case fileMissing(String)
+    case unsupportedAudioFile(String, String)
     case unsupportedChannelCount(UInt32, maxSupported: Int)
     case fileTooLarge
     case sourceBufferAllocationFailed
@@ -31,6 +33,10 @@ enum AudioFileLoaderError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .fileMissing(let fileName):
+            "That local file is no longer available: \(fileName). Rescan local music to remove stale entries."
+        case .unsupportedAudioFile(let fileName, let message):
+            "Could not open \(fileName). The audio container or codec may not be supported by this build. \(message)"
         case .unsupportedChannelCount(let count, let maxSupported):
             count == 0
                 ? "Expected at least 1 channel, but got 0."
@@ -58,12 +64,16 @@ enum AudioFileLoaderError: LocalizedError {
 }
 
 final class AudioFileLoader {
-    func load(url: URL) throws -> LoadedAudioFile {
+    func load(url: URL, forceFFmpegFLACFallback: Bool = false) throws -> LoadedAudioFile {
         AppLogger.shared.info(category: "loader", "Opening file: \(url.path)")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw AudioFileLoaderError.fileMissing(url.lastPathComponent)
+        }
 
         var readURL = url
         var temporaryDecodedURL: URL?
         var matroskaStreamInfo: MatroskaAudioStreamInfo?
+        var codecNameOverride: String?
         var tags = AudioMetadataBuilder.tags(for: url)
 
         if MatroskaFLACSupport.isMatroska(url) {
@@ -78,6 +88,12 @@ final class AudioFileLoader {
                 "Decoded Matroska FLAC stream index=\(streamInfo.streamIndex) channels=\(streamInfo.channelCount) " +
                     "sampleRate=\(streamInfo.sampleRate) bitDepth=\(streamInfo.bitDepth)"
             )
+        } else if StandaloneFLACSupport.isFLAC(url), forceFFmpegFLACFallback {
+            let decodedURL = try FFmpegAudioDecoder().decodeToCAF(url: url, sourceDescription: "FLAC")
+            readURL = decodedURL
+            temporaryDecodedURL = decodedURL
+            codecNameOverride = "FLAC"
+            AppLogger.shared.notice(category: "loader", "Forced FLAC ffmpeg fallback for file=\(url.lastPathComponent)")
         }
 
         defer {
@@ -86,7 +102,23 @@ final class AudioFileLoader {
             }
         }
 
-        let file = try AVAudioFile(forReading: readURL)
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: readURL)
+        } catch {
+            guard StandaloneFLACSupport.isFLAC(url), temporaryDecodedURL == nil else {
+                throw AudioFileLoaderError.unsupportedAudioFile(url.lastPathComponent, error.localizedDescription)
+            }
+            let decodedURL = try FFmpegAudioDecoder().decodeToCAF(url: url, sourceDescription: "FLAC")
+            readURL = decodedURL
+            temporaryDecodedURL = decodedURL
+            codecNameOverride = "FLAC"
+            AppLogger.shared.notice(
+                category: "loader",
+                "Native FLAC open failed; decoded with ffmpeg file=\(url.lastPathComponent) error=\(error.localizedDescription)"
+            )
+            file = try AVAudioFile(forReading: readURL)
+        }
         let inputFormat = file.processingFormat
         let channelCount = inputFormat.channelCount
 
@@ -106,7 +138,7 @@ final class AudioFileLoader {
 
         AppLogger.shared.info(
             category: "loader",
-            "Detected source format codec=\(AudioMetadataBuilder.build(for: file, layout: detectedLayout, duration: 0, sourceURL: url, containerName: matroskaStreamInfo == nil ? nil : "Matroska", codecName: matroskaStreamInfo?.codecName, bitDepth: matroskaStreamInfo?.bitDepth, tags: tags).codecName) " +
+            "Detected source format codec=\(AudioMetadataBuilder.build(for: file, layout: detectedLayout, duration: 0, sourceURL: url, containerName: matroskaStreamInfo == nil ? nil : "Matroska", codecName: matroskaStreamInfo?.codecName ?? codecNameOverride, bitDepth: matroskaStreamInfo?.bitDepth, tags: tags).codecName) " +
                 "sampleRate=\(inputFormat.sampleRate) channelCount=\(channelCount) layout=\(detectedLayout.name) channels=\(detectedLayout.channelSummary)"
         )
 
@@ -188,7 +220,7 @@ final class AudioFileLoader {
             duration: duration,
             sourceURL: url,
             containerName: matroskaStreamInfo == nil ? nil : "Matroska",
-            codecName: matroskaStreamInfo?.codecName,
+            codecName: matroskaStreamInfo?.codecName ?? codecNameOverride,
             bitDepth: matroskaStreamInfo?.bitDepth,
             tags: tags
         )

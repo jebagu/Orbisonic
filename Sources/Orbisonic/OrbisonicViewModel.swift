@@ -56,6 +56,19 @@ enum RendererMeterDisplayModel {
     }
 }
 
+private struct LocalFileQueueCommit {
+    let index: Int
+    let trackID: String
+    let isNaturalAdvance: Bool
+}
+
+private struct LocalFileLoadRequest {
+    let id: UInt64
+    let url: URL
+    let autoplay: Bool
+    let queueCommit: LocalFileQueueCommit?
+}
+
 enum LiveChannelCountPolicy {
     static let roonSupportedCounts = [2, 4, 6, 8]
 
@@ -210,6 +223,13 @@ final class OrbisonicViewModel: ObservableObject {
     private static let sphereOutputVolumeKey = "Orbisonic.sphereOutputVolumePercent"
     private static let sphereOutputSafetyLimitKey = "Orbisonic.sphereOutputSafetyLimitPercent"
     private static let diagnosticSpeakerChannelCount = 31
+    private static let sourceRampDownDuration: TimeInterval = 0.04
+    private static let sourcePrimeDuration: TimeInterval = 0.08
+    private static let sourceRampUpDuration: TimeInterval = 0.08
+    private static var isRunningUnitTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+            NSClassFromString("XCTest.XCTestCase") != nil
+    }
 
     @Published var preset: SpatialPreset = .defaultPreset {
         didSet {
@@ -327,7 +347,7 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var localMusicSettings = LocalMusicSettings()
     @Published private(set) var localMusicTracks: [LocalMusicTrack] = []
     @Published private(set) var localMusicPlaylists: [LocalMusicPlaylist] = []
-    @Published var selectedLocalMusicTrackID: String?
+    @Published var selectedLibraryTrackID: String?
     @Published var selectedLocalMusicPlaylistID: String?
     @Published var localMusicSearchText = ""
     @Published var localMusicSortMode: PlaylistSortMode = OrbisonicViewModel.loadLocalMusicSortMode() {
@@ -339,6 +359,7 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var sessionQueue: [LocalMusicTrack] = []
     @Published private(set) var sessionQueueIndex: Int?
     @Published private(set) var selectedSessionQueueIndex: Int?
+    @Published private(set) var pendingSessionQueueIndex: Int?
     @Published var isShuffleEnabled = false
     @Published private(set) var webServerStatus = "Web server starting."
     @Published private(set) var webPublicPageURL = ""
@@ -364,6 +385,7 @@ final class OrbisonicViewModel: ObservableObject {
     let rendererMeterStore = ChannelMeterStore()
 
     private let engine = OrbisonicEngine()
+    private let localAudioLoader: @Sendable (URL) throws -> LoadedAudioFile
     private let localMusicLibrary = LocalMusicLibrary()
     private let rendererPresetStore = RendererPresetStore()
     private let roonNowPlayingReader = RoonNowPlayingReader()
@@ -379,10 +401,17 @@ final class OrbisonicViewModel: ObservableObject {
     private var lastLiveSignalPresent: Bool?
     private var testToneStopTask: Task<Void, Never>?
     private var diagnosticSequenceTask: Task<Void, Never>?
+    private var sourceSwitchTask: Task<Void, Never>?
+    private var sourceSwitchRequests = SourceSwitchRequestState()
+    private var transitionOutputGain: Float = 1
     private var diagnosticReturnContext: DiagnosticReturnContext?
     private var rendererDiagnosticsUsingMonitorPreview = false
     private var rendererDiagnosticsMonitorDownmixAvailable = false
     private var localMusicScanTask: Task<Void, Never>?
+    private var localFileLoadTask: Task<Void, Never>?
+    private var localFileLoadSequence: UInt64 = 0
+    private var activeLocalFileLoadRequest: LocalFileLoadRequest?
+    private var queuedLocalFileLoadRequest: LocalFileLoadRequest?
     private var lastRouteRefreshTime = Date.distantPast
     private var lastRoonNowPlayingRefreshTime = Date.distantPast
     private var lastRoonBridgeRefreshTime = Date.distantPast
@@ -398,7 +427,10 @@ final class OrbisonicViewModel: ObservableObject {
     private var suppressTuningPublish = false
     private var suppressRendererPublish = false
 
-    init() {
+    init(localAudioLoader: @escaping @Sendable (URL) throws -> LoadedAudioFile = { url in
+        try AudioFileLoader().load(url: url)
+    }) {
+        self.localAudioLoader = localAudioLoader
         AppLogger.shared.notice(category: "view-model", "View model initialized.")
 
         engine.onPlaybackEnded = { [weak self] in
@@ -418,6 +450,7 @@ final class OrbisonicViewModel: ObservableObject {
             self?.webServerStatus = status
         }
         webServer?.start()
+        startPersistentHelperServices(reason: "app launch", force: true)
 
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
             Task { @MainActor [weak self] in
@@ -537,7 +570,11 @@ final class OrbisonicViewModel: ObservableObject {
         testToneStopTask?.cancel()
         diagnosticSequenceTask?.cancel()
         localMusicScanTask?.cancel()
+        localFileLoadTask?.cancel()
+        sourceSwitchTask?.cancel()
         webServer?.stop()
+        roonBridgeClient.stop()
+        spotifyReceiverClient.stop()
         refreshTimer?.invalidate()
     }
 
@@ -606,7 +643,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func applyEffectiveOutputVolume(log: Bool) {
-        let effective = Float(effectiveSphereOutputVolumePercent / 100.0)
+        let effective = Float(effectiveSphereOutputVolumePercent / 100.0) * transitionOutputGain
         engine.setOutputVolume(effective)
         if log {
             AppLogger.shared.notice(
@@ -760,17 +797,90 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func selectSourceMode(_ mode: SourceMode) {
-        guard mode != sourceMode else { return }
+        if mode == sourceMode,
+           !isLiveMonitorTransitioning,
+           !sourceSwitchRequests.isProcessing {
+            if mode.startsLiveListeningOnSelection, !isPlaying {
+                requestSourceTransition(to: mode)
+            }
+            return
+        }
+
+        requestSourceTransition(to: mode)
+    }
+
+    private func requestSourceTransition(to mode: SourceMode) {
+        let shouldStart = sourceSwitchRequests.request(mode)
+        guard shouldStart else { return }
+
+        sourceSwitchTask = Task { @MainActor [weak self] in
+            await self?.processPendingSourceTransitions()
+        }
+    }
+
+    private func processPendingSourceTransitions() async {
+        isLiveMonitorTransitioning = true
+        defer {
+            sourceSwitchRequests.reset()
+            sourceSwitchTask = nil
+            isLiveMonitorTransitioning = false
+            transitionOutputGain = 1
+            applyEffectiveOutputVolume(log: false)
+        }
+
+        while !Task.isCancelled, let requestedMode = sourceSwitchRequests.takeNext() {
+            await performSourceTransition(to: requestedMode)
+        }
+    }
+
+    private func performSourceTransition(to requestedMode: SourceMode) async {
+        var mode = requestedMode
+        statusMessage = "Switching to \(mode.rawValue)..."
+        AppLogger.shared.notice(category: "source", "Switching source from \(sourceMode.rawValue) to \(mode.rawValue)")
+
+        await rampTransitionOutput(to: 0, duration: Self.sourceRampDownDuration)
+        guard !Task.isCancelled else { return }
+
+        mode = sourceSwitchRequests.coalescePending(over: mode)
+        statusMessage = "Switching to \(mode.rawValue)..."
+
+        if mode == sourceMode, !(mode.startsLiveListeningOnSelection && !isPlaying) {
+            await rampTransitionOutput(to: 1, duration: Self.sourceRampUpDuration)
+            return
+        }
 
         if sourceMode.stopsLiveCaptureWhenSwitching(to: mode) {
             stopLiveMonitorForSourceSwitch(to: mode)
         } else if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
             stop()
         }
+        if mode != .filePlayback {
+            cancelPendingLocalFileLoad()
+        }
 
+        applySourceModeState(mode)
+
+        if mode.startsLiveListeningOnSelection {
+            startSelectedLiveMonitorNow()
+            await sleepForSourceTransition(Self.sourcePrimeDuration)
+        }
+
+        await rampTransitionOutput(to: 1, duration: Self.sourceRampUpDuration)
+        AppLogger.shared.notice(category: "source", "Finished source switch to \(mode.rawValue)")
+    }
+
+    private func applySourceModeState(_ mode: SourceMode) {
         sourceMode = mode
 
         switch mode {
+        case .off:
+            spotifyNowPlaying = nil
+            liveSignalStatus = "No audio yet."
+            liveBufferStatus = "No live buffer."
+            liveMonitorState = .stopped
+            roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
+            roonSignalPath = nil
+            statusMessage = "Orbisonic is idle. Select a source to begin listening or playback."
         case .filePlayback:
             spotifyNowPlaying = nil
             liveSignalStatus = "No live input."
@@ -790,7 +900,7 @@ final class OrbisonicViewModel: ObservableObject {
             refreshRoonBridgeIfNeeded(force: true)
             if selectExpectedLoopbackInputIfAvailable(for: .roon) {
                 liveMonitorState = .stopped
-                statusMessage = "Roon is selected. Monitor Roon when the source is playing."
+                statusMessage = "Roon is selected. Use Roon to send audio to Orbisonic."
             } else {
                 let message = missingLoopbackMessage(for: .roon)
                 liveMonitorState = .unavailable(message)
@@ -807,7 +917,7 @@ final class OrbisonicViewModel: ObservableObject {
             refreshSpotifyNowPlayingIfNeeded(force: true)
             if selectExpectedLoopbackInputIfAvailable(for: .spotify) {
                 liveMonitorState = .stopped
-                statusMessage = "Spotify is selected. Monitor Spotify when the source is playing through Orbisonic Spotify Input."
+                statusMessage = "Spotify is selected. Use the Spotify app to connect to Orbisonic Spotify."
             } else {
                 let message = missingLoopbackMessage(for: .spotify)
                 liveMonitorState = .unavailable(message)
@@ -830,7 +940,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonNowPlaying = nil
             if selectExpectedLoopbackInputIfAvailable(for: .aux) {
                 liveMonitorState = .stopped
-                statusMessage = "Aux Cable is selected. Monitor Aux Cable when the source app is playing."
+                statusMessage = "Aux Cable is selected. Connect an audio source to the selected input."
             } else {
                 let message = missingLoopbackMessage(for: .aux)
                 liveMonitorState = .unavailable(message)
@@ -1030,9 +1140,9 @@ final class OrbisonicViewModel: ObservableObject {
         localMusicTracks = result.tracks
         localMusicPlaylists = result.playlists
 
-        if let selectedLocalMusicTrackID,
-           !localMusicTracks.contains(where: { $0.id == selectedLocalMusicTrackID }) {
-            self.selectedLocalMusicTrackID = nil
+        if let selectedLibraryTrackID,
+           !localMusicTracks.contains(where: { $0.id == selectedLibraryTrackID }) {
+            self.selectedLibraryTrackID = nil
         }
         if let selectedLocalMusicPlaylistID,
            !localMusicPlaylists.contains(where: { $0.id == selectedLocalMusicPlaylistID }) {
@@ -1040,17 +1150,24 @@ final class OrbisonicViewModel: ObservableObject {
         }
         sessionQueue = sessionQueue.filter { track in localMusicTracks.contains(where: { $0.id == track.id }) }
         if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) == false {
-            self.sessionQueueIndex = sessionQueue.isEmpty ? nil : 0
+            refreshSessionQueueIndexForCurrentFile()
         }
         if let selectedSessionQueueIndex, sessionQueue.indices.contains(selectedSessionQueueIndex) == false {
-            self.selectedSessionQueueIndex = self.sessionQueueIndex
+            self.selectedSessionQueueIndex = nil
+        }
+        if let pendingSessionQueueIndex, sessionQueue.indices.contains(pendingSessionQueueIndex) == false {
+            self.pendingSessionQueueIndex = nil
         }
 
         persistLocalMusicDatabase()
-        statusMessage = "Local music library scanned: \(localMusicTracks.count) tracks, \(localMusicPlaylists.count) playlists."
+        if result.skippedMissingFiles > 0 {
+            statusMessage = "Scanned \(localMusicTracks.count) playable tracks; skipped \(result.skippedMissingFiles) missing files."
+        } else {
+            statusMessage = "Local music library scanned: \(localMusicTracks.count) tracks, \(localMusicPlaylists.count) playlists."
+        }
         AppLogger.shared.notice(
             category: "local-music",
-            "Scanned watchFolders=\(localMusicSettings.watchFolderPaths.count) explicitPlaylists=\(localMusicSettings.m3uPlaylistPaths.count) tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count)"
+            "Scanned watchFolders=\(localMusicSettings.watchFolderPaths.count) explicitPlaylists=\(localMusicSettings.m3uPlaylistPaths.count) tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) skippedMissing=\(result.skippedMissingFiles)"
         )
     }
 
@@ -1064,6 +1181,26 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func toggleLocalMusicPlayback() {
+        if isPlaying {
+            pauseLocalTransport()
+            return
+        }
+
+        playLocalTransport()
+    }
+
+    func playLocalTransport() {
+        if isLocalFileLoading {
+            statusMessage = "Loading local track..."
+            return
+        }
+
+        if sourceMode == .filePlayback, currentFileURL != nil, duration > 0 {
+            guard !isPlaying else { return }
+            togglePlayback()
+            return
+        }
+
         let selectedQueueTrack = selectedSessionQueueIndex.flatMap { index in
             sessionQueue.indices.contains(index) ? sessionQueue[index] : nil
         }
@@ -1071,8 +1208,6 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = "Add a watch folder in Settings, then scan local music."
             return
         }
-
-        selectedLocalMusicTrackID = track.id
 
         guard currentFileURL?.path == track.id, sourceMode == .filePlayback else {
             if let queueIndex = sessionQueue.firstIndex(where: { $0.id == track.id }) {
@@ -1086,8 +1221,26 @@ final class OrbisonicViewModel: ObservableObject {
         togglePlayback()
     }
 
+    func pauseLocalTransport() {
+        cancelPendingLocalFileLoad()
+        guard sourceMode == .filePlayback else { return }
+
+        if isPlaying {
+            engine.pause()
+            isPlaying = false
+            reevaluateAutomaticRendererMode(reason: "pause")
+            statusMessage = "Paused."
+        } else {
+            statusMessage = "Paused local playback."
+        }
+    }
+
+    func stopLocalTransport() {
+        cancelPendingLocalFileLoad()
+        stop()
+    }
+
     func playLocalMusicTrackNow(_ track: LocalMusicTrack) {
-        selectedLocalMusicTrackID = track.id
         selectedSessionQueueIndex = nil
         let tracks = visibleLocalMusicTracks.contains(where: { $0.id == track.id })
             ? visibleLocalMusicTracks
@@ -1096,22 +1249,21 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func selectLocalMusicTrack(_ track: LocalMusicTrack) {
-        selectedLocalMusicTrackID = track.id
+        selectedLibraryTrackID = track.id
         selectedSessionQueueIndex = nil
     }
 
     func playNextLocalMusicTrack() {
-        playQueueOffset(1, wrap: true)
+        skipLocalTransport(offset: 1)
     }
 
     func playPreviousLocalMusicTrack() {
-        playQueueOffset(-1, wrap: true)
+        skipLocalTransport(offset: -1)
     }
 
     func selectSessionQueueIndex(_ index: Int) {
         guard sessionQueue.indices.contains(index) else { return }
         selectedSessionQueueIndex = index
-        selectedLocalMusicTrackID = sessionQueue[index].id
     }
 
     func playSessionQueueIndex(_ index: Int) {
@@ -1123,7 +1275,7 @@ final class OrbisonicViewModel: ObservableObject {
     func playSelectedSessionQueueTrack() {
         if let selectedSessionQueueIndex, sessionQueue.indices.contains(selectedSessionQueueIndex) {
             if currentFileURL?.path == sessionQueue[selectedSessionQueueIndex].id, sourceMode == .filePlayback {
-                togglePlayback()
+                toggleLocalMusicPlayback()
                 return
             }
             playQueueIndex(selectedSessionQueueIndex)
@@ -1149,10 +1301,9 @@ final class OrbisonicViewModel: ObservableObject {
     func addLocalMusicTrackToQueue(_ track: LocalMusicTrack) {
         let wasEmpty = sessionQueue.isEmpty
         sessionQueue.append(track)
-        selectedLocalMusicTrackID = track.id
+        selectedLibraryTrackID = track.id
 
         if wasEmpty {
-            sessionQueueIndex = 0
             selectedSessionQueueIndex = 0
         }
 
@@ -1184,9 +1335,7 @@ final class OrbisonicViewModel: ObservableObject {
         selectedLocalMusicPlaylistID = playlist.id
 
         if wasEmpty {
-            sessionQueueIndex = 0
             selectedSessionQueueIndex = 0
-            selectedLocalMusicTrackID = tracks[0].id
         }
 
         statusMessage = "Added \(tracks.count) track\(tracks.count == 1 ? "" : "s") from \(playlist.name) to the session queue."
@@ -1230,9 +1379,11 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func clearSessionQueue() {
+        cancelPendingLocalFileLoad()
         sessionQueue = []
         sessionQueueIndex = nil
         selectedSessionQueueIndex = nil
+        pendingSessionQueueIndex = nil
         statusMessage = "Session queue cleared."
     }
 
@@ -1252,9 +1403,10 @@ final class OrbisonicViewModel: ObservableObject {
         if sessionQueue.isEmpty {
             sessionQueueIndex = nil
             selectedSessionQueueIndex = nil
+            pendingSessionQueueIndex = nil
         } else if let currentIndex = sessionQueueIndex {
             if currentIndex == index {
-                sessionQueueIndex = min(index, sessionQueue.count - 1)
+                refreshSessionQueueIndexForCurrentFile()
             } else if index < currentIndex {
                 sessionQueueIndex = currentIndex - 1
             }
@@ -1262,16 +1414,18 @@ final class OrbisonicViewModel: ObservableObject {
 
         if let selectedIndex = selectedSessionQueueIndex {
             if selectedIndex == index {
-                selectedSessionQueueIndex = sessionQueue.isEmpty ? nil : min(index, sessionQueue.count - 1)
+                selectedSessionQueueIndex = nil
             } else if index < selectedIndex {
                 selectedSessionQueueIndex = selectedIndex - 1
             }
         }
 
-        if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) {
-            selectedLocalMusicTrackID = sessionQueue[sessionQueueIndex].id
-        } else if selectedLocalMusicTrackID == removed.id {
-            selectedLocalMusicTrackID = nil
+        if let pendingIndex = pendingSessionQueueIndex {
+            if pendingIndex == index {
+                cancelPendingLocalFileLoad()
+            } else if index < pendingIndex {
+                pendingSessionQueueIndex = pendingIndex - 1
+            }
         }
 
         statusMessage = "Removed \(removed.displayTitle) from the session queue."
@@ -1341,7 +1495,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var currentLocalArtworkURL: URL? {
-        guard let path = (currentQueueTrack ?? currentLocalMusicTrack ?? selectedLocalMusicTrack)?.artworkPath else {
+        guard let path = (currentQueueTrack ?? currentLocalMusicTrack)?.artworkPath else {
             return nil
         }
 
@@ -1370,8 +1524,8 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var selectedLocalMusicTrack: LocalMusicTrack? {
-        guard let selectedLocalMusicTrackID else { return nil }
-        return localMusicTracks.first { $0.id == selectedLocalMusicTrackID }
+        guard let selectedLibraryTrackID else { return nil }
+        return localMusicTracks.first { $0.id == selectedLibraryTrackID }
     }
 
     var currentLocalMusicTrack: LocalMusicTrack? {
@@ -1394,63 +1548,211 @@ final class OrbisonicViewModel: ObservableObject {
         return playlist.trackPaths.compactMap { tracksByPath[$0] }
     }
 
+#if DEBUG
+    func replaceLocalMusicQueueForTesting(
+        tracks: [LocalMusicTrack],
+        currentIndex: Int?,
+        selectedIndex: Int?
+    ) {
+        localMusicTracks = tracks
+        sessionQueue = tracks
+        sessionQueueIndex = currentIndex
+        selectedSessionQueueIndex = selectedIndex
+        selectedLibraryTrackID = nil
+        pendingSessionQueueIndex = nil
+    }
+
+    @discardableResult
+    func playQueueIndexForTesting(_ index: Int) -> Bool {
+        playQueueIndex(index)
+    }
+
+    func loadQueueIndexForTesting(_ index: Int, autoplay: Bool = false, isPlaying: Bool = false) async throws {
+        guard sessionQueue.indices.contains(index) else { return }
+        let track = sessionQueue[index]
+        _ = loadFile(
+            url: track.url,
+            autoplay: autoplay,
+            queueCommit: LocalFileQueueCommit(index: index, trackID: track.id, isNaturalAdvance: false)
+        )
+        while isLocalFileLoading {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        self.isPlaying = isPlaying
+    }
+#endif
+
     private var sortedLocalMusicTracks: [LocalMusicTrack] {
         localMusicTracks.sorted(by: localMusicComparator)
     }
 
     @discardableResult
-    private func loadFile(url: URL, autoplay: Bool) -> Bool {
+    private func loadFile(
+        url: URL,
+        autoplay: Bool,
+        queueCommit: LocalFileQueueCommit? = nil
+    ) -> Bool {
+        let request = nextLocalFileLoadRequest(url: url, autoplay: autoplay, queueCommit: queueCommit)
+        pendingSessionQueueIndex = queueCommit?.index
+        statusMessage = "Loading \(url.lastPathComponent)..."
+        lastError = nil
+
+        if activeLocalFileLoadRequest != nil {
+            queuedLocalFileLoadRequest = request
+            AppLogger.shared.info(
+                category: "ui",
+                "Queued local load request id=\(request.id) file=\(url.lastPathComponent)"
+            )
+            return true
+        }
+
+        startLocalFileLoad(request)
+        return true
+    }
+
+    private func nextLocalFileLoadRequest(
+        url: URL,
+        autoplay: Bool,
+        queueCommit: LocalFileQueueCommit?
+    ) -> LocalFileLoadRequest {
+        localFileLoadSequence &+= 1
+        return LocalFileLoadRequest(
+            id: localFileLoadSequence,
+            url: url,
+            autoplay: autoplay,
+            queueCommit: queueCommit
+        )
+    }
+
+    private func startLocalFileLoad(_ request: LocalFileLoadRequest) {
+        activeLocalFileLoadRequest = request
+        pendingSessionQueueIndex = request.queueCommit?.index
+        isLocalFileLoading = true
+        statusMessage = "Loading \(request.url.lastPathComponent)..."
+        let audioLoader = localAudioLoader
+
+        localFileLoadTask = Task { @MainActor [weak self] in
+            do {
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    try audioLoader(request.url)
+                }.value
+                guard let self,
+                      !Task.isCancelled,
+                      self.activeLocalFileLoadRequest?.id == request.id
+                else { return }
+                self.completeLocalFileLoad(request: request, result: .success(loaded))
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      self.activeLocalFileLoadRequest?.id == request.id
+                else { return }
+                self.completeLocalFileLoad(request: request, result: .failure(error))
+            }
+        }
+    }
+
+    private func completeLocalFileLoad(request: LocalFileLoadRequest, result: Result<LoadedAudioFile, Error>) {
+        localFileLoadTask = nil
+        activeLocalFileLoadRequest = nil
+
+        if let queuedRequest = queuedLocalFileLoadRequest {
+            queuedLocalFileLoadRequest = nil
+            startLocalFileLoad(queuedRequest)
+            return
+        }
+
+        isLocalFileLoading = false
+        pendingSessionQueueIndex = nil
+
+        switch result {
+        case .success(let loaded):
+            finishLoadedFile(loaded, autoplay: request.autoplay, queueCommit: request.queueCommit)
+        case .failure(let error):
+            handleLocalFileLoadFailure(url: request.url, error: error, queueCommit: request.queueCommit)
+        }
+    }
+
+    private func finishLoadedFile(
+        _ loaded: LoadedAudioFile,
+        autoplay: Bool,
+        queueCommit: LocalFileQueueCommit?
+    ) {
         cancelDiagnosticsForMusicAction()
         sourceMode = .filePlayback
-        isLocalFileLoading = true
-        statusMessage = "Loading \(url.lastPathComponent)..."
-        defer { isLocalFileLoading = false }
 
-        do {
-            let loaded = try engine.loadFile(url: url)
-            loadedFileName = loaded.url.lastPathComponent
-            currentFileURL = loaded.url
-            if localMusicTracks.contains(where: { $0.id == loaded.url.path }) {
-                selectedLocalMusicTrackID = loaded.url.path
+        _ = engine.loadPreparedFile(loaded)
+        loadedFileName = loaded.url.lastPathComponent
+        currentFileURL = loaded.url
+        if let queueCommit {
+            sessionQueueIndex = queueCommit.index
+            if !sessionQueue.indices.contains(queueCommit.index) ||
+                sessionQueue[queueCommit.index].id != queueCommit.trackID {
+                refreshSessionQueueIndexForCurrentFile()
             }
-            sourceMetadata = loaded.metadata
-            loadedChannels = loaded.layout.channels
-            resetRendererRequestToAutomatic(reason: "new track")
-            duration = loaded.duration
-            currentTime = 0
-            scrubProgress = 0
-            meterStore.configure(channels: loaded.layout.channels)
-            meterStore.reset()
-            monitorMeterStore.reset()
-            updateRendererMeters(from: Array(repeating: 0, count: loaded.layout.channelCount))
-            isPlaying = false
-            lastHeartbeatSecond = -1
-            lastLiveMeterLogSecond = -1
-            lastLiveBufferLogSecond = -1
-            lastLiveSilenceWarningSecond = -1
-            lastLiveSignalPresent = nil
-            liveSignalStatus = "File playback source loaded."
-            liveBufferStatus = "No live buffer."
-            roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
-            roonSignalPath = nil
+        }
+        sourceMetadata = loaded.metadata
+        loadedChannels = loaded.layout.channels
+        resetRendererRequestToAutomatic(reason: "new track")
+        duration = loaded.duration
+        currentTime = 0
+        scrubProgress = 0
+        meterStore.configure(channels: loaded.layout.channels)
+        meterStore.reset()
+        monitorMeterStore.reset()
+        updateRendererMeters(from: Array(repeating: 0, count: loaded.layout.channelCount))
+        isPlaying = false
+        lastHeartbeatSecond = -1
+        lastLiveMeterLogSecond = -1
+        lastLiveBufferLogSecond = -1
+        lastLiveSilenceWarningSecond = -1
+        lastLiveSignalPresent = nil
+        liveSignalStatus = "File playback source loaded."
+        liveBufferStatus = "No live buffer."
+        roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
+        roonSignalPath = nil
 
-            if autoplay {
-                guard prepareOutputForMusicPlayback() else { return false }
+        if autoplay {
+            guard prepareOutputForMusicPlayback() else { return }
+            do {
                 try engine.play()
                 isPlaying = true
                 statusMessage = "Playing \(loaded.metadata.fileName) through \(routeDisplayName) with \(rendererScene.renderMode.displayName)."
-            } else if rendererOutputRoute.isAvailable {
-                statusMessage = "Loaded \(loaded.metadata.fileName). Ready to render through \(rendererOutputRoute.deviceName)."
-            } else {
-                statusMessage = "Loaded \(loaded.metadata.fileName). Playback can use the monitor or current macOS output."
+            } catch {
+                AppLogger.shared.error(category: "ui", "Playback start failed: \(error.localizedDescription)")
+                lastError = error.localizedDescription
             }
-
-            return true
-        } catch {
-            AppLogger.shared.error(category: "ui", "Load failed: \(error.localizedDescription)")
-            lastError = error.localizedDescription
-            return false
+        } else if rendererOutputRoute.isAvailable {
+            statusMessage = "Loaded \(loaded.metadata.fileName). Ready to render through \(rendererOutputRoute.deviceName)."
+        } else {
+            statusMessage = "Loaded \(loaded.metadata.fileName). Playback can use the monitor or current macOS output."
         }
+    }
+
+    private func handleLocalFileLoadFailure(
+        url: URL,
+        error: Error,
+        queueCommit: LocalFileQueueCommit?
+    ) {
+        let message = "Could not load \(url.lastPathComponent): \(error.localizedDescription)"
+        AppLogger.shared.error(category: "ui", "Load failed: \(error.localizedDescription)")
+        lastError = message
+        statusMessage = message
+        if queueCommit?.isNaturalAdvance == true {
+            isPlaying = false
+            meterStore.reset()
+            monitorMeterStore.reset()
+            rendererMeterStore.reset()
+            reevaluateAutomaticRendererMode(reason: "load failed")
+        }
+    }
+
+    private func cancelPendingLocalFileLoad() {
+        localFileLoadTask?.cancel()
+        localFileLoadTask = nil
+        activeLocalFileLoadRequest = nil
+        queuedLocalFileLoadRequest = nil
+        pendingSessionQueueIndex = nil
+        isLocalFileLoading = false
     }
 
     private func loadLocalMusicDatabase() {
@@ -1461,6 +1763,7 @@ final class OrbisonicViewModel: ObservableObject {
         sessionQueue = []
         sessionQueueIndex = nil
         selectedSessionQueueIndex = nil
+        pendingSessionQueueIndex = nil
         AppLogger.shared.notice(
             category: "local-music",
             "Loaded local music database tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) watchFolders=\(localMusicSettings.watchFolderPaths.count)"
@@ -1487,7 +1790,8 @@ final class OrbisonicViewModel: ObservableObject {
         from tracks: [LocalMusicTrack],
         startTrackID: String?,
         shuffle: Bool,
-        autoplay: Bool
+        autoplay: Bool,
+        isNaturalAdvance: Bool = false
     ) {
         guard !tracks.isEmpty else {
             statusMessage = "No local music matches the current view."
@@ -1506,10 +1810,16 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         sessionQueue = queue
-        sessionQueueIndex = queue.firstIndex { $0.id == startTrack.id } ?? 0
-        selectedSessionQueueIndex = sessionQueueIndex
-        selectedLocalMusicTrackID = startTrack.id
-        _ = loadFile(url: startTrack.url, autoplay: autoplay)
+        let startIndex = queue.firstIndex { $0.id == startTrack.id } ?? 0
+        _ = loadFile(
+            url: startTrack.url,
+            autoplay: autoplay,
+            queueCommit: LocalFileQueueCommit(index: startIndex, trackID: startTrack.id, isNaturalAdvance: isNaturalAdvance)
+        )
+    }
+
+    func skipLocalTransport(offset: Int) {
+        playQueueOffset(offset, wrap: true)
     }
 
     private func playQueueOffset(_ offset: Int, wrap: Bool) {
@@ -1524,7 +1834,9 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         let currentIndex: Int
-        if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) {
+        if let pendingSessionQueueIndex, sessionQueue.indices.contains(pendingSessionQueueIndex) {
+            currentIndex = pendingSessionQueueIndex
+        } else if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) {
             currentIndex = sessionQueueIndex
         } else if let currentFileURL,
                   let loadedIndex = sessionQueue.firstIndex(where: { $0.id == currentFileURL.path }) {
@@ -1547,13 +1859,14 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func playQueueIndex(_ index: Int) -> Bool {
+    private func playQueueIndex(_ index: Int, isNaturalAdvance: Bool = false) -> Bool {
         guard sessionQueue.indices.contains(index) else { return false }
-        sessionQueueIndex = index
-        selectedSessionQueueIndex = index
         let track = sessionQueue[index]
-        selectedLocalMusicTrackID = track.id
-        return loadFile(url: track.url, autoplay: true)
+        return loadFile(
+            url: track.url,
+            autoplay: true,
+            queueCommit: LocalFileQueueCommit(index: index, trackID: track.id, isNaturalAdvance: isNaturalAdvance)
+        )
     }
 
     private func moveSessionQueueItem(from sourceIndex: Int, to destinationIndex: Int) {
@@ -1579,6 +1892,25 @@ final class OrbisonicViewModel: ObservableObject {
                 selectedSessionQueueIndex = sourceIndex
             }
         }
+
+        if let pendingIndex = pendingSessionQueueIndex {
+            if pendingIndex == sourceIndex {
+                pendingSessionQueueIndex = destinationIndex
+            } else if pendingIndex == destinationIndex {
+                pendingSessionQueueIndex = sourceIndex
+            }
+        }
+    }
+
+    private func refreshSessionQueueIndexForCurrentFile() {
+        guard let currentPath = currentFileURL?.path,
+              let index = sessionQueue.firstIndex(where: { $0.id == currentPath })
+        else {
+            sessionQueueIndex = nil
+            return
+        }
+
+        sessionQueueIndex = index
     }
 
     func startRoonPipe() {
@@ -1897,6 +2229,14 @@ final class OrbisonicViewModel: ObservableObject {
         sendRoonTransport(control)
     }
 
+    func playRoonTransport() {
+        sendRoonTransport(.play)
+    }
+
+    func pauseRoonTransport() {
+        sendRoonTransport(.pause)
+    }
+
     func stopRoonTransport() {
         sendRoonTransport(.stop)
     }
@@ -1913,8 +2253,14 @@ final class OrbisonicViewModel: ObservableObject {
         guard !isLiveMonitorTransitioning else { return }
         isLiveMonitorTransitioning = true
         defer { isLiveMonitorTransitioning = false }
-        statusMessage = "Starting \(sourceMode.rawValue) monitor..."
+        startSelectedLiveMonitorNow()
+    }
+
+    private func startSelectedLiveMonitorNow() {
+        statusMessage = "Preparing \(sourceMode.rawValue) input..."
         switch sourceMode {
+        case .off:
+            stop()
         case .roon:
             startRoonPipe()
         case .spotify:
@@ -1926,6 +2272,32 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func rampTransitionOutput(to target: Float, duration: TimeInterval) async {
+        let clampedTarget = min(max(target, 0), 1)
+        let start = transitionOutputGain
+        let steps = max(Int((duration / 0.01).rounded(.up)), 1)
+
+        for step in 1...steps {
+            guard !Task.isCancelled else { return }
+            let progress = Float(step) / Float(steps)
+            transitionOutputGain = start + (clampedTarget - start) * progress
+            applyEffectiveOutputVolume(log: false)
+
+            if step < steps {
+                await sleepForSourceTransition(duration / Double(steps))
+            }
+        }
+    }
+
+    private func sleepForSourceTransition(_ duration: TimeInterval) async {
+        guard duration > 0 else { return }
+        do {
+            try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+        } catch {
+            return
+        }
+    }
+
     func muteLiveMonitor() {
         guard sourceMode.isLiveInput, isPlaying else { return }
         guard !isLiveMonitorTransitioning else { return }
@@ -1934,7 +2306,7 @@ final class OrbisonicViewModel: ObservableObject {
         liveMonitorState = .muted
         monitorMeterStore.reset()
         rendererMeterStore.reset()
-        statusMessage = "\(sourceMode.rawValue) monitor muted. Input metering remains active."
+        statusMessage = "\(sourceMode.rawValue) audio muted. Input metering remains active."
         AppLogger.shared.notice(category: "live-input", "Muted live monitor source=\(sourceMode.rawValue)")
     }
 
@@ -1949,7 +2321,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         engine.setLiveInputMuted(false)
         liveMonitorState = .monitoring
-        statusMessage = "\(sourceMode.rawValue) monitor resumed."
+        statusMessage = "\(sourceMode.rawValue) audio resumed."
         AppLogger.shared.notice(category: "live-input", "Resumed live monitor source=\(sourceMode.rawValue)")
     }
 
@@ -1963,7 +2335,6 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         let sourceName = sourceMode.rawValue
-        stopSpotifyReceiverIfNeeded()
         markLiveMonitorStopped(sourceName: sourceName)
         engine.stop()
         markLiveMonitorStopped(sourceName: sourceName)
@@ -1974,7 +2345,6 @@ final class OrbisonicViewModel: ObservableObject {
         guard sourceMode.isLiveInput else { return }
 
         let sourceName = sourceMode.rawValue
-        stopSpotifyReceiverIfNeeded()
         markLiveMonitorStopped(sourceName: sourceName)
         engine.stop()
         markLiveMonitorStopped(sourceName: sourceName)
@@ -1982,13 +2352,6 @@ final class OrbisonicViewModel: ObservableObject {
             category: "live-input",
             "Stopped live monitor source=\(sourceName) before selecting source=\(mode.rawValue)"
         )
-    }
-
-    private func stopSpotifyReceiverIfNeeded() {
-        guard sourceMode == .spotify else { return }
-        spotifyReceiverClient.stop()
-        spotifyReceiverStatus = .notStarted
-        spotifyNowPlaying = nil
     }
 
     private func markLiveMonitorStopped(sourceName: String) {
@@ -2005,9 +2368,9 @@ final class OrbisonicViewModel: ObservableObject {
         lastLiveBufferLogSecond = -1
         lastLiveSilenceWarningSecond = -1
         lastLiveSignalPresent = nil
-        liveSignalStatus = "\(sourceName) monitoring stopped."
+        liveSignalStatus = "\(sourceName) input stopped."
         liveBufferStatus = "No live buffer."
-        statusMessage = "\(sourceName) monitoring stopped."
+        statusMessage = "\(sourceName) input stopped."
     }
 
     private func clearLoadedSourceSnapshot() {
@@ -2023,8 +2386,8 @@ final class OrbisonicViewModel: ObservableObject {
         testToneStopTask = nil
         diagnosticSequenceTask?.cancel()
         diagnosticSequenceTask = nil
+        cancelPendingLocalFileLoad()
         diagnosticReturnContext = nil
-        stopSpotifyReceiverIfNeeded()
         engine.stop()
         isPlaying = false
         liveMonitorState = .stopped
@@ -2137,7 +2500,7 @@ final class OrbisonicViewModel: ObservableObject {
         diagnosticSequencePosition = 0
         testToneStatus = ""
         if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
-            diagnosticWalkStatus = "Starting renderer channel walk as monitor preview."
+            diagnosticWalkStatus = "Starting renderer channel walk as preview."
             statusMessage = "Renderer output is not set. Previewing renderer channel walk through \(routeDisplayName)."
         } else {
             diagnosticWalkStatus = "Starting \(kind.shortTitle.lowercased()) channel walk."
@@ -2348,6 +2711,9 @@ final class OrbisonicViewModel: ObservableObject {
         sourceMode = context.sourceMode
 
         switch context.sourceMode {
+        case .off:
+            statusMessage = "Diagnostics stopped. Orbisonic is idle."
+
         case .filePlayback:
             guard context.hadSource else {
                 statusMessage = "Diagnostics stopped. Open a file or pipe in Roon to continue."
@@ -2737,6 +3103,8 @@ final class OrbisonicViewModel: ObservableObject {
 
     var sourceFlowTitle: String {
         switch sourceMode {
+        case .off:
+            return "Off"
         case .roon:
             return "Roon"
         case .spotify:
@@ -2751,6 +3119,10 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var sourceFlowDetail: String {
+        if sourceMode == .off {
+            return "Orbisonic is idle."
+        }
+
         if sourceMode == .roon {
             if let roonNowPlaying {
                 return "\(roonNowPlaying.titleLine) • \(liveSignalStatus) • \(liveBufferStatus)"
@@ -3151,6 +3523,8 @@ final class OrbisonicViewModel: ObservableObject {
 
     private var liveInputSourceName: String {
         switch sourceMode {
+        case .off:
+            return "Off"
         case .roon:
             return "Roon"
         case .spotify:
@@ -3256,7 +3630,7 @@ final class OrbisonicViewModel: ObservableObject {
             return "Spotify mode captures \(expectedLoopback.displayName) only. Aux Cable and Roon Input stay separate."
         case .aux:
             return "Aux Cable mode captures \(expectedLoopback.displayName) only."
-        case .filePlayback, .testTone:
+        case .off, .filePlayback, .testTone:
             return "\(sourceMode.rawValue) does not use a live input route."
         }
     }
@@ -3469,7 +3843,7 @@ final class OrbisonicViewModel: ObservableObject {
         guard sourceMode == .filePlayback else { return false }
 
         if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex + 1) {
-            return playQueueIndex(sessionQueueIndex + 1)
+            return playQueueIndex(sessionQueueIndex + 1, isNaturalAdvance: true)
         }
 
         guard let currentID = currentFileURL?.path else { return false }
@@ -3480,7 +3854,13 @@ final class OrbisonicViewModel: ObservableObject {
             return false
         }
 
-        startSessionQueue(from: tracks, startTrackID: tracks[currentIndex + 1].id, shuffle: false, autoplay: true)
+        startSessionQueue(
+            from: tracks,
+            startTrackID: tracks[currentIndex + 1].id,
+            shuffle: false,
+            autoplay: true,
+            isNaturalAdvance: true
+        )
         return true
     }
 
@@ -3520,16 +3900,14 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func refreshTransport() {
         refreshRoutesIfNeeded()
+        maintainPersistentHelperServices()
 
         if sourceMode == .roon {
             refreshRoonNowPlayingIfNeeded()
-            refreshRoonBridgeIfNeeded()
             repairBlackHoleSampleRateIfNeeded()
         }
 
-        if sourceMode == .spotify {
-            refreshSpotifyNowPlayingIfNeeded()
-        }
+        refreshSpotifyNowPlayingIfNeeded()
 
         let engineDuration = engine.duration()
         if abs(engineDuration - duration) >= 0.001 {
@@ -4164,7 +4542,7 @@ final class OrbisonicViewModel: ObservableObject {
         )
 
         if signalPath.isDownmixingToStereo {
-            statusMessage = "Roon is downmixing quad to stereo before BlackHole. Change the BlackHole zone channel layout in Roon."
+            statusMessage = "Roon is downmixing quad to stereo before Orbisonic. Change the selected Roon output channel layout to multichannel."
         }
     }
 
@@ -4188,6 +4566,16 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func startPersistentHelperServices(reason: String, force: Bool = false) {
+        guard !Self.isRunningUnitTests else { return }
+        refreshRoonBridgeIfNeeded(force: force)
+        refreshSpotifyConnectServerIfNeeded(reason: reason, force: force)
+    }
+
+    private func maintainPersistentHelperServices() {
+        startPersistentHelperServices(reason: "periodic service check")
+    }
+
     private func refreshSpotifyNowPlayingIfNeeded(force: Bool = false) {
         let now = Date()
         guard force || now.timeIntervalSince(lastSpotifyNowPlayingRefreshTime) >= Self.spotifyNowPlayingRefreshInterval else { return }
@@ -4198,25 +4586,15 @@ final class OrbisonicViewModel: ObservableObject {
             spotifyNowPlaying = next
         }
 
-        if sourceMode == .spotify, next == nil, spotifyReceiverStatus.isRunning {
+        if next == nil, spotifyReceiverStatus.isRunning {
             refreshSpotifyConnectServerIfNeeded(reason: "stale now playing")
         }
     }
 
     private func refreshSpotifyConnectServerIfNeeded(reason: String, force: Bool = false) {
-        guard sourceMode == .spotify else { return }
-
         let now = Date()
         guard force || now.timeIntervalSince(lastSpotifyConnectRefreshTime) >= Self.spotifyConnectRestartDebounce else { return }
         lastSpotifyConnectRefreshTime = now
-
-        if spotifyReceiverStatus.isRunning || force {
-            spotifyReceiverStatus = SpotifyReceiverStatus(
-                state: .restarting,
-                message: "Spotify Connect server is restarting."
-            )
-            spotifyReceiverClient.stop()
-        }
 
         spotifyReceiverStatus = spotifyReceiverClient.start()
         AppLogger.shared.notice(

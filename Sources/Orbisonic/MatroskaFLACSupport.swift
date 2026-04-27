@@ -11,6 +11,12 @@ enum MatroskaFLACSupport {
     }
 }
 
+enum StandaloneFLACSupport {
+    static func isFLAC(_ url: URL) -> Bool {
+        url.pathExtension.localizedCaseInsensitiveCompare("flac") == .orderedSame
+    }
+}
+
 enum FFmpegToolLocator {
     static func ffmpegURL() -> URL? {
         executableURL(toolName: "ffmpeg", environmentKey: "ORBISONIC_FFMPEG_PATH")
@@ -60,6 +66,60 @@ enum FFmpegToolLocator {
         }
 
         return nil
+    }
+}
+
+enum FFmpegAudioDecoderError: LocalizedError, Equatable {
+    case missingFFmpeg(String)
+    case processFailed(String, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingFFmpeg(let description):
+            "\(description) playback requires ffmpeg. Bundle ffmpeg in Orbisonic.app/Contents/Resources/Tools or set ORBISONIC_FFMPEG_PATH for development."
+        case .processFailed(let description, let message):
+            "Unable to decode \(description) audio: \(message)"
+        }
+    }
+}
+
+struct FFmpegAudioDecoder {
+    func decodeToCAF(url: URL, sourceDescription: String) throws -> URL {
+        guard let ffmpegURL = FFmpegToolLocator.ffmpegURL() else {
+            throw FFmpegAudioDecoderError.missingFFmpeg(sourceDescription)
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Orbisonic-Decoded-Audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let outputURL = directory
+            .appendingPathComponent(UUID().uuidString, isDirectory: false)
+            .appendingPathExtension("caf")
+
+        let result = try MatroskaAudioProbe.runProcess(
+            executableURL: ffmpegURL,
+            arguments: [
+                "-v", "error",
+                "-y",
+                "-i", url.path,
+                "-map", "0:a:0",
+                "-vn",
+                "-c:a", "pcm_f32le",
+                "-f", "caf",
+                outputURL.path
+            ]
+        )
+
+        guard result.terminationStatus == 0 else {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw FFmpegAudioDecoderError.processFailed(
+                sourceDescription,
+                result.errorText.trimmedNilIfBlank ?? "ffmpeg exited \(result.terminationStatus)"
+            )
+        }
+
+        return outputURL
     }
 }
 

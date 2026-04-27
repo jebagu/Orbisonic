@@ -256,7 +256,7 @@ final class RoonBridgeClient {
     }
 
     deinit {
-        process?.terminate()
+        stop()
     }
 
     var supportDirectoryURL: URL {
@@ -316,6 +316,14 @@ final class RoonBridgeClient {
         try process.run()
         self.process = process
         AppLogger.shared.notice(category: "roon-bridge", "Started Roon bridge on port \(port) node=\(nodeURL.path).")
+    }
+
+    func stop() {
+        guard let process else { return }
+        if process.isRunning {
+            process.terminate()
+        }
+        self.process = nil
     }
 
     func refresh() async throws -> RoonBridgeSnapshot {

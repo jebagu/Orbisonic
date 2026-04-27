@@ -131,6 +131,17 @@ struct LocalMusicPlaylist: Identifiable, Codable, Equatable, Sendable {
 struct LocalMusicScanResult: Sendable {
     let tracks: [LocalMusicTrack]
     let playlists: [LocalMusicPlaylist]
+    let skippedMissingFiles: Int
+}
+
+private struct LocalMusicURLCollection {
+    let urls: [URL]
+    let skippedMissingFiles: Int
+}
+
+private struct M3UParseResult {
+    let urls: [URL]
+    let skippedMissingFiles: Int
 }
 
 final class LocalMusicLibrary {
@@ -139,9 +150,10 @@ final class LocalMusicLibrary {
     private let artworkDirectoryURL: URL
     private let playlistDirectoryURL: URL
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, supportURL: URL? = nil) {
         self.fileManager = fileManager
-        let supportURL = Self.applicationSupportURL(fileManager: fileManager)
+        let supportURL = supportURL ?? Self.applicationSupportURL(fileManager: fileManager)
+        try? fileManager.createDirectory(at: supportURL, withIntermediateDirectories: true)
         databaseURL = supportURL.appendingPathComponent("local-music-library.json", isDirectory: false)
         artworkDirectoryURL = supportURL.appendingPathComponent("Album Artwork", isDirectory: true)
         playlistDirectoryURL = supportURL.appendingPathComponent("Playlists", isDirectory: true)
@@ -168,7 +180,8 @@ final class LocalMusicLibrary {
 
         do {
             let database = try JSONDecoder().decode(LocalMusicDatabase.self, from: data)
-            let repaired = repairStaleMatroskaMetadata(in: database)
+            let pruned = pruneMissingFiles(in: database)
+            let repaired = repairStaleMatroskaMetadata(in: pruned)
             if repaired != database {
                 save(repaired)
             }
@@ -192,8 +205,8 @@ final class LocalMusicLibrary {
     }
 
     func scan(settings: LocalMusicSettings) -> LocalMusicScanResult {
-        let audioURLs = collectAudioURLs(settings: settings)
-        let tracks = audioURLs.map { url in
+        let collected = collectAudioURLs(settings: settings)
+        let tracks = collected.urls.map { url in
             metadata(for: url, rootPath: rootPath(for: url, settings: settings), extractsAlbumArt: settings.extractsAlbumArt)
         }
         let tracksByPath = Dictionary(uniqueKeysWithValues: tracks.map { ($0.path, $0) })
@@ -203,7 +216,8 @@ final class LocalMusicLibrary {
 
         return LocalMusicScanResult(
             tracks: tracks.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending },
-            playlists: playlists.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            playlists: playlists.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
+            skippedMissingFiles: collected.skippedMissingFiles
         )
     }
 
@@ -228,9 +242,10 @@ final class LocalMusicLibrary {
         )
     }
 
-    private func collectAudioURLs(settings: LocalMusicSettings) -> [URL] {
+    private func collectAudioURLs(settings: LocalMusicSettings) -> LocalMusicURLCollection {
         var seenPaths = Set<String>()
         var urls: [URL] = []
+        var skippedMissingFiles = 0
 
         for folderPath in settings.watchFolderPaths {
             let folderURL = URL(fileURLWithPath: folderPath)
@@ -243,13 +258,15 @@ final class LocalMusicLibrary {
         if settings.importsM3UPlaylists {
             for playlistPath in settings.m3uPlaylistPaths {
                 let playlistURL = URL(fileURLWithPath: playlistPath)
-                for url in parseM3U(at: playlistURL) where seenPaths.insert(url.path).inserted {
+                let parsed = parseM3U(at: playlistURL)
+                skippedMissingFiles += parsed.skippedMissingFiles
+                for url in parsed.urls where seenPaths.insert(url.path).inserted {
                     urls.append(url)
                 }
             }
         }
 
-        return urls
+        return LocalMusicURLCollection(urls: urls, skippedMissingFiles: skippedMissingFiles)
     }
 
     private func audioURLs(in folderURL: URL, recursive: Bool) -> [URL] {
@@ -287,7 +304,7 @@ final class LocalMusicLibrary {
         }
 
         return playlistURLs.compactMap { playlistURL in
-            let trackPaths = parseM3U(at: playlistURL)
+            let trackPaths = parseM3U(at: playlistURL).urls
                 .map(\.path)
                 .filter { tracksByPath[$0] != nil || fileManager.fileExists(atPath: $0) }
             guard !trackPaths.isEmpty else { return nil }
@@ -321,13 +338,14 @@ final class LocalMusicLibrary {
         ).filter(Self.isM3UPlaylist)) ?? []
     }
 
-    private func parseM3U(at playlistURL: URL) -> [URL] {
+    private func parseM3U(at playlistURL: URL) -> M3UParseResult {
         guard let contents = try? String(contentsOf: playlistURL, encoding: .utf8) else {
-            return []
+            return M3UParseResult(urls: [], skippedMissingFiles: 0)
         }
 
         let baseURL = playlistURL.deletingLastPathComponent()
-        return contents
+        var skippedMissingFiles = 0
+        let urls = contents
             .components(separatedBy: .newlines)
             .compactMap { line -> URL? in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -343,8 +361,13 @@ final class LocalMusicLibrary {
                 }
 
                 guard Self.isSupportedAudioFile(url) else { return nil }
+                guard fileManager.fileExists(atPath: url.path) else {
+                    skippedMissingFiles += 1
+                    return nil
+                }
                 return url
             }
+        return M3UParseResult(urls: urls, skippedMissingFiles: skippedMissingFiles)
     }
 
     private func metadata(for url: URL, rootPath: String?, extractsAlbumArt: Bool) -> LocalMusicTrack {
@@ -417,6 +440,34 @@ final class LocalMusicLibrary {
         }
 
         return changed ? repaired : database
+    }
+
+    private func pruneMissingFiles(in database: LocalMusicDatabase) -> LocalMusicDatabase {
+        let existingTracks = database.tracks.filter { fileManager.fileExists(atPath: $0.path) }
+        let existingTrackPaths = Set(existingTracks.map(\.path))
+
+        let playlists = database.playlists.compactMap { playlist -> LocalMusicPlaylist? in
+            let trackPaths = playlist.trackPaths.filter { path in
+                existingTrackPaths.contains(path) || fileManager.fileExists(atPath: path)
+            }
+            guard !trackPaths.isEmpty else { return nil }
+            return LocalMusicPlaylist(name: playlist.name, path: playlist.path, trackPaths: trackPaths)
+        }
+
+        guard existingTracks.count != database.tracks.count || playlists != database.playlists else {
+            return database
+        }
+
+        AppLogger.shared.notice(
+            category: "local-music",
+            "Pruned missing local music tracks removed=\(database.tracks.count - existingTracks.count)"
+        )
+
+        return LocalMusicDatabase(
+            settings: database.settings,
+            tracks: existingTracks,
+            playlists: playlists
+        )
     }
 
     private func matroskaMetadata(for url: URL, rootPath: String?, extractsAlbumArt: Bool) -> LocalMusicTrack {

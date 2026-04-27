@@ -3,19 +3,19 @@ import XCTest
 @testable import Orbisonic
 
 final class LoopbackSourceSupportTests: XCTestCase {
-    func testMusicInputsExposeExactlyRoonSpotifyAuxCableAndLocalFiles() {
-        XCTAssertEqual(SourceMode.musicInputs, [.roon, .spotify, .aux, .filePlayback])
-        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Roon", "Spotify", "Aux Cable", "Local Files"])
+    func testMusicInputsExposeExactlyOffRoonSpotifyAuxCableAndLocalFiles() {
+        XCTAssertEqual(SourceMode.musicInputs, [.off, .roon, .spotify, .aux, .filePlayback])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Off", "Roon", "Spotify", "Aux Cable", "Local Files"])
         XCTAssertTrue(SourceMode.musicInputs.allSatisfy(\.isUserFacingMusicInput))
         XCTAssertFalse(SourceMode.musicInputs.contains(.testTone))
     }
 
     func testLiveSourceLabelsUseDedicatedSourceNames() {
-        XCTAssertEqual(SourceMode.spotify.monitorActionLabel, "Monitor Spotify")
+        XCTAssertEqual(SourceMode.spotify.monitorActionLabel, "Listen to Spotify")
         XCTAssertEqual(SourceMode.spotify.muteActionLabel, "Mute Spotify")
         XCTAssertEqual(SourceMode.spotify.mutedActionLabel, "Resume Spotify")
-        XCTAssertEqual(SourceMode.spotify.stopMonitorLabel, "Stop Monitor")
-        XCTAssertEqual(SourceMode.aux.monitorActionLabel, "Monitor Aux Cable")
+        XCTAssertEqual(SourceMode.spotify.stopMonitorLabel, "Stop")
+        XCTAssertEqual(SourceMode.aux.monitorActionLabel, "Listen to Aux Cable")
         XCTAssertEqual(SourceMode.aux.muteActionLabel, "Mute Aux Cable")
         XCTAssertEqual(SourceMode.aux.mutedActionLabel, "Resume Aux Cable")
     }
@@ -24,6 +24,7 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertEqual(SourceMode.roon.expectedLoopback?.deviceUID, "audio.orbisonic.rooninput.device")
         XCTAssertEqual(SourceMode.spotify.expectedLoopback?.deviceUID, "audio.orbisonic.spotifyinput.device")
         XCTAssertEqual(SourceMode.aux.expectedLoopback?.deviceUID, "audio.orbisonic.auxcable.device")
+        XCTAssertNil(SourceMode.off.expectedLoopback)
         XCTAssertNil(SourceMode.filePlayback.expectedLoopback)
         XCTAssertNil(SourceMode.testTone.expectedLoopback)
     }
@@ -33,6 +34,15 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertFalse(SourceMode.spotify.ownsTransport)
         XCTAssertFalse(SourceMode.aux.ownsTransport)
         XCTAssertTrue(SourceMode.filePlayback.ownsTransport)
+    }
+
+    func testLiveSourcesStartListeningWhenSelected() {
+        XCTAssertTrue(SourceMode.roon.startsLiveListeningOnSelection)
+        XCTAssertTrue(SourceMode.spotify.startsLiveListeningOnSelection)
+        XCTAssertTrue(SourceMode.aux.startsLiveListeningOnSelection)
+        XCTAssertFalse(SourceMode.off.startsLiveListeningOnSelection)
+        XCTAssertFalse(SourceMode.filePlayback.startsLiveListeningOnSelection)
+        XCTAssertFalse(SourceMode.testTone.startsLiveListeningOnSelection)
     }
 
     func testInputRouteClassifiesOrbisonicLoopbacksByUID() {
@@ -142,6 +152,21 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertTrue(SourceMode.aux.stopsLiveCaptureWhenSwitching(to: .filePlayback))
         XCTAssertFalse(SourceMode.spotify.stopsLiveCaptureWhenSwitching(to: .spotify))
         XCTAssertFalse(SourceMode.filePlayback.stopsLiveCaptureWhenSwitching(to: .spotify))
+    }
+
+    func testSourceSwitchRequestStateSerializesAndKeepsLatestPendingSource() {
+        var state = SourceSwitchRequestState()
+
+        XCTAssertTrue(state.request(.spotify))
+        XCTAssertFalse(state.request(.roon))
+        XCTAssertFalse(state.request(.aux))
+        XCTAssertEqual(state.takeNext(), .aux)
+
+        XCTAssertFalse(state.request(.off))
+        XCTAssertFalse(state.request(.filePlayback))
+        XCTAssertEqual(state.coalescePending(over: .aux), .filePlayback)
+        XCTAssertNil(state.takeNext())
+        XCTAssertFalse(state.isProcessing)
     }
 
     func testInputRouteClassifiesLegacyBlackHoleSeparately() {

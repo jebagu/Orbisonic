@@ -181,6 +181,7 @@ enum RendererAudioRoutingPolicy {
 }
 
 enum SourceMode: String, CaseIterable, Identifiable {
+    case off = "Off"
     case roon = "Roon"
     case spotify = "Spotify"
     case aux = "Aux Cable"
@@ -191,6 +192,10 @@ enum SourceMode: String, CaseIterable, Identifiable {
 
     var isLiveInput: Bool {
         self == .roon || self == .spotify || self == .aux
+    }
+
+    var startsLiveListeningOnSelection: Bool {
+        isLiveInput
     }
 
     var isUserFacingMusicInput: Bool {
@@ -209,7 +214,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
             .spotifyInput
         case .aux:
             .auxCable
-        case .filePlayback, .testTone:
+        case .off, .filePlayback, .testTone:
             nil
         }
     }
@@ -218,7 +223,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
         switch self {
         case .spotify:
             2
-        case .roon, .aux, .filePlayback, .testTone:
+        case .off, .roon, .aux, .filePlayback, .testTone:
             nil
         }
     }
@@ -249,19 +254,21 @@ enum SourceMode: String, CaseIterable, Identifiable {
             return "\(expectedLoopback.displayName) is not available. Install Orbisonic Inputs with Spotify support, then restart Core Audio or reboot."
         case .roon, .aux:
             return "\(expectedLoopback.displayName) is not available. Install Orbisonic Inputs, then restart Core Audio or reboot."
-        case .filePlayback, .testTone:
+        case .off, .filePlayback, .testTone:
             return "No live input route is required for \(rawValue)."
         }
     }
 
     var monitorActionLabel: String {
         switch self {
+        case .off:
+            "Off"
         case .roon:
-            "Monitor Roon"
+            "Listen to Roon"
         case .spotify:
-            "Monitor Spotify"
+            "Listen to Spotify"
         case .aux:
-            "Monitor Aux Cable"
+            "Listen to Aux Cable"
         case .filePlayback:
             "Play"
         case .testTone:
@@ -271,6 +278,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
 
     var mutedActionLabel: String {
         switch self {
+        case .off:
+            "Off"
         case .roon:
             "Resume Roon"
         case .spotify:
@@ -286,6 +295,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
 
     var muteActionLabel: String {
         switch self {
+        case .off:
+            "Off"
         case .roon:
             "Mute Roon"
         case .spotify:
@@ -301,17 +312,52 @@ enum SourceMode: String, CaseIterable, Identifiable {
 
     var stopMonitorLabel: String {
         switch self {
+        case .off:
+            "Stop"
         case .roon, .spotify:
-            "Stop Monitor"
+            "Stop"
         case .aux:
-            "Stop Monitor"
+            "Stop"
         case .filePlayback, .testTone:
             "Stop"
         }
     }
 
     static var musicInputs: [SourceMode] {
-        [.roon, .spotify, .aux, .filePlayback]
+        [.off, .roon, .spotify, .aux, .filePlayback]
+    }
+}
+
+struct SourceSwitchRequestState {
+    private(set) var isProcessing = false
+    private(set) var pendingMode: SourceMode?
+
+    mutating func request(_ mode: SourceMode) -> Bool {
+        pendingMode = mode
+        guard !isProcessing else { return false }
+        isProcessing = true
+        return true
+    }
+
+    mutating func takeNext() -> SourceMode? {
+        guard let mode = pendingMode else {
+            isProcessing = false
+            return nil
+        }
+
+        pendingMode = nil
+        return mode
+    }
+
+    mutating func coalescePending(over mode: SourceMode) -> SourceMode {
+        guard let pendingMode else { return mode }
+        self.pendingMode = nil
+        return pendingMode
+    }
+
+    mutating func reset() {
+        isProcessing = false
+        pendingMode = nil
     }
 }
 
@@ -342,17 +388,17 @@ enum LiveMonitorState: Equatable {
     var statusLabel: String {
         switch self {
         case .stopped:
-            "STOPPED"
+            "Stopped"
         case .monitoring:
-            "MONITORING"
+            "Playing"
         case .muted:
-            "MUTED"
+            "Muted"
         case .silent:
-            "SILENT"
+            "No audio"
         case .unavailable:
-            "MISSING"
+            "Unavailable"
         case .error:
-            "ERROR"
+            "Error"
         }
     }
 }

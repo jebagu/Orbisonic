@@ -82,6 +82,15 @@ final class OrbisonicEngine {
         detachSourceNodes()
 
         let loaded = try loader.load(url: url)
+        return loadPreparedFile(loaded)
+    }
+
+    func loadPreparedFile(_ loaded: LoadedAudioFile) -> LoadedAudioFile {
+        AppLogger.shared.info(category: "engine", "Loading prepared file into engine: \(loaded.url.lastPathComponent)")
+
+        stopLiveInput()
+        detachSourceNodes()
+
         loadedFile = loaded
         liveInputSource = nil
         currentStartFrame = 0
