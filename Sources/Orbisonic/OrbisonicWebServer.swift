@@ -10,7 +10,6 @@ private enum OrbisonicWebConstants {
 
 struct OrbisonicWebURLSet: Equatable {
     let publicURL: String
-    let controlURL: String
 }
 
 private enum OrbisonicWebID {
@@ -238,8 +237,7 @@ final class OrbisonicWebServer {
         let host = preferredLANHost()
         let baseURL = "http://\(host):\(OrbisonicWebConstants.port)\(OrbisonicWebConstants.basePath)"
         return OrbisonicWebURLSet(
-            publicURL: "\(baseURL)/",
-            controlURL: "\(baseURL)/control/#token=\(controlToken)"
+            publicURL: "\(baseURL)/"
         )
     }
 
@@ -333,11 +331,6 @@ final class OrbisonicWebServer {
             return
         }
 
-        if request.method == "GET", isControlPagePath(request.path) {
-            send(status: 200, contentType: "text/html; charset=utf-8", body: Self.controlPageHTML, on: connection)
-            return
-        }
-
         if request.method == "GET", request.path == "\(OrbisonicWebConstants.basePath)/api/public-state" {
             Task { @MainActor [weak self] in
                 guard let self, let model else { return }
@@ -413,11 +406,6 @@ final class OrbisonicWebServer {
             path == "\(OrbisonicWebConstants.basePath)/" ||
             path == "\(OrbisonicWebConstants.basePath)/public" ||
             path == "\(OrbisonicWebConstants.basePath)/public/"
-    }
-
-    private func isControlPagePath(_ path: String) -> Bool {
-        path == "\(OrbisonicWebConstants.basePath)/control" ||
-            path == "\(OrbisonicWebConstants.basePath)/control/"
     }
 
     private func isValidControlToken(_ token: String?) -> Bool {
@@ -589,7 +577,7 @@ extension OrbisonicViewModel {
             controlEnabled: controlEnabled,
             urls: OrbisonicWebState.URLs(
                 publicPage: self.webPublicPageURL,
-                controlPage: controlEnabled ? self.webControlPageURL : nil
+                controlPage: nil
             ),
             player: makeWebPlayerState(controlEnabled: controlEnabled),
             input: controlEnabled ? makeWebInputState() : makeWebPublicInputState(),
@@ -648,16 +636,31 @@ extension OrbisonicViewModel {
             subtitle: webNowPlayingSubtitle,
             source: sourceMode.rawValue,
             status: webPlayerStatus,
-            isPlaying: isPlaying || isTestTonePlaying || liveMonitorState.isCapturing,
+            isPlaying: webPlayerIsPlaying,
             artworkURL: controlEnabled ? webArtworkPath : nil,
             volume: sphereOutputVolumeValue,
-            currentTime: formattedCurrentTime(),
-            duration: formattedDuration(),
-            progress: min(max(scrubProgress, 0), 1),
+            currentTime: webPlayerCurrentTime,
+            duration: webPlayerDuration,
+            progress: webPlayerProgress,
             details: webPlayerDetails,
             controls: webPlayerControls,
             enabledControls: webEnabledPlayerControls
         )
+    }
+
+    private var webPlayerIsPlaying: Bool {
+        switch sourceMode {
+        case .spotify:
+            return spotifyVisibleNowPlaying?.isPlaying == true
+        case .roon, .aux:
+            return liveMonitorState == .monitoring
+        case .filePlayback:
+            return isPlaying
+        case .testTone:
+            return isTestTonePlaying
+        case .off:
+            return false
+        }
     }
 
     fileprivate var webCurrentArtworkURL: URL? {
@@ -686,7 +689,7 @@ extension OrbisonicViewModel {
             source: sourceMode.rawValue,
             selectedDevice: inputRoute.displayName,
             status: selectedSourceDeviceStatusText,
-            monitorState: liveMonitorState.statusLabel,
+            monitorState: webSelectedSourceStatusText,
             availableSources: SourceMode.musicInputs.map(\.rawValue),
             availableInputs: [],
             sourceButtons: webSourceButtons,
@@ -704,10 +707,10 @@ extension OrbisonicViewModel {
             availableInputs: [],
             sourceButtons: [],
             sourcePanel: OrbisonicWebState.SourcePanel(
-                title: sourceMode.rawValue,
-                status: webPlayerStatus,
-                headline: webPlayerStatus,
-                body: webPublicSignalText,
+                title: (sourceSwitchTargetMode ?? sourceMode).rawValue,
+                status: webSelectedSourceStatusText,
+                headline: webSelectedSourceHeadline,
+                body: webSelectedSourceBody,
                 rows: [],
                 severity: webSourceSeverity,
                 isSwitching: isLiveMonitorTransitioning
@@ -720,8 +723,8 @@ extension OrbisonicViewModel {
             OrbisonicWebState.SourceButton(
                 value: mode.rawValue,
                 title: mode.rawValue,
-                subtitle: webSourceButtonSubtitle(for: mode),
-                isSelected: sourceMode == mode,
+                subtitle: "",
+                isSelected: sourceSwitchTargetMode == mode || sourceMode == mode,
                 severity: webSourceButtonSeverity(for: mode)
             )
         }
@@ -729,7 +732,7 @@ extension OrbisonicViewModel {
 
     private var webSourcePanel: OrbisonicWebState.SourcePanel {
         OrbisonicWebState.SourcePanel(
-            title: sourceMode.rawValue,
+            title: (sourceSwitchTargetMode ?? sourceMode).rawValue,
             status: webSelectedSourceStatusText,
             headline: webSelectedSourceHeadline,
             body: webSelectedSourceBody,
@@ -740,42 +743,66 @@ extension OrbisonicViewModel {
     }
 
     private var webSelectedSourceStatusText: String {
-        if isLiveMonitorTransitioning {
-            return "Switching"
+        if let sourceSwitchStatusText {
+            return sourceSwitchStatusText
         }
         if sourceMode == .off {
-            return "Idle"
+            return "Orbisonic is idle"
         }
-        if sourceMode.isLiveInput {
-            switch liveMonitorState {
-            case .monitoring:
-                return "Playing through Orbisonic"
-            case .silent, .muted:
-                return "Waiting for audio"
-            case .stopped:
-                return "Ready"
-            case .unavailable, .error:
-                return "Unavailable"
+
+        switch sourceMode {
+        case .roon:
+            if webSelectedLiveSourceUnavailable {
+                return "Roon unavailable"
             }
+            return liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Waiting for Roon audio"
+        case .spotify:
+            if webSpotifyReceiverUnavailable {
+                return "Receiver unavailable"
+            }
+            if liveMonitorState == .monitoring {
+                return "Playing through Orbisonic"
+            }
+            return spotifyVisibleNowPlaying == nil ? "Waiting for Spotify" : "No audio yet"
+        case .aux:
+            if webSelectedLiveSourceUnavailable || webLiveInputReadyValue(expected: .auxCable) == "Missing" {
+                return "Input unavailable"
+            }
+            return liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Listening for input"
+        case .filePlayback:
+            return "Ready"
+        case .testTone:
+            return isTestTonePlaying ? "Playing through Orbisonic" : "Ready"
+        case .off:
+            return "Orbisonic is idle"
         }
-        if sourceMode == .testTone {
-            return isTestTonePlaying ? "Playing" : "Ready"
-        }
-        return isPlaying ? "Playing" : "Ready"
     }
 
     private var webSelectedSourceHeadline: String {
+        if let sourceSwitchStatusText {
+            return sourceSwitchStatusText
+        }
+
         switch sourceMode {
         case .off:
             return "Orbisonic is idle"
         case .roon:
+            if webSelectedLiveSourceUnavailable {
+                return "Roon unavailable"
+            }
             return liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Waiting for Roon audio"
         case .spotify:
-            if spotifyNowPlaying?.isPlaying == true || liveMonitorState == .monitoring {
+            if webSpotifyReceiverUnavailable {
+                return "Spotify receiver unavailable"
+            }
+            if liveMonitorState == .monitoring {
                 return "Playing through Orbisonic"
             }
-            return spotifyNowPlaying == nil ? "Waiting for Spotify" : "Waiting for audio"
+            return spotifyVisibleNowPlaying == nil ? "Waiting for Spotify" : "Waiting for audio"
         case .aux:
+            if webSelectedLiveSourceUnavailable || webLiveInputReadyValue(expected: .auxCable) == "Missing" {
+                return "Input unavailable"
+            }
             return liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Listening for input"
         case .filePlayback:
             return "Ready"
@@ -785,21 +812,36 @@ extension OrbisonicViewModel {
     }
 
     private var webSelectedSourceBody: String {
+        if let sourceSwitchStatusText {
+            return sourceSwitchStatusText == "Stopping audio..."
+                ? "Orbisonic is ramping down before stopping the active audio path."
+                : "Orbisonic is ramping down before changing the active audio path."
+        }
+
         switch sourceMode {
         case .off:
             return "Select a source to begin listening or playback."
         case .roon:
+            if webSelectedLiveSourceUnavailable {
+                return "Orbisonic could not connect to the Roon service."
+            }
             return liveMonitorState == .monitoring
                 ? "Roon audio is being rendered by Orbisonic."
                 : "Use Roon to send audio to Orbisonic."
         case .spotify:
-            if spotifyNowPlaying != nil, liveMonitorState != .monitoring {
+            if webSpotifyReceiverUnavailable {
+                return "Orbisonic could not start the Spotify receiver."
+            }
+            if spotifyVisibleNowPlaying != nil, liveMonitorState != .monitoring {
                 return "Spotify is connected. Press play in Spotify to hear it through Orbisonic."
             }
             return liveMonitorState == .monitoring
                 ? "Spotify audio is being rendered by Orbisonic."
                 : "Use the Spotify app to connect to \"Orbisonic Spotify\" and press play there."
         case .aux:
+            if webSelectedLiveSourceUnavailable || webLiveInputReadyValue(expected: .auxCable) == "Missing" {
+                return "Orbisonic could not find the selected Aux input."
+            }
             return liveMonitorState == .monitoring
                 ? "Aux audio is being rendered by Orbisonic."
                 : "Connect an audio source to the selected input."
@@ -859,20 +901,42 @@ extension OrbisonicViewModel {
     private var webSpotifyReceiverStatusValue: String {
         switch spotifyReceiverStatus.state {
         case .waitingForConnection:
-            return spotifyNowPlaying == nil ? "Ready" : "Connected"
+            return spotifyVisibleNowPlaying == nil ? "Ready" : "Connected"
         case .running:
             return "Connected"
         case .restarting:
-            return "Restarting"
-        case .failed:
+            return "Ready"
+        case .failed, .embeddedModuleUnavailable:
             return "Failed"
-        case .notStarted, .embeddedModuleUnavailable:
-            return "Unavailable"
+        case .notStarted:
+            return "Ready"
         }
     }
 
     private func webLiveInputReadyValue(expected: OrbisonicLoopbackDevice) -> String {
         inputRoute.uid == expected.deviceUID ? "Ready" : "Missing"
+    }
+
+    private var webSelectedLiveSourceUnavailable: Bool {
+        guard sourceMode.isLiveInput else { return false }
+        if sourceMode == .roon && liveMonitorState != .monitoring && !roonBridgeSnapshot.isReadyForTransport {
+            return true
+        }
+        switch liveMonitorState {
+        case .unavailable, .error:
+            return true
+        case .stopped, .monitoring, .muted, .silent:
+            return false
+        }
+    }
+
+    private var webSpotifyReceiverUnavailable: Bool {
+        switch spotifyReceiverStatus.state {
+        case .failed, .embeddedModuleUnavailable:
+            return true
+        case .notStarted, .waitingForConnection, .running, .restarting:
+            return false
+        }
     }
 
     private var webLiveSignalValue: String {
@@ -886,57 +950,11 @@ extension OrbisonicViewModel {
         }
     }
 
-    private func webSourceButtonSubtitle(for mode: SourceMode) -> String {
-        guard sourceMode == mode else {
-            return webSourceSelectorDescriptor(for: mode)
-        }
-
-        if mode == .off {
-            return "idle"
-        }
-
-        if mode.isLiveInput {
-            switch liveMonitorState {
-            case .monitoring:
-                return "signal present"
-            case .silent, .muted:
-                return "waiting"
-            case .stopped:
-                return "ready"
-            case .unavailable, .error:
-                return "unavailable"
-            }
-        }
-
-        if mode == .filePlayback {
-            return sourceMetadata == nil ? "choose file" : "ready"
-        }
-
-        return isTestTonePlaying ? "playing" : "ready"
-    }
-
     private func webSourceButtonSeverity(for mode: SourceMode) -> String {
-        guard sourceMode == mode else {
+        guard sourceSwitchTargetMode == mode || sourceMode == mode else {
             return "ready"
         }
         return webSourceSeverity
-    }
-
-    private func webSourceSelectorDescriptor(for mode: SourceMode) -> String {
-        switch mode {
-        case .off:
-            return "idle"
-        case .roon:
-            return "ready"
-        case .spotify:
-            return "receiver ready"
-        case .aux:
-            return "input ready"
-        case .filePlayback:
-            return "ready"
-        case .testTone:
-            return "diagnostic"
-        }
     }
 
     private var webSourceSeverity: String {
@@ -947,6 +965,11 @@ extension OrbisonicViewModel {
             return "idle"
         }
         if sourceMode.isLiveInput {
+            if webSelectedLiveSourceUnavailable ||
+                (sourceMode == .spotify && webSpotifyReceiverUnavailable) ||
+                (sourceMode == .aux && webLiveInputReadyValue(expected: .auxCable) == "Missing") {
+                return "failed"
+            }
             switch liveMonitorState {
             case .monitoring:
                 return "active"
@@ -1050,85 +1073,196 @@ extension OrbisonicViewModel {
     }
 
     private var webNowPlayingTitle: String {
-        if sourceMode == .off {
+        switch sourceMode {
+        case .off:
             return "Off"
-        }
-        if sourceMode == .roon, let title = roonTransportTitleText, !title.isEmpty {
-            return title
-        }
-        if let nowPlaying = roonNowPlaying, sourceMode == .roon {
-            return nowPlaying.title
-        }
-        if sourceMode == .testTone {
+        case .roon:
+            if let title = roonTransportTitleText, !title.isEmpty {
+                return title
+            }
+            if let nowPlaying = roonNowPlaying {
+                return nowPlaying.title
+            }
+            return "Roon"
+        case .testTone:
             return selectedTestTonePoint.rawValue
-        }
-        if sourceMode == .aux {
+        case .aux:
             return "Aux Cable"
+        case .spotify:
+            return spotifyVisibleNowPlaying?.displayTitle ?? "Spotify"
+        case .filePlayback:
+            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+                return track.displayTitle
+            }
+            if let metadata = sourceMetadata {
+                return metadata.title?.trimmedNilIfBlank ?? metadata.fileName
+            }
+            return "No source loaded"
         }
-        if sourceMode == .spotify {
-            return spotifyNowPlaying?.displayTitle ?? "Spotify"
-        }
-        if sourceMode == .filePlayback, let track = currentQueueTrack ?? currentLocalMusicTrack {
-            return track.displayTitle
-        }
-        if let metadata = sourceMetadata {
-            return metadata.title?.trimmedNilIfBlank ?? metadata.fileName
-        }
-        return "No source loaded"
     }
 
     private var webNowPlayingSubtitle: String {
-        if sourceMode == .off {
+        switch sourceMode {
+        case .off:
             return "Orbisonic is idle"
-        }
-        if sourceMode == .roon, let subtitle = roonTransportSubtitleText, !subtitle.isEmpty {
-            return subtitle
-        }
-        if let nowPlaying = roonNowPlaying, sourceMode == .roon {
-            return nowPlaying.artist.isEmpty ? "Roon" : nowPlaying.artist
-        }
-        if sourceMode == .testTone {
+        case .roon:
+            if let subtitle = roonTransportSubtitleText, !subtitle.isEmpty {
+                return subtitle
+            }
+            if let nowPlaying = roonNowPlaying {
+                return nowPlaying.artist.isEmpty ? "Roon" : nowPlaying.artist
+            }
+            return "Controlled from Roon."
+        case .testTone:
             return testToneStatus
-        }
-        if sourceMode == .aux {
+        case .aux:
             return "Controlled in the source app."
+        case .spotify:
+            return spotifyVisibleNowPlaying?.artistText ?? "Controlled from Spotify Connect."
+        case .filePlayback:
+            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+                return track.displaySubtitle
+            }
+            if let metadata = sourceMetadata {
+                let albumArtist = [metadata.album?.trimmedNilIfBlank, metadata.artist?.trimmedNilIfBlank].compactMap { $0 }.joined(separator: " - ")
+                return albumArtist.isEmpty ? "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)" : albumArtist
+            }
+            return "Choose Roon, Spotify, Aux Cable, or Local Files."
         }
-        if sourceMode == .spotify {
-            return spotifyNowPlaying?.artistText ?? "Controlled from Spotify Connect."
-        }
-        if sourceMode == .filePlayback, let track = currentQueueTrack ?? currentLocalMusicTrack {
-            return track.displaySubtitle
-        }
-        if let metadata = sourceMetadata {
-            let albumArtist = [metadata.album?.trimmedNilIfBlank, metadata.artist?.trimmedNilIfBlank].compactMap { $0 }.joined(separator: " - ")
-            return albumArtist.isEmpty ? "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)" : albumArtist
-        }
-        return "Choose Roon, Spotify, Aux Cable, or Local Files."
     }
 
     private var webPlayerStatus: String {
-        if sourceMode == .off {
+        if isLiveMonitorTransitioning {
+            return sourceSwitchStatusText ?? "Stopping audio..."
+        }
+
+        switch sourceMode {
+        case .off:
             return "Orbisonic is idle"
-        }
-        if sourceMode.isLiveInput {
-            switch sourceMode {
-            case .roon:
-                return liveMonitorState == .monitoring ? "Roon playing" : "Waiting for Roon"
-            case .spotify:
-                if spotifyNowPlaying?.isPlaying == true {
-                    return "Spotify playing"
-                }
-                return spotifyNowPlaying == nil ? "No Spotify track selected" : "Spotify playback paused"
-            case .aux:
-                return liveMonitorState == .monitoring ? "Aux signal present" : "Aux has no transport"
-            case .off, .filePlayback, .testTone:
-                return liveMonitorState.statusLabel
-            }
-        }
-        if sourceMode == .testTone {
+        case .roon:
+            return webRoonPlaybackStatus
+        case .spotify:
+            return webSpotifyPlaybackStatus
+        case .aux:
+            return "Aux has no transport"
+        case .testTone:
             return isTestTonePlaying ? "Test tone playing" : "Test tone ready"
+        case .filePlayback:
+            return webLocalPlaybackStatus
         }
-        return isPlaying ? "Local playback playing" : "Local playback stopped"
+    }
+
+    private var webLocalPlaybackStatus: String {
+        if isLocalFileLoading {
+            return webCondensedLocalLoadingStatus(statusMessage)
+        }
+        if isPlaying {
+            return "Local playback playing"
+        }
+        if statusMessage.localizedCaseInsensitiveContains("paused") {
+            return "Local playback paused"
+        }
+        return "Local playback stopped"
+    }
+
+    private func webCondensedLocalLoadingStatus(_ status: String) -> String {
+        if status.hasPrefix("Starting playback") {
+            return "Starting playback..."
+        }
+        if status.hasPrefix("Loading selected track") {
+            return "Loading selected track..."
+        }
+        if status.hasPrefix("Loading previous track") {
+            return "Loading previous track..."
+        }
+        if status.hasPrefix("Loading large audio file") {
+            return "Loading large audio file..."
+        }
+        if status.hasPrefix("Still loading") {
+            return "Still loading. You can press Stop to cancel."
+        }
+        return "Loading next track..."
+    }
+
+    private var webRoonPlaybackStatus: String {
+        guard let state = roonBridgeSnapshot.selectedZone?.state.lowercased() else {
+            return liveMonitorState == .monitoring ? "Roon playing" : "Roon playback stopped"
+        }
+        switch state {
+        case "playing", "loading":
+            return "Roon playing"
+        case "paused":
+            return "Roon playback paused"
+        default:
+            return "Roon playback stopped"
+        }
+    }
+
+    private var webSpotifyPlaybackStatus: String {
+        guard spotifyReceiverStatus.isRunning else {
+            return "Spotify playback stopped"
+        }
+        if spotifyVisibleNowPlaying?.isPlaying == true {
+            return "Spotify playing"
+        }
+        return spotifyVisibleNowPlaying == nil ? "No Spotify track selected" : "Spotify playback paused"
+    }
+
+    private var webPlayerCurrentTime: String {
+        switch sourceMode {
+        case .roon:
+            return webTimeText(seconds: roonBridgeSnapshot.selectedZone?.nowPlaying?.seekPosition)
+        case .spotify:
+            return spotifyVisibleNowPlaying?.positionText ?? "0:00"
+        case .filePlayback:
+            return sourceMetadata == nil ? "0:00" : formattedCurrentTime()
+        case .off, .aux, .testTone:
+            return "0:00"
+        }
+    }
+
+    private var webPlayerDuration: String {
+        switch sourceMode {
+        case .roon:
+            return webTimeText(seconds: roonBridgeSnapshot.selectedZone?.nowPlaying?.length)
+        case .spotify:
+            return spotifyVisibleNowPlaying?.durationText ?? "0:00"
+        case .filePlayback:
+            return sourceMetadata == nil ? "0:00" : formattedDuration()
+        case .off, .aux, .testTone:
+            return "0:00"
+        }
+    }
+
+    private var webPlayerProgress: Double {
+        switch sourceMode {
+        case .roon:
+            guard let nowPlaying = roonBridgeSnapshot.selectedZone?.nowPlaying,
+                  let position = nowPlaying.seekPosition,
+                  let length = nowPlaying.length,
+                  length > 0
+            else { return 0 }
+            return min(max(position / length, 0), 1)
+        case .spotify:
+            guard let position = spotifyVisibleNowPlaying?.positionMs,
+                  let duration = spotifyVisibleNowPlaying?.durationMs,
+                  duration > 0
+            else { return 0 }
+            return min(max(Double(position) / Double(duration), 0), 1)
+        case .filePlayback:
+            return min(max(scrubProgress, 0), 1)
+        case .off, .aux, .testTone:
+            return 0
+        }
+    }
+
+    private func webTimeText(seconds: Double?) -> String {
+        guard let seconds, seconds.isFinite, seconds > 0 else {
+            return "0:00"
+        }
+
+        let totalSeconds = Int(seconds.rounded(.down))
+        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
     private var webPublicSignalText: String {
@@ -1141,7 +1275,7 @@ extension OrbisonicViewModel {
             }
             return roonNowPlayingStatus.trimmedNilIfBlank ?? liveSignalStatus
         case .spotify:
-            return spotifyNowPlaying == nil ? "Spotify Connect" : "Spotify Connect • stereo"
+            return spotifyVisibleNowPlaying == nil ? "Spotify Connect" : "Spotify Connect • stereo"
         case .aux:
             return liveMonitorState.isCapturing ? "Aux live input active" : "Aux live input idle"
         case .testTone:
@@ -1177,7 +1311,7 @@ extension OrbisonicViewModel {
             return [
                 .init(title: "Format", value: "Spotify Connect 320 kbps"),
                 .init(title: "Channels", value: "2"),
-                .init(title: "Length", value: spotifyNowPlaying?.durationText ?? "-")
+                .init(title: "Length", value: spotifyVisibleNowPlaying?.durationText ?? "-")
             ]
         case .aux:
             return [
@@ -1212,7 +1346,7 @@ extension OrbisonicViewModel {
     }
 
     private var webPlayerControls: [String] {
-        ["previous", "play", "pause", "next", "stop", "playAll", "shuffle"]
+        ["previous", "play", "pause", "stop", "next"]
     }
 
     private var webEnabledPlayerControls: [String] {
@@ -1233,13 +1367,7 @@ extension OrbisonicViewModel {
             default: return false
             }
         case .spotify:
-            guard spotifyReceiverStatus.isRunning else { return false }
-            switch control {
-            case "previous", "next": return true
-            case "play": return spotifyNowPlaying?.isPlaying != true
-            case "pause": return spotifyNowPlaying?.isPlaying == true
-            default: return false
-            }
+            return false
         case .filePlayback:
             let hasPlayableLocalSource = sourceMetadata != nil || !localMusicTracks.isEmpty
             switch control {
@@ -1251,8 +1379,6 @@ extension OrbisonicViewModel {
                 return isPlaying || isLocalFileLoading
             case "stop":
                 return hasPlayableLocalSource || isLocalFileLoading
-            case "playAll", "shuffle":
-                return !localMusicTracks.isEmpty && !isLocalFileLoading
             default:
                 return false
             }
@@ -1277,7 +1403,7 @@ extension OrbisonicViewModel {
 
     private func webMonitorOutputOptions() -> [OrbisonicWebState.Route] {
         [
-            OrbisonicWebState.Route(id: "none", name: "not set", detail: "Local monitor disabled", isSelected: monitorOutputSelectionText == "not set", isSelectable: true),
+            OrbisonicWebState.Route(id: "none", name: "not set", detail: "Output 1 Monitor disabled", isSelected: monitorOutputSelectionText == "not set", isSelectable: true),
             OrbisonicWebState.Route(id: "system", name: "System Default", detail: systemOutputNowText, isSelected: monitorOutputSelectionText.hasPrefix("System Default"), isSelectable: systemOutputRoute.isSelectableOutputTarget)
         ] + availableOutputRoutes.map { route in
             OrbisonicWebState.Route(
@@ -1292,7 +1418,7 @@ extension OrbisonicViewModel {
 
     private func webRendererOutputOptions() -> [OrbisonicWebState.Route] {
         [
-            OrbisonicWebState.Route(id: "none", name: "not set", detail: "Explicit renderer not selected", isSelected: rendererOutputSelectionText == "not set", isSelectable: true)
+            OrbisonicWebState.Route(id: "none", name: "not set", detail: "Output 2 Renderer not selected", isSelected: rendererOutputSelectionText == "not set", isSelectable: true)
         ] + availableOutputRoutes.map { route in
             OrbisonicWebState.Route(
                 id: route.uid,
@@ -1332,80 +1458,86 @@ extension OrbisonicViewModel {
     }
 
     private func performWebPlayerCommand(_ payload: OrbisonicWebCommandPayload) throws {
-        switch payload.action {
-        case "play":
-            switch sourceMode {
-            case .roon:
-                playRoonTransport()
-            case .spotify:
-                if spotifyNowPlaying?.isPlaying != true {
-                    toggleSpotifyTransport()
+        let stateBefore = debugPlaybackStateSnapshot()
+        let sourceBefore = sourceMode
+        let action = payload.action ?? ""
+        var allowed = webPlayerControlIsEnabled(action)
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                source: sourceBefore,
+                command: action,
+                allowed: allowed,
+                handler: "performWebPlayerCommand",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
+
+        do {
+            switch action {
+            case "play":
+                switch sourceMode {
+                case .roon:
+                    playRoonTransport()
+                case .filePlayback:
+                    playLocalTransport()
+                case .testTone:
+                    playSelectedTestTone()
+                case .off, .spotify, .aux:
+                    allowed = false
+                    throw OrbisonicWebCommandError.unsupportedCommand
                 }
-            case .filePlayback:
-                playLocalTransport()
-            case .testTone:
-                playSelectedTestTone()
-            case .off, .aux:
-                throw OrbisonicWebCommandError.unsupportedCommand
-            }
-        case "pause":
-            switch sourceMode {
-            case .roon:
-                pauseRoonTransport()
-            case .spotify:
-                if spotifyNowPlaying?.isPlaying == true {
-                    toggleSpotifyTransport()
+            case "pause":
+                switch sourceMode {
+                case .roon:
+                    pauseRoonTransport()
+                case .filePlayback:
+                    pauseLocalTransport()
+                case .off, .spotify, .aux, .testTone:
+                    allowed = false
+                    throw OrbisonicWebCommandError.unsupportedCommand
                 }
-            case .filePlayback:
-                pauseLocalTransport()
-            case .off, .aux, .testTone:
+            case "stop":
+                switch sourceMode {
+                case .roon:
+                    stopRoonTransport()
+                case .filePlayback:
+                    stopLocalTransport()
+                case .testTone:
+                    stop()
+                case .off, .spotify, .aux:
+                    allowed = false
+                    throw OrbisonicWebCommandError.unsupportedCommand
+                }
+            case "previous":
+                switch sourceMode {
+                case .roon:
+                    playPreviousRoonTrack()
+                case .filePlayback:
+                    skipLocalTransport(offset: -1)
+                case .off, .spotify, .aux, .testTone:
+                    allowed = false
+                    throw OrbisonicWebCommandError.unsupportedCommand
+                }
+            case "next":
+                switch sourceMode {
+                case .roon:
+                    playNextRoonTrack()
+                case .filePlayback:
+                    skipLocalTransport(offset: 1)
+                case .off, .spotify, .aux, .testTone:
+                    allowed = false
+                    throw OrbisonicWebCommandError.unsupportedCommand
+                }
+            default:
+                allowed = false
                 throw OrbisonicWebCommandError.unsupportedCommand
             }
-        case "stop":
-            switch sourceMode {
-            case .roon:
-                stopRoonTransport()
-            case .filePlayback:
-                stopLocalTransport()
-            case .testTone:
-                stop()
-            case .off, .spotify, .aux:
-                throw OrbisonicWebCommandError.unsupportedCommand
-            }
-        case "previous":
-            switch sourceMode {
-            case .roon:
-                playPreviousRoonTrack()
-            case .spotify:
-                playPreviousSpotifyTrack()
-            case .filePlayback:
-                skipLocalTransport(offset: -1)
-            case .off, .aux, .testTone:
-                throw OrbisonicWebCommandError.unsupportedCommand
-            }
-        case "next":
-            switch sourceMode {
-            case .roon:
-                playNextRoonTrack()
-            case .spotify:
-                playNextSpotifyTrack()
-            case .filePlayback:
-                skipLocalTransport(offset: 1)
-            case .off, .aux, .testTone:
-                throw OrbisonicWebCommandError.unsupportedCommand
-            }
-        case "playAll":
-            guard sourceMode == .filePlayback else {
-                throw OrbisonicWebCommandError.unsupportedCommand
-            }
-            playAllLocalMusic(shuffle: false)
-        case "shuffle":
-            guard sourceMode == .filePlayback else {
-                throw OrbisonicWebCommandError.unsupportedCommand
-            }
-            playAllLocalMusic(shuffle: true)
-        default:
-            throw OrbisonicWebCommandError.unsupportedCommand
+        } catch {
+            commandError = error.localizedDescription
+            throw error
         }
     }
 
@@ -1423,7 +1555,7 @@ extension OrbisonicViewModel {
               let mode = SourceMode(rawValue: value),
               SourceMode.musicInputs.contains(mode)
         else { throw OrbisonicWebCommandError.invalidPayload }
-        selectSourceMode(mode)
+        selectSourceMode(mode, reason: "web source selected", requestedBy: "web")
     }
 
     private func performWebInputRouteCommand(_ payload: OrbisonicWebCommandPayload) throws {
@@ -1607,7 +1739,7 @@ private extension OrbisonicWebServer {
                 <p id="signalText" class="large-line">-</p>
               </article>
               <article class="panel">
-                <h3>Renderer</h3>
+                <h3>Output 2 Renderer</h3>
                 <p id="rendererText" class="large-line">-</p>
               </article>
             </section>
@@ -1618,60 +1750,20 @@ private extension OrbisonicWebServer {
         """
     }
 
-    static var controlPageHTML: String {
-        """
-        <!doctype html>
-        <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width,initial-scale=1">
-          <title>Orbisonic Sonic Sphere Control</title>
-          <style>\(baseCSS)</style>
-        </head>
-        <body>
-          <main class="shell">
-            <section class="hero">
-              <div>
-                <p class="eyebrow">Orbisonic</p>
-                <h1>Sonic Sphere Control</h1>
-              </div>
-              <div id="statusChip" class="chip">CONNECTING</div>
-            </section>
-            <nav class="tabs">
-              <button data-tab="player" class="active">Player</button>
-              <button data-tab="input">Input</button>
-              <button data-tab="routing">Routing</button>
-              <button data-tab="local">Local Music</button>
-              <button data-tab="diagnostics">Diagnostics</button>
-              <button data-tab="status">Status</button>
-            </nav>
-            <section id="tab-player" class="tab-panel active"></section>
-            <section id="tab-input" class="tab-panel"></section>
-            <section id="tab-routing" class="tab-panel"></section>
-            <section id="tab-local" class="tab-panel"></section>
-            <section id="tab-diagnostics" class="tab-panel"></section>
-            <section id="tab-status" class="tab-panel"></section>
-          </main>
-          <script>\(controlPageJS)</script>
-        </body>
-        </html>
-        """
-    }
-
     static let baseCSS = """
-    :root{color-scheme:dark;--bg:#071014;--panel:#0d181de6;--soft:#ffffff12;--line:#d9fbff24;--text:#effcff;--muted:#9fb9bd;--cyan:#5eead4;--blue:#60a5fa;--amber:#facc15;--red:#fb7185}
+    :root{color-scheme:dark;--bg:#071014;--panel:#0d181de6;--soft:#ffffff12;--line:#d9fbff24;--text:#effcff;--muted:#9fb9bd;--cyan:#5eead4;--blue:#60a5fa;--green:#22c55e;--amber:#facc15;--red:#fb7185}
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 18% 0%,#12333a 0,#071014 36%,#02070a 100%);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
-    button,input,select{font:inherit}button{cursor:pointer}.shell{width:min(1180px,calc(100vw - 28px));margin:0 auto;padding:22px 0 34px}.public-shell{width:min(860px,calc(100vw - 28px));padding-top:42px}
+    button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed}.shell{width:min(1180px,calc(100vw - 28px));margin:0 auto;padding:22px 0 34px}.public-shell{width:min(860px,calc(100vw - 28px));padding-top:42px}
     .hero{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:16px}.eyebrow{margin:0 0 5px;color:var(--cyan);text-transform:uppercase;font-size:11px;font-weight:800;letter-spacing:.08em}h1{margin:0;font-size:28px;line-height:1.05}h2{margin:0;font-size:34px;line-height:1.05}h3{margin:0 0 10px;font-size:15px}
-    .chip{border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--muted);font-weight:900;font-size:11px;padding:7px 10px}.chip.on{background:var(--cyan);border-color:var(--cyan);color:var(--bg)}
-    .tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;padding:4px;border:1px solid var(--line);border-radius:8px;background:#050c0fb3;margin-bottom:16px}.tabs button,.btn,.icon-btn{border:1px solid var(--line);border-radius:7px;background:#ffffff0b;color:var(--muted);font-weight:800;min-height:34px;padding:7px 10px}.tabs button.active,.btn.active{border-color:#5eead48c;background:#5eead424;color:var(--text)}
+    .chip{border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--muted);font-weight:900;font-size:11px;padding:7px 10px}.chip.on{background:var(--green);border-color:var(--green);color:var(--bg)}
+    .tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;padding:4px;border:1px solid var(--line);border-radius:8px;background:#050c0fb3;margin-bottom:16px}.tabs button,.btn,.icon-btn{border:1px solid var(--line);border-radius:7px;background:#ffffff0b;color:var(--muted);font-weight:800;min-height:34px;padding:7px 10px}.tabs button.active,.btn.active{border-color:#5eead48c;background:#5eead424;color:var(--text)}.btn:disabled,.icon-btn:disabled{opacity:.46;background:#ffffff07;color:#789095}
     .tab-panel{display:none}.tab-panel.active{display:block}.grid{display:grid;gap:14px}.two{grid-template-columns:repeat(2,minmax(0,1fr))}.three{grid-template-columns:repeat(3,minmax(0,1fr))}
     .panel,.now-card{border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 18px 34px #0000005a;padding:16px}.now-card{padding:20px;margin-bottom:14px}.subtitle{color:var(--muted);font-weight:700;margin:8px 0 16px}.large-line{font-size:16px;font-weight:800;color:var(--text);margin:0}
-    .progress{height:8px;border:1px solid var(--line);border-radius:99px;background:#ffffff0a;overflow:hidden}.progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue))}
+    .progress{height:8px;border:1px solid var(--line);border-radius:99px;background:#ffffff0a;overflow:hidden}.progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue))}.progress-time{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:6px}
     .details{display:grid;gap:8px;margin-top:14px}.row{display:grid;grid-template-columns:120px minmax(0,1fr);gap:10px;align-items:start}.row b{color:var(--muted);text-transform:uppercase;font-size:11px}.row span{font-weight:750;overflow-wrap:anywhere}
-    .source-layout{display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px}.source-list{display:grid;gap:8px}.source-btn{border:1px solid var(--line);border-radius:7px;background:#ffffff0a;color:var(--text);padding:10px 11px;text-align:left;min-height:54px}.source-btn strong,.source-btn small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.source-btn strong{font-size:12px}.source-btn small{margin-top:3px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}.source-btn.active{border-color:#5eead48c;background:#5eead41b;box-shadow:inset 3px 0 0 var(--cyan)}.source-btn.active.waiting{box-shadow:inset 3px 0 0 var(--amber)}.source-btn.active.failed{box-shadow:inset 3px 0 0 var(--red)}.source-status{min-height:168px;border:1px solid var(--line);border-radius:8px;background:#ffffff08;padding:14px}.source-status-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.source-status h3{margin:3px 0 0;font-size:16px}.severity-badge{border:1px solid var(--line);border-radius:7px;padding:5px 8px;color:var(--muted);font-size:11px;font-weight:900;white-space:nowrap}.severity-badge.active{border-color:#5eead48c;color:var(--cyan)}.severity-badge.ready{border-color:#60a5fa70;color:#b8d7ff}.severity-badge.waiting{border-color:#facc1577;color:var(--amber)}.severity-badge.failed{border-color:#fb718577;color:var(--red)}.severity-badge.idle{color:var(--muted)}
+    .source-layout{display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px}.source-list{display:grid;gap:8px}.source-btn{border:1px solid var(--line);border-radius:7px;background:#ffffff0a;color:var(--text);padding:10px 11px;text-align:left;min-height:40px}.source-btn strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}.source-btn.active{border-color:#5eead48c;background:#5eead41b;box-shadow:inset 3px 0 0 var(--cyan)}.source-btn.active.active{box-shadow:inset 3px 0 0 var(--green)}.source-btn.active.waiting{box-shadow:inset 3px 0 0 var(--amber)}.source-btn.active.failed{box-shadow:inset 3px 0 0 var(--red)}.source-status{min-height:168px;border:1px solid var(--line);border-radius:8px;background:#ffffff08;padding:14px}.source-status-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.source-status h3{margin:3px 0 0;font-size:16px}.severity-badge{border:1px solid var(--line);border-radius:7px;padding:5px 8px;color:var(--muted);font-size:11px;font-weight:900;white-space:nowrap}.severity-badge.active{border-color:#22c55e8c;color:var(--green)}.severity-badge.ready{border-color:#60a5fa70;color:#b8d7ff}.severity-badge.waiting{border-color:#facc1577;color:var(--amber)}.severity-badge.failed{border-color:#fb718577;color:var(--red)}.severity-badge.idle{color:var(--muted)}
     .player-head{display:grid;grid-template-columns:82px minmax(0,1fr);gap:14px;align-items:center}.artwork{width:82px;height:82px;border-radius:8px;border:1px solid var(--line);object-fit:cover;background:#ffffff0b}.slider-row{display:grid;grid-template-columns:70px minmax(0,1fr) 42px;gap:10px;align-items:center;margin-top:12px}.slider-row input{accent-color:var(--cyan);width:100%}.slider-row code{font-weight:900;color:var(--cyan);font-size:13px}.error{border-color:#fb718577;background:#fb718517;color:#ffd5dc}
-    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.list{display:grid;gap:7px;max-height:470px;overflow:auto;padding-right:4px}.item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid transparent;border-radius:8px;background:#ffffff09;padding:9px 10px}.item.current,.item.selected{border-color:#5eead473;background:#5eead41a}.item.pending{border-color:#facc1573;background:#facc1517}.item-title{font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.item-sub{color:var(--muted);font-size:12px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.item-actions{display:flex;gap:5px;align-items:center}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.transport-note{margin:8px 0 0;color:var(--muted);font-size:12px;font-weight:800}.list{display:grid;gap:7px;max-height:470px;overflow:auto;padding-right:4px}.item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid transparent;border-radius:8px;background:#ffffff09;padding:9px 10px}.item.current,.item.selected{border-color:#5eead473;background:#5eead41a}.item.pending{border-color:#facc1573;background:#facc1517}.item-title{font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.item-sub{color:var(--muted);font-size:12px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.item-actions{display:flex;gap:5px;align-items:center}
     .form-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}.form-row input,.form-row select{min-height:34px;border:1px solid var(--line);border-radius:7px;background:#00000029;color:var(--text);padding:7px 10px}.form-row input{flex:1}.form-row select{min-width:170px}.url-row{display:grid;grid-template-columns:110px minmax(0,1fr) 42px;gap:10px;align-items:center;margin:8px 0}.url-row code{font-size:12px;color:var(--text);background:#0000002e;border:1px solid var(--line);border-radius:7px;padding:8px;overflow:auto}.muted{color:var(--muted)}@media(max-width:760px){.hero{align-items:flex-start;flex-direction:column}.tabs{grid-template-columns:repeat(2,1fr)}.two,.three,.source-layout{grid-template-columns:1fr}.row,.url-row{grid-template-columns:1fr}h2{font-size:27px}}
     """
 
@@ -1692,27 +1784,4 @@ private extension OrbisonicWebServer {
     load();setInterval(load,1500);
     """
 
-    static let controlPageJS = """
-    const tokenParams=new URLSearchParams(location.hash.replace(/^#/,''));
-    const token=tokenParams.get('token')||localStorage.getItem('orbisonic-token')||'';
-    if(token) localStorage.setItem('orbisonic-token',token);
-    const $=id=>document.getElementById(id);
-    let state=null;
-    function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-    function post(path,payload={}){return fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Orbisonic-Token':token},body:JSON.stringify(payload)}).then(r=>r.json()).then(j=>{if(!j.ok)throw new Error(j.message);state=j.state;render();return j})}
-    async function load(){try{const r=await fetch('/Orbisonic/api/state',{headers:{'X-Orbisonic-Token':token},cache:'no-store'});const j=await r.json();if(j.ok===false)throw new Error(j.message);state=j;render()}catch(e){$('statusChip').textContent=token?'OFFLINE':'TOKEN NEEDED';$('tab-status').innerHTML=`<article class="panel"><h3>Status</h3><p class="muted">${esc(e.message||e)}</p></article>`}}
-    function button(label,action,active=false,enabled=true){return `<button class="btn ${active?'active':''}" ${enabled?'':'disabled'} onclick="${enabled?action:''}">${label}</button>`}
-    function rows(items){return (items||[]).map(r=>`<div class="row"><b>${esc(r.title)}</b><span>${esc(r.value)}</span></div>`).join('')}
-    function sourceButton(b){const sev=esc(b.severity||'ready');return `<button class="source-btn ${b.isSelected?'active':''} ${sev}" onclick="post('/Orbisonic/api/input/source',{value:'${esc(b.value)}'})"><strong>${esc(b.title)}</strong><small>${esc(b.subtitle)}</small></button>`}
-    function renderPlayer(){const p=state.player;const enabled=new Set(p.enabledControls||[]);const art=p.artworkURL?`<img class="artwork" src="${esc(p.artworkURL)}" alt="">`:`<div class="artwork"></div>`;$('tab-player').innerHTML=`<article class="now-card"><div class="player-head">${art}<div><p class="eyebrow">${esc(p.source)}</p><h2>${esc(p.title)}</h2><p class="subtitle">${esc(p.subtitle)}</p></div></div><div class="progress"><span style="width:${(p.progress*100).toFixed(1)}%"></span></div><div class="controls">${p.controls.map(c=>button(labelFor(c),`post('/Orbisonic/api/player/control',{action:'${c}'})`,c==='play'&&p.isPlaying,enabled.has(c))).join('')}</div><div class="slider-row"><b>Orbisonic Output Volume</b><input type="range" min="0" max="100" value="${p.volume}" oninput="document.getElementById('volText').textContent=this.value" onchange="post('/Orbisonic/api/player/volume',{value:this.value})"><code id="volText">${p.volume}</code></div><div class="details">${rows(p.details)}</div></article>`}
-    function labelFor(c){return {previous:'Back',play:'Play',pause:'Pause',stop:'Stop',next:'Forward',playAll:'Play All',shuffle:'Shuffle'}[c]||c}
-    function renderInput(){const i=state.input;const p=i.sourcePanel||{};const sev=esc(p.severity||'idle');$('tab-input').innerHTML=`<article class="panel"><h3>Source</h3><div class="source-layout"><div class="source-list">${(i.sourceButtons||[]).map(sourceButton).join('')}</div><div class="source-status ${sev}"><div class="source-status-head"><div><p class="eyebrow">${esc(p.title||i.source)}</p><h3>${esc(p.headline||i.status)}</h3></div><span class="severity-badge ${sev}">${esc(p.isSwitching?'Switching':p.status||i.status)}</span></div><p class="subtitle">${esc(p.body||'')}</p><div class="details">${rows(p.rows||[])}</div></div></div></article>`}
-    function renderRouting(){const r=state.routing;$('tab-routing').innerHTML=`<article class="panel"><h3>Signal Flow</h3><div class="details"><div class="row"><b>Source</b><span>${esc(r.source)}</span></div><div class="row"><b>Incoming</b><span>${esc(r.incoming)}</span></div><div class="row"><b>Monitor</b><span>${esc(r.monitorOutput)} • ${esc(r.monitorStatus)}</span></div><div class="row"><b>Renderer</b><span>${esc(r.rendererOutput)} • ${esc(r.rendererStatus)}</span></div><div class="row"><b>Matrix</b><span>${esc(r.rendererScene)}</span></div></div></article>`}
-    function renderLocal(){const l=state.localMusic;if(!l){return}$('tab-local').innerHTML=`<div class="form-row"><input id="musicSearch" value="${esc(l.search)}" placeholder="Search song, artist, album"><select id="musicSort"><option ${l.sort==='Name'?'selected':''}>Name</option><option ${l.sort==='Artist'?'selected':''}>Artist</option><option ${l.sort==='Album'?'selected':''}>Album</option></select><button class="btn active" onclick="post('/Orbisonic/api/local-music/search',{query:document.getElementById('musicSearch').value,sort:document.getElementById('musicSort').value})">Apply</button></div><div class="grid two"><article class="panel"><h3>Tracks</h3><p class="muted">${esc(l.count)}</p><div class="list">${l.tracks.map(t=>`<div class="item ${t.isCurrent?'current':t.isPending?'pending':t.isSelected?'selected':''}"><div><div class="item-title">${esc(t.title)}</div><div class="item-sub">${esc(t.subtitle)} • ${esc(t.channels)} • ${esc(t.duration)}</div></div></div>`).join('')}</div></article><article class="panel"><h3>Playlists</h3><div class="list">${l.playlists.map(p=>`<div class="item ${p.isSelected?'selected':''}"><div><div class="item-title">${esc(p.name)}</div><div class="item-sub">${esc(p.fileName)} • ${p.trackCount} tracks</div></div></div>`).join('')}</div></article></div>`}
-    function renderDiagnostics(){const d=state.diagnostics;$('tab-diagnostics').innerHTML=`<div class="grid three"><article class="panel"><h3>Monitor Channel Walk</h3><p class="large-line">${d.monitorChannelCount} ch</p><div class="controls">${button('Walk Monitor',`post('/Orbisonic/api/diagnostics',{action:'monitorWalk'})`,d.isRunning)}${button('Stop',`post('/Orbisonic/api/diagnostics',{action:'stop'})`)}</div></article><article class="panel"><h3>Renderer Channel Walk</h3><p class="large-line">${d.rendererChannelCount} ch</p><div class="controls">${button('Walk Renderer',`post('/Orbisonic/api/diagnostics',{action:'rendererWalk'})`,d.isRunning)}${button('Stop',`post('/Orbisonic/api/diagnostics',{action:'stop'})`)}</div></article><article class="panel"><h3>Test Tone</h3><div class="form-row"><input id="diagChannel" type="number" min="1" max="${d.rendererChannelCount}" value="${d.selectedChannel||1}"></div><div class="controls">${button('Play Tone',`post('/Orbisonic/api/diagnostics',{action:'testTone',index:Number(document.getElementById('diagChannel').value)||1})`,d.isRunning)}${button('Stop',`post('/Orbisonic/api/diagnostics',{action:'stop'})`)}</div></article></div><article class="panel" style="margin-top:14px"><h3>Status</h3><div class="details"><div class="row"><b>Active</b><span>${esc(d.isTransitioning?'Settling audio handoff':d.active)}</span></div><div class="row"><b>Tone</b><span>${esc(d.toneStatus)}</span></div></div></article>`}
-    function renderStatus(){const u=state.urls;const err=state.build.lastError?`<article class="panel error"><h3>Desktop Error</h3><p>${esc(state.build.lastError)}</p></article>`:'';$('tab-status').innerHTML=`${err}<article class="panel"><h3>Web Pages</h3><div class="url-row"><b>Public</b><code>${esc(u.publicPage)}</code><button class="icon-btn" onclick="navigator.clipboard.writeText('${esc(u.publicPage)}')">Copy</button></div><div class="url-row"><b>Control</b><code>${esc(u.controlPage||'')}</code><button class="icon-btn" onclick="navigator.clipboard.writeText('${esc(u.controlPage||'')}')">Copy</button></div><div class="details"><div class="row"><b>Server</b><span>${esc(state.build.webServer)}</span></div><div class="row"><b>IP</b><span>${esc(state.build.machineIP)}</span></div><div class="row"><b>Build</b><span>${esc(state.build.appVersion)} (${esc(state.build.buildNumber)})</span></div><div class="row"><b>App</b><span>${esc(state.build.appStatus)}</span></div></div></article>`}
-    function render(){if(!state)return;$('statusChip').textContent=state.player.status;$('statusChip').classList.toggle('on',state.player.isPlaying);renderPlayer();renderInput();renderRouting();renderLocal();renderDiagnostics();renderStatus()}
-    document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById('tab-'+b.dataset.tab).classList.add('active')});
-    load();setInterval(load,1500);
-    """
 }

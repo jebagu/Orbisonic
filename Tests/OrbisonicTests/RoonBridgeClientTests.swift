@@ -45,6 +45,9 @@ final class RoonBridgeClientTests: XCTestCase {
             "now_playing": {
               "seek_position": 42,
               "length": 240,
+              "image_key": "roon-image-1",
+              "album_id": "album-1",
+              "track_id": "track-1",
               "three_line": {
                 "line1": "Money",
                 "line2": "Pink Floyd",
@@ -67,6 +70,9 @@ final class RoonBridgeClientTests: XCTestCase {
         XCTAssertEqual(snapshot.audioPathText, "Orbisonic Roon Input")
         XCTAssertEqual(snapshot.selectedZone?.titleText, "Money")
         XCTAssertEqual(snapshot.selectedZone?.subtitleText, "Pink Floyd - The Dark Side of the Moon")
+        XCTAssertEqual(snapshot.selectedZone?.nowPlaying?.imageKey, "roon-image-1")
+        XCTAssertEqual(snapshot.selectedZone?.nowPlaying?.artworkRequest?.imageKey, "roon-image-1")
+        XCTAssertEqual(snapshot.selectedZone?.nowPlaying?.artworkRequest?.stableKey, "image:roon-image-1")
         XCTAssertEqual(snapshot.selectedZone?.allows(.pause), true)
         XCTAssertEqual(snapshot.selectedZone?.allows(.play), false)
         XCTAssertEqual(snapshot.selectedZone?.allows(.stop), true)
@@ -91,5 +97,20 @@ final class RoonBridgeClientTests: XCTestCase {
         XCTAssertFalse(snapshot.isReadyForTransport)
         XCTAssertEqual(snapshot.compactStatusText, "Enable in Roon")
         XCTAssertEqual(snapshot.statusText, "Open Roon Settings > Extensions and enable Orbisonic Roon Bridge.")
+    }
+
+    func testRoonArtworkCacheStoresAndReusesStableImageFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("orbisonic-roon-artwork-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = RoonArtworkCache(directoryURL: directory)
+        let data = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        let storedURL = try cache.store(data, for: "image:roon-image-1")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+        XCTAssertEqual(cache.cachedURL(for: "image:roon-image-1"), storedURL)
+        XCTAssertNil(cache.cachedURL(for: "image:missing"))
+        XCTAssertEqual(try Data(contentsOf: storedURL), data)
     }
 }

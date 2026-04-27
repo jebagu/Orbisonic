@@ -62,11 +62,68 @@ private struct LocalFileQueueCommit {
     let isNaturalAdvance: Bool
 }
 
+private enum LocalFileLoadStartPolicy {
+    case immediate
+    case debounced
+}
+
+private enum LocalFileLoadKind {
+    case startingPlayback
+    case selectedTrack
+    case nextTrack
+    case previousTrack
+    case naturalAdvance
+
+    func immediateStatus(trackTitle: String?, fileName: String) -> String {
+        switch self {
+        case .startingPlayback:
+            return "Starting playback..."
+        case .selectedTrack:
+            return "Loading selected track: \(trackTitle ?? fileName)..."
+        case .nextTrack:
+            return "Loading next track: \(trackTitle ?? fileName)..."
+        case .previousTrack:
+            return "Loading previous track: \(trackTitle ?? fileName)..."
+        case .naturalAdvance:
+            return "Loading next track: \(trackTitle ?? fileName)..."
+        }
+    }
+
+    func subtleStatus(trackTitle: String?, fileName: String) -> String {
+        switch self {
+        case .startingPlayback:
+            return "Preparing local playback..."
+        case .selectedTrack:
+            return "Loading selected track..."
+        case .nextTrack:
+            return "Loading next track..."
+        case .previousTrack:
+            return "Loading previous track..."
+        case .naturalAdvance:
+            return "Loading next track..."
+        }
+    }
+
+    func clearStatus(trackTitle: String?, fileName: String) -> String {
+        "Loading large audio file: \(trackTitle ?? fileName)..."
+    }
+
+    var stillLoadingStatus: String {
+        "Still loading. You can press Stop to cancel."
+    }
+}
+
 private struct LocalFileLoadRequest {
     let id: UInt64
+    let generation: UInt64
     let url: URL
     let autoplay: Bool
     let queueCommit: LocalFileQueueCommit?
+    let kind: LocalFileLoadKind
+    let startPolicy: LocalFileLoadStartPolicy
+    let debugTiming: DebugTimingContext?
+    let requestedFromSource: SourceMode
+    let isLocalPlayNow: Bool
 }
 
 enum LiveChannelCountPolicy {
@@ -131,18 +188,18 @@ private enum DiagnosticChannelWalkKind {
     var title: String {
         switch self {
         case .monitor:
-            "Monitor Channel Walk"
+            "Output 1 Monitor Channel Walk"
         case .renderer:
-            "Renderer Channel Walk"
+            "Output 2 Renderer Channel Walk"
         }
     }
 
     var shortTitle: String {
         switch self {
         case .monitor:
-            "Monitor"
+            "Output 1 Monitor"
         case .renderer:
-            "Renderer"
+            "Output 2 Renderer"
         }
     }
 }
@@ -191,9 +248,9 @@ private enum OutputPurpose: Equatable {
     var title: String {
         switch self {
         case .monitor:
-            "Monitor"
+            "Output 1 Monitor"
         case .renderer:
-            "Renderer"
+            "Output 2 Renderer"
         }
     }
 
@@ -214,7 +271,12 @@ final class OrbisonicViewModel: ObservableObject {
     private static let roonLogRefreshInterval: TimeInterval = 5.0
     private static let roonBridgeRefreshInterval: TimeInterval = 2.0
     private static let spotifyNowPlayingRefreshInterval: TimeInterval = 0.5
+    private static let spotifyPlaybackStatusDebounceNanoseconds: UInt64 = 300_000_000
     private static let spotifyConnectRestartDebounce: TimeInterval = 8.0
+    private static let localTransportDebounceNanoseconds: UInt64 = 120_000_000
+    private static let localLoadSubtleStatusNanoseconds: UInt64 = 150_000_000
+    private static let localLoadClearStatusNanoseconds: UInt64 = 700_000_000
+    private static let localLoadStillLoadingNanoseconds: UInt64 = 5_000_000_000
     private static let webControlTokenKey = "Orbisonic.webControlToken"
     private static let localMusicSortModeKey = "Orbisonic.localMusicSortMode"
     private static let rendererOptionsKey = "Orbisonic.rendererOptions"
@@ -226,6 +288,7 @@ final class OrbisonicViewModel: ObservableObject {
     private static let sourceRampDownDuration: TimeInterval = 0.04
     private static let sourcePrimeDuration: TimeInterval = 0.08
     private static let sourceRampUpDuration: TimeInterval = 0.08
+    private static let localPlayNowSourceSwitchTimeout: TimeInterval = 2.0
     private static var isRunningUnitTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
             NSClassFromString("XCTest.XCTestCase") != nil
@@ -342,8 +405,10 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var roonNowPlayingStatus = "Roon metadata not requested yet."
     @Published private(set) var roonSignalPath: RoonSignalPath?
     @Published private(set) var roonBridgeSnapshot: RoonBridgeSnapshot = .unavailable
+    @Published private(set) var roonArtworkURL: URL?
     @Published private(set) var spotifyReceiverStatus: SpotifyReceiverStatus = .notStarted
     @Published private(set) var spotifyNowPlaying: SpotifyNowPlaying?
+    @Published private(set) var spotifyVisibleNowPlaying: SpotifyNowPlaying?
     @Published private(set) var localMusicSettings = LocalMusicSettings()
     @Published private(set) var localMusicTracks: [LocalMusicTrack] = []
     @Published private(set) var localMusicPlaylists: [LocalMusicPlaylist] = []
@@ -378,6 +443,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
     @Published private(set) var isRoonTransportCommandInFlight = false
     @Published private(set) var isLiveMonitorTransitioning = false
+    @Published private(set) var sourceSwitchTargetMode: SourceMode?
     @Published private(set) var isLocalFileLoading = false
 
     let meterStore = ChannelMeterStore()
@@ -385,11 +451,12 @@ final class OrbisonicViewModel: ObservableObject {
     let rendererMeterStore = ChannelMeterStore()
 
     private let engine = OrbisonicEngine()
-    private let localAudioLoader: @Sendable (URL) throws -> LoadedAudioFile
+    private let localAudioLoader: @Sendable (URL, DebugTimingContext?) throws -> LoadedAudioFile
     private let localMusicLibrary = LocalMusicLibrary()
     private let rendererPresetStore = RendererPresetStore()
     private let roonNowPlayingReader = RoonNowPlayingReader()
     private let roonBridgeClient = RoonBridgeClient()
+    private let roonArtworkCache = RoonArtworkCache()
     private let spotifyReceiverClient = SpotifyReceiverClient()
     private var webServer: OrbisonicWebServer?
     private var webControlToken = OrbisonicViewModel.loadOrCreateWebControlToken()
@@ -408,10 +475,21 @@ final class OrbisonicViewModel: ObservableObject {
     private var rendererDiagnosticsUsingMonitorPreview = false
     private var rendererDiagnosticsMonitorDownmixAvailable = false
     private var localMusicScanTask: Task<Void, Never>?
+    private var localPlayNowTask: Task<Void, Never>?
+    private var localPlayNowSequence: UInt64 = 0
     private var localFileLoadTask: Task<Void, Never>?
+    private var localFileLoadDebounceTask: Task<Void, Never>?
+    private var localFileLoadStatusTask: Task<Void, Never>?
+    private var spotifyPlaybackStatusDebounceTask: Task<Void, Never>?
     private var localFileLoadSequence: UInt64 = 0
+    private var currentLocalFileLoadGeneration: UInt64 = 0
     private var activeLocalFileLoadRequest: LocalFileLoadRequest?
     private var queuedLocalFileLoadRequest: LocalFileLoadRequest?
+    private var readyQueuedLocalFileLoadGeneration: UInt64?
+    private var pendingSourceSwitchTiming: DebugTimingContext?
+    private var pendingSourceSwitchReason: String?
+    private var pendingSourceSwitchRequestedBy: String?
+    private var mainActorHeartbeatTask: Task<Void, Never>?
     private var lastRouteRefreshTime = Date.distantPast
     private var lastRoonNowPlayingRefreshTime = Date.distantPast
     private var lastRoonBridgeRefreshTime = Date.distantPast
@@ -421,16 +499,32 @@ final class OrbisonicViewModel: ObservableObject {
     private var isRoonLogRefreshInFlight = false
     private var isRoonBridgeRefreshInFlight = false
     private var lastLoggedRoonBridgeStatus: String?
+    private var roonArtworkFetchTask: Task<Void, Never>?
+    private var roonArtworkRequestedKey: String?
+    private var roonArtworkFailedKeys: Set<String> = []
+    private var lastLoggedRoonArtworkMissingSignature: String?
+    private var lastLoggedSpotifyStatusSignature: String?
     private var selectedInputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedInputDeviceUIDKey)
     private var monitorOutputSelection = OrbisonicViewModel.loadMonitorOutputSelection()
     private var rendererOutputSelection = OrbisonicViewModel.loadRendererOutputSelection()
     private var suppressTuningPublish = false
     private var suppressRendererPublish = false
 
-    init(localAudioLoader: @escaping @Sendable (URL) throws -> LoadedAudioFile = { url in
-        try AudioFileLoader().load(url: url)
-    }) {
-        self.localAudioLoader = localAudioLoader
+    init() {
+        self.localAudioLoader = { url, debugTiming in
+            try AudioFileLoader().load(url: url, debugTiming: debugTiming)
+        }
+        finishInitialization()
+    }
+
+    init(localAudioLoader: @escaping @Sendable (URL) throws -> LoadedAudioFile) {
+        self.localAudioLoader = { url, _ in
+            try localAudioLoader(url)
+        }
+        finishInitialization()
+    }
+
+    private func finishInitialization() {
         AppLogger.shared.notice(category: "view-model", "View model initialized.")
 
         engine.onPlaybackEnded = { [weak self] in
@@ -459,6 +553,7 @@ final class OrbisonicViewModel: ObservableObject {
         }
         timer.tolerance = 1.0 / 120.0
         refreshTimer = timer
+        startMainActorResponsivenessHeartbeat()
     }
 
     private static func loadMonitorOutputSelection() -> OutputSelectionMode {
@@ -570,18 +665,57 @@ final class OrbisonicViewModel: ObservableObject {
         testToneStopTask?.cancel()
         diagnosticSequenceTask?.cancel()
         localMusicScanTask?.cancel()
+        localPlayNowTask?.cancel()
         localFileLoadTask?.cancel()
+        localFileLoadDebounceTask?.cancel()
+        localFileLoadStatusTask?.cancel()
+        roonArtworkFetchTask?.cancel()
+        spotifyPlaybackStatusDebounceTask?.cancel()
         sourceSwitchTask?.cancel()
+        mainActorHeartbeatTask?.cancel()
         webServer?.stop()
         roonBridgeClient.stop()
         spotifyReceiverClient.stop()
         refreshTimer?.invalidate()
     }
 
+    private func startMainActorResponsivenessHeartbeat() {
+        #if DEBUG
+        mainActorHeartbeatTask?.cancel()
+        mainActorHeartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                } catch {
+                    return
+                }
+
+                guard self != nil else { return }
+                let scheduled = DispatchTime.now().uptimeNanoseconds
+                await MainActor.run { [weak self] in
+                    guard self != nil else { return }
+                    let delayMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - scheduled) / 1_000_000.0
+                    if delayMilliseconds > 100 {
+                        let context = DebugTimingLog.makeCommand(prefix: "main-actor", sourceMode: self?.sourceMode)
+                        context.log(
+                            "Main actor delayed by \(String(format: "%.1f", delayMilliseconds)) ms",
+                            sourceMode: self?.sourceMode,
+                            sessionQueueIndex: self?.sessionQueueIndex,
+                            selectedSessionQueueIndex: self?.selectedSessionQueueIndex,
+                            pendingSessionQueueIndex: self?.pendingSessionQueueIndex,
+                            extra: ["delayMs=\(String(format: "%.1f", delayMilliseconds))"]
+                        )
+                    }
+                }
+            }
+        }
+        #endif
+    }
+
     func refreshWebPageURLs() {
         let urls = OrbisonicWebServer.urlSet(controlToken: webControlToken)
         webPublicPageURL = urls.publicURL
-        webControlPageURL = urls.controlURL
+        webControlPageURL = ""
     }
 
     var webControlTokenForLocalServer: String {
@@ -659,7 +793,7 @@ final class OrbisonicViewModel: ObservableObject {
         UserDefaults.standard.set(token, forKey: Self.webControlTokenKey)
         refreshWebPageURLs()
         webServer?.updateControlToken(token)
-        statusMessage = "Reset control token. Old control URLs no longer work."
+        statusMessage = "Updated local web access."
     }
 
     func saveDiagnosticBundle() {
@@ -712,7 +846,6 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func diagnosticReportText() -> String {
         let logText = (try? String(contentsOf: AppLogger.logFileURL, encoding: .utf8)) ?? "Log file unavailable."
-        let redactedControlURL = redactSensitiveText(webControlPageURL)
         let redactedLog = redactSensitiveText(logText)
 
         let rows: [String] = [
@@ -728,7 +861,6 @@ final class OrbisonicViewModel: ObservableObject {
             "Host: \(Host.current().localizedName ?? "unknown")",
             "Web Host: \(webHostText)",
             "Public URL: \(redactedPath(webPublicPageURL))",
-            "Control URL: \(redactedPath(redactedControlURL))",
             "Web Status: \(webServerStatus)",
             "",
             "Player",
@@ -741,8 +873,8 @@ final class OrbisonicViewModel: ObservableObject {
             "Routes",
             "Input: \(inputNowText)",
             "System Input: \(systemInputNowText)",
-            "Monitor Output: \(monitorOutputSelectionText) | \(monitorOutputNowText) | \(monitorOutputStatusText)",
-            "Renderer Output: \(rendererOutputSelectionText) | \(rendererOutputNowText) | \(rendererOutputStatusText)",
+            "Output 1 Monitor: \(monitorOutputSelectionText) | \(monitorOutputNowText) | \(monitorOutputStatusText)",
+            "Output 2 Renderer: \(rendererOutputSelectionText) | \(rendererOutputNowText) | \(rendererOutputStatusText)",
             "System Output: \(systemOutputNowText)",
             "",
             "Renderer",
@@ -796,21 +928,338 @@ final class OrbisonicViewModel: ObservableObject {
         return value.replacingOccurrences(of: home, with: "~")
     }
 
-    func selectSourceMode(_ mode: SourceMode) {
+    private func debugTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = .current
+        return formatter.string(from: date)
+    }
+
+    private func debugQuote(_ value: String) -> String {
+        "\"\(value.replacingOccurrences(of: "\"", with: "'").replacingOccurrences(of: "\n", with: " "))\""
+    }
+
+    private func liveMonitorDebugState() -> String {
+        switch liveMonitorState {
+        case .stopped:
+            return "stopped"
+        case .monitoring:
+            return "monitoring"
+        case .muted:
+            return "muted"
+        case .silent:
+            return "silent"
+        case .unavailable(let message):
+            return "unavailable:\(message)"
+        case .error(let message):
+            return "error:\(message)"
+        }
+    }
+
+    func debugPlaybackStateSnapshot() -> String {
+        [
+            "source=\(sourceMode.rawValue)",
+            "playing=\(isPlaying)",
+            "localLoading=\(isLocalFileLoading)",
+            "liveMonitor=\(liveMonitorDebugState())",
+            "file=\(currentFileURL.map { redactedPath($0.path) } ?? "-")",
+            "queueIndex=\(sessionQueueIndex.map(String.init) ?? "-")",
+            "pendingQueueIndex=\(pendingSessionQueueIndex.map(String.init) ?? "-")",
+            "roonPlaying=\(isRoonTransportPlaying)",
+            "spotifyPlaying=\(spotifyNowPlaying?.isPlaying.description ?? "-")",
+            "spotifyVisiblePlaying=\(spotifyVisibleNowPlaying?.isPlaying.description ?? "-")"
+        ].joined(separator: ",")
+    }
+
+    func logTransportDebug(
+        source: SourceMode? = nil,
+        command: String,
+        allowed: Bool,
+        handler: String,
+        stateBefore: String,
+        stateAfter: String? = nil,
+        error: String? = nil
+    ) {
+        let activeSource = source ?? sourceMode
+        let fields = [
+            "source=\(debugQuote(activeSource.rawValue))",
+            "command=\(debugQuote(command))",
+            "allowed=\(allowed)",
+            "handler=\(debugQuote(handler))",
+            "stateBefore=\(debugQuote(stateBefore))",
+            "stateAfter=\(debugQuote(stateAfter ?? debugPlaybackStateSnapshot()))",
+            "error=\(debugQuote(error ?? ""))"
+        ]
+        AppLogger.shared.debug(category: "transport", "[transport] \(fields.joined(separator: " "))")
+    }
+
+    private func logSourceSwitchDebug(
+        _ event: String,
+        context: DebugTimingContext?,
+        from previousSource: SourceMode,
+        to nextSource: SourceMode,
+        reason: String,
+        requestedBy: String,
+        completedAt: Date? = nil,
+        success: Bool? = nil,
+        error: String? = nil
+    ) {
+        let startedAt = context?.enabled == true ? context?.startedAt ?? Date() : Date()
+        let fields = [
+            "event=\(debugQuote(event))",
+            "id=\(debugQuote(context?.enabled == true ? context?.id ?? "" : ""))",
+            "from=\(debugQuote(previousSource.rawValue))",
+            "to=\(debugQuote(nextSource.rawValue))",
+            "reason=\(debugQuote(reason))",
+            "requestedBy=\(debugQuote(requestedBy))",
+            "startedAt=\(debugQuote(debugTimestamp(startedAt)))",
+            "completedAt=\(debugQuote(completedAt.map(debugTimestamp) ?? ""))",
+            "success=\(success.map { $0 ? "true" : "false" } ?? "pending")",
+            "error=\(debugQuote(error ?? ""))"
+        ]
+        AppLogger.shared.debug(category: "source", "[source-switch] \(fields.joined(separator: " "))")
+    }
+
+    private func logLocalPlayNowDebug(
+        _ event: String,
+        selectedTrack: LocalMusicTrack?,
+        previousSource: SourceMode,
+        sourceSwitchRequired: Bool,
+        sourceSwitchStarted: Bool = false,
+        sourceSwitchSuccess: Bool = false,
+        loadStarted: Bool = false,
+        loadCompleted: Bool = false,
+        playStarted: Bool = false,
+        finalState: String? = nil,
+        error: String? = nil
+    ) {
+        let fields = [
+            "event=\(debugQuote(event))",
+            "selectedTrack=\(debugQuote(selectedTrack?.displayTitle ?? ""))",
+            "previousSource=\(debugQuote(previousSource.rawValue))",
+            "sourceSwitchRequired=\(sourceSwitchRequired)",
+            "sourceSwitchStarted=\(sourceSwitchStarted)",
+            "sourceSwitchSuccess=\(sourceSwitchSuccess)",
+            "loadStarted=\(loadStarted)",
+            "loadCompleted=\(loadCompleted)",
+            "playStarted=\(playStarted)",
+            "finalState=\(debugQuote(finalState ?? debugPlaybackStateSnapshot()))",
+            "error=\(debugQuote(error ?? ""))"
+        ]
+        AppLogger.shared.debug(category: "local-music", "[local-play-now] \(fields.joined(separator: " "))")
+    }
+
+    private func logLocalPlayNowDebug(
+        _ event: String,
+        request: LocalFileLoadRequest,
+        loadStarted: Bool = false,
+        loadCompleted: Bool = false,
+        playStarted: Bool = false,
+        finalState: String? = nil,
+        error: String? = nil
+    ) {
+        guard request.isLocalPlayNow else { return }
+        logLocalPlayNowDebug(
+            event,
+            selectedTrack: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            previousSource: request.requestedFromSource,
+            sourceSwitchRequired: request.requestedFromSource != .filePlayback,
+            loadStarted: loadStarted,
+            loadCompleted: loadCompleted,
+            playStarted: playStarted,
+            finalState: finalState,
+            error: error
+        )
+    }
+
+    private func spotifyDebugStateText(_ state: SpotifyNowPlaying?) -> String {
+        guard let state else { return "nil" }
+        return [
+            "playing=\(state.isPlaying)",
+            "position=\(state.positionMs.map(String.init) ?? "-")",
+            "duration=\(state.durationMs.map(String.init) ?? "-")",
+            "updatedAt=\(state.updatedAt ?? "-")"
+        ].joined(separator: ",")
+    }
+
+    private func logSpotifyStatusDebug(
+        rawState: SpotifyNowPlaying?,
+        debouncedState: SpotifyNowPlaying?,
+        reasonForUpdate: String
+    ) {
+        let rawStateText = spotifyDebugStateText(rawState)
+        let debouncedStateText = spotifyDebugStateText(debouncedState)
+
+        let trackText = rawState.map { "\($0.displayTitle) - \($0.artistText)" } ?? ""
+        let signature = [
+            rawStateText,
+            debouncedStateText,
+            trackText,
+            sourceMode.rawValue,
+            reasonForUpdate
+        ].joined(separator: "|")
+        guard signature != lastLoggedSpotifyStatusSignature else { return }
+        lastLoggedSpotifyStatusSignature = signature
+
+        let fields = [
+            "rawState=\(debugQuote(rawStateText))",
+            "debouncedState=\(debugQuote(debouncedStateText))",
+            "track=\(debugQuote(trackText))",
+            "timestamp=\(debugQuote(debugTimestamp(Date())))",
+            "activeSource=\(debugQuote(sourceMode.rawValue))",
+            "reasonForUpdate=\(debugQuote(reasonForUpdate))"
+        ]
+        AppLogger.shared.debug(category: "spotify-status", "[spotify-status] \(fields.joined(separator: " "))")
+    }
+
+    private func logOutputRoutingDebug(
+        output: String,
+        previousDevice: String,
+        newDevice: String,
+        playbackStateBefore: String,
+        graphRebuild: Bool,
+        playbackStateAfter: String? = nil,
+        error: String? = nil
+    ) {
+        let fields = [
+            "output=\(debugQuote(output))",
+            "previousDevice=\(debugQuote(previousDevice))",
+            "newDevice=\(debugQuote(newDevice))",
+            "activeSource=\(debugQuote(sourceMode.rawValue))",
+            "playbackStateBefore=\(debugQuote(playbackStateBefore))",
+            "graphRebuild=\(graphRebuild)",
+            "playbackStateAfter=\(debugQuote(playbackStateAfter ?? debugPlaybackStateSnapshot()))",
+            "error=\(debugQuote(error ?? ""))"
+        ]
+        AppLogger.shared.debug(category: "route", "[output-routing] \(fields.joined(separator: " "))")
+    }
+
+    private func logLocalTransportTiming(
+        _ context: DebugTimingContext?,
+        _ event: String,
+        targetQueueIndex: Int? = nil,
+        track: LocalMusicTrack? = nil,
+        fileURL: URL? = nil,
+        extra: [String] = []
+    ) {
+        context?.log(
+            event,
+            sourceMode: sourceMode,
+            sessionQueueIndex: sessionQueueIndex,
+            selectedSessionQueueIndex: selectedSessionQueueIndex,
+            pendingSessionQueueIndex: pendingSessionQueueIndex,
+            targetQueueIndex: targetQueueIndex,
+            trackTitle: track?.displayTitle,
+            fileURL: fileURL ?? track?.url,
+            extra: extra
+        )
+    }
+
+    private func logSourceSwitchTiming(
+        _ context: DebugTimingContext?,
+        _ event: String,
+        previousSource: SourceMode? = nil,
+        nextSource: SourceMode? = nil,
+        extra: [String] = []
+    ) {
+        var fields = extra
+        if let previousSource {
+            fields.append("previousSource=\"\(previousSource.rawValue)\"")
+        }
+        if let nextSource {
+            fields.append("nextSource=\"\(nextSource.rawValue)\"")
+        }
+        context?.log(
+            event,
+            sourceMode: sourceMode,
+            sessionQueueIndex: sessionQueueIndex,
+            selectedSessionQueueIndex: selectedSessionQueueIndex,
+            pendingSessionQueueIndex: pendingSessionQueueIndex,
+            extra: fields
+        )
+    }
+
+    var sourceSwitchStatusText: String? {
+        sourceSwitchTargetMode.map(sourceSwitchDisplayText(for:))
+    }
+
+    private func sourceSwitchDisplayText(for mode: SourceMode) -> String {
+        mode == .off ? "Stopping audio..." : "Switching to \(mode.rawValue)..."
+    }
+
+    func selectSourceMode(
+        _ mode: SourceMode,
+        reason: String = "source selected",
+        requestedBy: String = "desktop"
+    ) {
+        let debugTiming = DebugTimingLog.makeCommand(prefix: "source-switch", sourceMode: sourceMode)
+        let previousSource = sourceMode
+        logSourceSwitchDebug(
+            "requested",
+            context: debugTiming,
+            from: previousSource,
+            to: mode,
+            reason: reason,
+            requestedBy: requestedBy
+        )
+        logSourceSwitchTiming(
+            debugTiming,
+            "source switch command received",
+            previousSource: previousSource,
+            nextSource: mode
+        )
+
         if mode == sourceMode,
            !isLiveMonitorTransitioning,
            !sourceSwitchRequests.isProcessing {
             if mode.startsLiveListeningOnSelection, !isPlaying {
-                requestSourceTransition(to: mode)
+                requestSourceTransition(to: mode, debugTiming: debugTiming, reason: reason, requestedBy: requestedBy)
+                return
             }
+            logSourceSwitchDebug(
+                "completed",
+                context: debugTiming,
+                from: previousSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: true,
+                error: "already selected"
+            )
             return
         }
 
-        requestSourceTransition(to: mode)
+        requestSourceTransition(to: mode, debugTiming: debugTiming, reason: reason, requestedBy: requestedBy)
     }
 
-    private func requestSourceTransition(to mode: SourceMode) {
+    private func requestSourceTransition(
+        to mode: SourceMode,
+        debugTiming: DebugTimingContext?,
+        reason: String,
+        requestedBy: String
+    ) {
         let shouldStart = sourceSwitchRequests.request(mode)
+        pendingSourceSwitchTiming = debugTiming
+        pendingSourceSwitchReason = reason
+        pendingSourceSwitchRequestedBy = requestedBy
+        sourceSwitchTargetMode = mode
+        isLiveMonitorTransitioning = true
+        statusMessage = sourceSwitchDisplayText(for: mode)
+        logSourceSwitchTiming(
+            debugTiming,
+            "pending target set",
+            previousSource: sourceMode,
+            nextSource: mode,
+            extra: ["shouldStart=\(shouldStart)"]
+        )
+        logSourceSwitchTiming(
+            debugTiming,
+            "UI switching state published",
+            previousSource: sourceMode,
+            nextSource: mode,
+            extra: ["status=\"\(statusMessage)\""]
+        )
         guard shouldStart else { return }
 
         sourceSwitchTask = Task { @MainActor [weak self] in
@@ -820,35 +1269,137 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func processPendingSourceTransitions() async {
         isLiveMonitorTransitioning = true
+        logSourceSwitchTiming(
+            pendingSourceSwitchTiming,
+            "UI switching state published",
+            nextSource: sourceSwitchRequests.pendingMode
+        )
+        await Task.yield()
         defer {
             sourceSwitchRequests.reset()
             sourceSwitchTask = nil
             isLiveMonitorTransitioning = false
+            sourceSwitchTargetMode = nil
             transitionOutputGain = 1
             applyEffectiveOutputVolume(log: false)
         }
 
         while !Task.isCancelled, let requestedMode = sourceSwitchRequests.takeNext() {
-            await performSourceTransition(to: requestedMode)
+            let debugTiming = pendingSourceSwitchTiming
+            let reason = pendingSourceSwitchReason ?? "source selected"
+            let requestedBy = pendingSourceSwitchRequestedBy ?? "unknown"
+            pendingSourceSwitchTiming = nil
+            pendingSourceSwitchReason = nil
+            pendingSourceSwitchRequestedBy = nil
+            await performSourceTransition(
+                to: requestedMode,
+                debugTiming: debugTiming,
+                reason: reason,
+                requestedBy: requestedBy
+            )
         }
     }
 
-    private func performSourceTransition(to requestedMode: SourceMode) async {
+    private func performSourceTransition(
+        to requestedMode: SourceMode,
+        debugTiming: DebugTimingContext?,
+        reason: String,
+        requestedBy: String
+    ) async {
         var mode = requestedMode
-        statusMessage = "Switching to \(mode.rawValue)..."
+        sourceSwitchTargetMode = mode
+        statusMessage = sourceSwitchDisplayText(for: mode)
+        let originalSource = sourceMode
+        logSourceSwitchDebug(
+            "started",
+            context: debugTiming,
+            from: originalSource,
+            to: mode,
+            reason: reason,
+            requestedBy: requestedBy
+        )
+        logSourceSwitchTiming(
+            debugTiming,
+            "source switch command type",
+            previousSource: originalSource,
+            nextSource: mode,
+            extra: ["command=\"source-switch\""]
+        )
         AppLogger.shared.notice(category: "source", "Switching source from \(sourceMode.rawValue) to \(mode.rawValue)")
 
+        logSourceSwitchTiming(debugTiming, "output ramp down start", previousSource: sourceMode, nextSource: mode)
         await rampTransitionOutput(to: 0, duration: Self.sourceRampDownDuration)
-        guard !Task.isCancelled else { return }
-
-        mode = sourceSwitchRequests.coalescePending(over: mode)
-        statusMessage = "Switching to \(mode.rawValue)..."
-
-        if mode == sourceMode, !(mode.startsLiveListeningOnSelection && !isPlaying) {
-            await rampTransitionOutput(to: 1, duration: Self.sourceRampUpDuration)
+        logSourceSwitchTiming(debugTiming, "output ramp down end", previousSource: sourceMode, nextSource: mode)
+        guard !Task.isCancelled else {
+            logSourceSwitchDebug(
+                "completed",
+                context: debugTiming,
+                from: originalSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: false,
+                error: "task canceled"
+            )
             return
         }
 
+        mode = sourceSwitchRequests.coalescePending(over: mode)
+        if let nextDebugTiming = pendingSourceSwitchTiming {
+            logSourceSwitchTiming(
+                debugTiming,
+                "stale source switch discarded",
+                previousSource: sourceMode,
+                nextSource: mode,
+                extra: ["reason=\"coalesced source switch superseded by \(nextDebugTiming.id)\""]
+            )
+        }
+        let activeDebugTiming = pendingSourceSwitchTiming ?? debugTiming
+        pendingSourceSwitchTiming = nil
+        sourceSwitchTargetMode = mode
+        statusMessage = sourceSwitchDisplayText(for: mode)
+
+        if mode == sourceMode, !(mode.startsLiveListeningOnSelection && !isPlaying) {
+            logSourceSwitchTiming(activeDebugTiming, "output ramp up start", previousSource: sourceMode, nextSource: mode)
+            let didRampUp = await rampTransitionOutput(to: 1, duration: Self.sourceRampUpDuration, abortIfNewSourceSwitchPending: true)
+            guard didRampUp else {
+                logSourceSwitchTiming(
+                    activeDebugTiming,
+                    "stale source switch discarded",
+                    previousSource: sourceMode,
+                    nextSource: mode,
+                    extra: ["reason=\"newer source requested during ramp up\""]
+                )
+                logSourceSwitchDebug(
+                    "completed",
+                    context: activeDebugTiming,
+                    from: originalSource,
+                    to: mode,
+                    reason: reason,
+                    requestedBy: requestedBy,
+                    completedAt: Date(),
+                    success: false,
+                    error: "newer source requested during ramp up"
+                )
+                return
+            }
+            logSourceSwitchTiming(activeDebugTiming, "output ramp up end", previousSource: sourceMode, nextSource: mode)
+            logSourceSwitchTiming(activeDebugTiming, "source switch complete", previousSource: sourceMode, nextSource: mode)
+            logSourceSwitchDebug(
+                "completed",
+                context: activeDebugTiming,
+                from: originalSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: true
+            )
+            return
+        }
+
+        logSourceSwitchTiming(activeDebugTiming, "old source detach/stop start", previousSource: sourceMode, nextSource: mode)
         if sourceMode.stopsLiveCaptureWhenSwitching(to: mode) {
             stopLiveMonitorForSourceSwitch(to: mode)
         } else if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
@@ -857,15 +1408,104 @@ final class OrbisonicViewModel: ObservableObject {
         if mode != .filePlayback {
             cancelPendingLocalFileLoad()
         }
+        logSourceSwitchTiming(activeDebugTiming, "old source detach/stop end", previousSource: sourceMode, nextSource: mode)
 
+        logSourceSwitchTiming(activeDebugTiming, "new source prepare/select start", previousSource: sourceMode, nextSource: mode)
         applySourceModeState(mode)
+        logSourceSwitchTiming(activeDebugTiming, "new source prepare/select end", previousSource: originalSource, nextSource: mode)
 
         if mode.startsLiveListeningOnSelection {
+            logSourceSwitchTiming(activeDebugTiming, "new source start/listen/render start", previousSource: originalSource, nextSource: mode)
             startSelectedLiveMonitorNow()
             await sleepForSourceTransition(Self.sourcePrimeDuration)
+            logSourceSwitchTiming(activeDebugTiming, "new source start/listen/render end", previousSource: originalSource, nextSource: mode)
         }
 
-        await rampTransitionOutput(to: 1, duration: Self.sourceRampUpDuration)
+        if let pendingMode = sourceSwitchRequests.pendingMode {
+            logSourceSwitchTiming(
+                activeDebugTiming,
+                "stale source switch discarded",
+                previousSource: originalSource,
+                nextSource: mode,
+                extra: ["pendingSource=\"\(pendingMode.rawValue)\""]
+            )
+            logSourceSwitchDebug(
+                "completed",
+                context: activeDebugTiming,
+                from: originalSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: false,
+                error: "pending source \(pendingMode.rawValue)"
+            )
+            return
+        }
+
+        logSourceSwitchTiming(activeDebugTiming, "output ramp up start", previousSource: originalSource, nextSource: mode)
+        let didRampUp = await rampTransitionOutput(to: 1, duration: Self.sourceRampUpDuration, abortIfNewSourceSwitchPending: true)
+        guard didRampUp else {
+            logSourceSwitchTiming(
+                activeDebugTiming,
+                "stale source switch discarded",
+                previousSource: originalSource,
+                nextSource: mode,
+                extra: ["reason=\"newer source requested during ramp up\""]
+            )
+            logSourceSwitchDebug(
+                "completed",
+                context: activeDebugTiming,
+                from: originalSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: false,
+                error: "newer source requested during ramp up"
+            )
+            return
+        }
+        logSourceSwitchTiming(activeDebugTiming, "output ramp up end", previousSource: originalSource, nextSource: mode)
+        if case .error = liveMonitorState {
+            logSourceSwitchTiming(activeDebugTiming, "source switch failed", previousSource: originalSource, nextSource: mode)
+            logSourceSwitchDebug(
+                "completed",
+                context: activeDebugTiming,
+                from: originalSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: false,
+                error: liveMonitorDebugState()
+            )
+        } else if case .unavailable = liveMonitorState, mode.isLiveInput {
+            logSourceSwitchTiming(activeDebugTiming, "source switch failed", previousSource: originalSource, nextSource: mode)
+            logSourceSwitchDebug(
+                "completed",
+                context: activeDebugTiming,
+                from: originalSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: false,
+                error: liveMonitorDebugState()
+            )
+        } else {
+            logSourceSwitchTiming(activeDebugTiming, "source switch complete", previousSource: originalSource, nextSource: mode)
+            logSourceSwitchDebug(
+                "completed",
+                context: activeDebugTiming,
+                from: originalSource,
+                to: mode,
+                reason: reason,
+                requestedBy: requestedBy,
+                completedAt: Date(),
+                success: true
+            )
+        }
         AppLogger.shared.notice(category: "source", "Finished source switch to \(mode.rawValue)")
     }
 
@@ -874,7 +1514,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         switch mode {
         case .off:
-            spotifyNowPlaying = nil
+            updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             liveSignalStatus = "No audio yet."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
@@ -882,17 +1522,15 @@ final class OrbisonicViewModel: ObservableObject {
             roonSignalPath = nil
             statusMessage = "Orbisonic is idle. Select a source to begin listening or playback."
         case .filePlayback:
-            spotifyNowPlaying = nil
+            updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
-            statusMessage = sourceMetadata == nil
-                ? "Open a local multichannel file or scan watch folders in Settings."
-                : "Local player source is ready."
+            statusMessage = "Use the Player below to choose files and control playback."
         case .roon:
-            spotifyNowPlaying = nil
+            updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             currentFileURL = nil
             clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata not requested yet."
@@ -914,7 +1552,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonNowPlaying = nil
             activeLiveChannelCount = SourceMode.spotify.fixedLiveChannelCount ?? 2
             refreshSpotifyConnectServerIfNeeded(reason: "source selected", force: true)
-            refreshSpotifyNowPlayingIfNeeded(force: true)
+            refreshSpotifyNowPlayingIfNeeded(force: true, reason: "source selected")
             if selectExpectedLoopbackInputIfAvailable(for: .spotify) {
                 liveMonitorState = .stopped
                 statusMessage = "Spotify is selected. Use the Spotify app to connect to Orbisonic Spotify."
@@ -924,7 +1562,7 @@ final class OrbisonicViewModel: ObservableObject {
                 statusMessage = message
             }
         case .testTone:
-            spotifyNowPlaying = nil
+            updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
@@ -932,7 +1570,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonSignalPath = nil
             statusMessage = "Test tone source is ready. Use Diagnostics to play the selected tone."
         case .aux:
-            spotifyNowPlaying = nil
+            updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             currentFileURL = nil
             clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
@@ -986,39 +1624,70 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func selectNoMonitorOutput() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        let previousDevice = monitorOutputRoute.deviceName
+        let previousRoute = monitorOutputRoute
         monitorOutputSelection = .none
         persistMonitorOutputSelection()
         refreshRoutesIfNeeded(force: true)
-        if isDiagnosticSequencePlaying {
-            stop()
-        }
-        statusMessage = "Monitor output not set."
+        let graphRebuild = activateRendererOutputIfMonitorWasActive(previousMonitorRoute: previousRoute)
+        statusMessage = "Output 1 Monitor not set."
+        logOutputRoutingDebug(
+            output: "Output 1 Monitor",
+            previousDevice: previousDevice,
+            newDevice: "not set",
+            playbackStateBefore: stateBefore,
+            graphRebuild: graphRebuild
+        )
     }
 
     func selectSystemMonitorOutput() {
+        let previousDevice = monitorOutputRoute.deviceName
         monitorOutputSelection = .systemDefault
         persistMonitorOutputSelection()
         refreshRoutesIfNeeded(force: true)
-        applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: "System Default")
+        applyMonitorOutputRouteIfAvailable(monitorOutputRoute, previousDevice: previousDevice, label: "System Default")
     }
 
     func selectMonitorOutputRoute(_ route: OutputRouteInfo) {
-        guard route.isAvailable else { return }
+        let stateBefore = debugPlaybackStateSnapshot()
+        let previousDevice = monitorOutputRoute.deviceName
+        guard route.isAvailable else {
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: "route unavailable"
+            )
+            return
+        }
         guard route.isSelectableOutputTarget else {
             let message = outputFeedbackMessage(for: route, purpose: .monitor)
             AppLogger.shared.error(category: "route", message)
             statusMessage = message
             lastError = message
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: message
+            )
             return
         }
 
         monitorOutputSelection = .device(route.uid)
         persistMonitorOutputSelection()
         refreshRoutesIfNeeded(force: true)
-        applyOutputRouteIfAvailable(route, purpose: .monitor, label: route.deviceName)
+        applyMonitorOutputRouteIfAvailable(route, previousDevice: previousDevice, label: route.deviceName)
     }
 
     func selectNoRendererOutput() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        let previousDevice = rendererOutputRoute.deviceName
         rendererOutputSelection = .none
         persistRendererOutputSelection()
         refreshRoutesIfNeeded(force: true)
@@ -1028,16 +1697,43 @@ final class OrbisonicViewModel: ObservableObject {
         if isDiagnosticSequencePlaying {
             stop()
         }
-        statusMessage = "Renderer output not set."
+        statusMessage = "Output 2 Renderer not set."
+        logOutputRoutingDebug(
+            output: "Output 2 Renderer",
+            previousDevice: previousDevice,
+            newDevice: "not set",
+            playbackStateBefore: stateBefore,
+            graphRebuild: true
+        )
     }
 
     func selectRendererOutputRoute(_ route: OutputRouteInfo) {
-        guard route.isAvailable else { return }
+        let stateBefore = debugPlaybackStateSnapshot()
+        let previousDevice = rendererOutputRoute.deviceName
+        guard route.isAvailable else {
+            logOutputRoutingDebug(
+                output: "Output 2 Renderer",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: "route unavailable"
+            )
+            return
+        }
         guard route.isSelectableOutputTarget else {
             let message = outputFeedbackMessage(for: route, purpose: .renderer)
             AppLogger.shared.error(category: "route", message)
             statusMessage = message
             lastError = message
+            logOutputRoutingDebug(
+                output: "Output 2 Renderer",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: message
+            )
             return
         }
 
@@ -1045,6 +1741,13 @@ final class OrbisonicViewModel: ObservableObject {
         persistRendererOutputSelection()
         refreshRoutesIfNeeded(force: true)
         applyOutputRouteIfAvailable(route, purpose: .renderer, label: route.deviceName)
+        logOutputRoutingDebug(
+            output: "Output 2 Renderer",
+            previousDevice: previousDevice,
+            newDevice: route.deviceName,
+            playbackStateBefore: stateBefore,
+            graphRebuild: true
+        )
     }
 
     func chooseWatchFolder() {
@@ -1190,13 +1893,43 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func playLocalTransport() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        var commandAllowed = true
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                command: "play",
+                allowed: commandAllowed,
+                handler: "playLocalTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
+        let debugTiming = DebugTimingLog.makeCommand(prefix: "local-play", sourceMode: sourceMode)
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            extra: ["command=\"play\""]
+        )
         if isLocalFileLoading {
             statusMessage = "Loading local track..."
+            commandAllowed = false
+            commandError = "local file load already in progress"
+            logLocalTransportTiming(
+                debugTiming,
+                "UI state updated",
+                extra: ["status=\"Loading local track...\""]
+            )
             return
         }
 
         if sourceMode == .filePlayback, currentFileURL != nil, duration > 0 {
-            guard !isPlaying else { return }
+            guard !isPlaying else {
+                commandAllowed = false
+                commandError = "local playback already playing"
+                return
+            }
             togglePlayback()
             return
         }
@@ -1206,15 +1939,23 @@ final class OrbisonicViewModel: ObservableObject {
         }
         guard let track = selectedQueueTrack ?? selectedLocalMusicTrack ?? currentLocalMusicTrack ?? visibleLocalMusicTracks.first else {
             statusMessage = "Add a watch folder in Settings, then scan local music."
+            commandAllowed = false
+            commandError = statusMessage
             return
         }
 
         guard currentFileURL?.path == track.id, sourceMode == .filePlayback else {
             if let queueIndex = sessionQueue.firstIndex(where: { $0.id == track.id }) {
-                playQueueIndex(queueIndex)
+                playQueueIndex(queueIndex, debugTiming: debugTiming)
                 return
             }
-            startSessionQueue(from: visibleLocalMusicTracks, startTrackID: track.id, shuffle: isShuffleEnabled, autoplay: true)
+            startSessionQueue(
+                from: visibleLocalMusicTracks,
+                startTrackID: track.id,
+                shuffle: isShuffleEnabled,
+                autoplay: true,
+                debugTiming: debugTiming
+            )
             return
         }
 
@@ -1222,30 +1963,201 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func pauseLocalTransport() {
-        cancelPendingLocalFileLoad()
-        guard sourceMode == .filePlayback else { return }
+        let stateBefore = debugPlaybackStateSnapshot()
+        var commandAllowed = sourceMode == .filePlayback || isLocalFileLoading
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                command: "pause",
+                allowed: commandAllowed,
+                handler: "pauseLocalTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
+        let debugTiming = DebugTimingLog.makeCommand(prefix: "local-pause", sourceMode: sourceMode)
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            extra: ["command=\"pause\""]
+        )
+        logLocalTransportTiming(debugTiming, "pause cancellation started")
+        cancelPendingLocalFileLoad(debugTiming: debugTiming)
+        logLocalTransportTiming(debugTiming, "pause cancellation finished")
+        guard sourceMode == .filePlayback else {
+            commandAllowed = false
+            commandError = "source is \(sourceMode.rawValue)"
+            return
+        }
 
         if isPlaying {
             engine.pause()
             isPlaying = false
             reevaluateAutomaticRendererMode(reason: "pause")
-            statusMessage = "Paused."
+            statusMessage = "Local playback paused"
         } else {
-            statusMessage = "Paused local playback."
+            statusMessage = "Local playback paused"
         }
     }
 
     func stopLocalTransport() {
-        cancelPendingLocalFileLoad()
+        let stateBefore = debugPlaybackStateSnapshot()
+        let commandAllowed = sourceMode == .filePlayback || isLocalFileLoading
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                command: "stop",
+                allowed: commandAllowed,
+                handler: "stopLocalTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
+        let debugTiming = DebugTimingLog.makeCommand(prefix: "local-stop", sourceMode: sourceMode)
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            extra: ["command=\"stop\""]
+        )
+        logLocalTransportTiming(debugTiming, "stop cancellation started")
+        cancelPendingLocalFileLoad(debugTiming: debugTiming)
+        logLocalTransportTiming(debugTiming, "stop cancellation finished")
         stop()
+        if sourceMode == .filePlayback {
+            statusMessage = "Local playback stopped"
+        } else if !commandAllowed {
+            commandError = "source is \(sourceMode.rawValue)"
+        }
     }
 
     func playLocalMusicTrackNow(_ track: LocalMusicTrack) {
+        let previousSource = sourceMode
+        let debugTiming = DebugTimingLog.makeCommand(prefix: "local-play-now", sourceMode: sourceMode)
+        let sourceSwitchRequired = previousSource != .filePlayback ||
+            isLiveMonitorTransitioning ||
+            sourceSwitchRequests.isProcessing ||
+            sourceSwitchTargetMode != nil
+        logLocalPlayNowDebug(
+            "requested",
+            selectedTrack: track,
+            previousSource: previousSource,
+            sourceSwitchRequired: sourceSwitchRequired,
+            finalState: debugPlaybackStateSnapshot()
+        )
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            track: track,
+            extra: ["command=\"row-play\""]
+        )
         selectedSessionQueueIndex = nil
         let tracks = visibleLocalMusicTracks.contains(where: { $0.id == track.id })
             ? visibleLocalMusicTracks
             : [track]
-        startSessionQueue(from: tracks, startTrackID: track.id, shuffle: false, autoplay: true)
+        localPlayNowTask?.cancel()
+        localPlayNowSequence &+= 1
+        let sequence = localPlayNowSequence
+
+        guard sourceSwitchRequired else {
+            startSessionQueue(from: tracks, startTrackID: track.id, shuffle: false, autoplay: true, debugTiming: debugTiming)
+            return
+        }
+
+        statusMessage = "Switching to Local Files..."
+        logLocalPlayNowDebug(
+            "source switch started",
+            selectedTrack: track,
+            previousSource: previousSource,
+            sourceSwitchRequired: true,
+            sourceSwitchStarted: true,
+            finalState: debugPlaybackStateSnapshot()
+        )
+
+        localPlayNowTask = Task { @MainActor [weak self] in
+            await self?.continueLocalPlayNowAfterSourceSwitch(
+                sequence: sequence,
+                track: track,
+                tracks: tracks,
+                previousSource: previousSource,
+                debugTiming: debugTiming
+            )
+        }
+    }
+
+    private func continueLocalPlayNowAfterSourceSwitch(
+        sequence: UInt64,
+        track: LocalMusicTrack,
+        tracks: [LocalMusicTrack],
+        previousSource: SourceMode,
+        debugTiming: DebugTimingContext?
+    ) async {
+        defer {
+            if sequence == localPlayNowSequence {
+                localPlayNowTask = nil
+            }
+        }
+        selectSourceMode(.filePlayback, reason: "local Play Now", requestedBy: "local-play-now")
+
+        let didSwitch = await waitForLocalPlayNowSourceActivation(sequence: sequence)
+        guard !Task.isCancelled, sequence == localPlayNowSequence else { return }
+
+        guard didSwitch else {
+            let message = sourceMode == .filePlayback
+                ? "Local Files did not finish activating for Play Now."
+                : "Could not switch to Local Files for Play Now. Current source is \(sourceMode.rawValue)."
+            statusMessage = message
+            lastError = message
+            isLocalFileLoading = false
+            pendingSessionQueueIndex = nil
+            logLocalPlayNowDebug(
+                "completed",
+                selectedTrack: track,
+                previousSource: previousSource,
+                sourceSwitchRequired: true,
+                sourceSwitchStarted: true,
+                sourceSwitchSuccess: false,
+                finalState: debugPlaybackStateSnapshot(),
+                error: message
+            )
+            return
+        }
+
+        logLocalPlayNowDebug(
+            "source switch completed",
+            selectedTrack: track,
+            previousSource: previousSource,
+            sourceSwitchRequired: true,
+            sourceSwitchStarted: true,
+            sourceSwitchSuccess: true,
+            finalState: debugPlaybackStateSnapshot()
+        )
+        startSessionQueue(from: tracks, startTrackID: track.id, shuffle: false, autoplay: true, debugTiming: debugTiming)
+    }
+
+    private func waitForLocalPlayNowSourceActivation(sequence: UInt64) async -> Bool {
+        let deadline = Date().addingTimeInterval(Self.localPlayNowSourceSwitchTimeout)
+        while Date() < deadline {
+            guard !Task.isCancelled, sequence == localPlayNowSequence else { return false }
+            if sourceMode == .filePlayback,
+               sourceSwitchTargetMode == nil,
+               !isLiveMonitorTransitioning,
+               !sourceSwitchRequests.isProcessing {
+                return true
+            }
+
+            do {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            } catch {
+                return false
+            }
+        }
+
+        return sourceMode == .filePlayback &&
+            sourceSwitchTargetMode == nil &&
+            !isLiveMonitorTransitioning &&
+            !sourceSwitchRequests.isProcessing
     }
 
     func selectLocalMusicTrack(_ track: LocalMusicTrack) {
@@ -1268,17 +2180,40 @@ final class OrbisonicViewModel: ObservableObject {
 
     func playSessionQueueIndex(_ index: Int) {
         guard sessionQueue.indices.contains(index) else { return }
+        let debugTiming = DebugTimingLog.makeCommand(prefix: "local-row-play", sourceMode: sourceMode)
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            targetQueueIndex: index,
+            track: queueTrack(for: index),
+            extra: ["command=\"row-play\""]
+        )
         selectedSessionQueueIndex = index
-        _ = playQueueIndex(index)
+        logLocalTransportTiming(
+            debugTiming,
+            "UI state updated",
+            targetQueueIndex: index,
+            track: queueTrack(for: index),
+            extra: ["selectedSessionQueueIndex=\(index)"]
+        )
+        _ = playQueueIndex(index, debugTiming: debugTiming)
     }
 
     func playSelectedSessionQueueTrack() {
+        let debugTiming = DebugTimingLog.makeCommand(prefix: "local-row-play", sourceMode: sourceMode)
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            targetQueueIndex: selectedSessionQueueIndex,
+            track: selectedSessionQueueIndex.flatMap { queueTrack(for: $0) },
+            extra: ["command=\"selected-row-play\""]
+        )
         if let selectedSessionQueueIndex, sessionQueue.indices.contains(selectedSessionQueueIndex) {
             if currentFileURL?.path == sessionQueue[selectedSessionQueueIndex].id, sourceMode == .filePlayback {
                 toggleLocalMusicPlayback()
                 return
             }
-            playQueueIndex(selectedSessionQueueIndex)
+            playQueueIndex(selectedSessionQueueIndex, debugTiming: debugTiming)
             return
         }
 
@@ -1286,7 +2221,19 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func playAllLocalMusic(shuffle: Bool = false) {
-        startSessionQueue(from: visibleLocalMusicTracks, startTrackID: visibleLocalMusicTracks.first?.id, shuffle: shuffle, autoplay: true)
+        let debugTiming = DebugTimingLog.makeCommand(prefix: shuffle ? "local-shuffle" : "local-play-all", sourceMode: sourceMode)
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            extra: ["command=\"\(shuffle ? "shuffle" : "playAll")\""]
+        )
+        startSessionQueue(
+            from: visibleLocalMusicTracks,
+            startTrackID: visibleLocalMusicTracks.first?.id,
+            shuffle: shuffle,
+            autoplay: true,
+            debugTiming: debugTiming
+        )
     }
 
     func playSelectedLocalMusicPlaylist(shuffle: Bool = false) {
@@ -1502,16 +2449,8 @@ final class OrbisonicViewModel: ObservableObject {
         return URL(fileURLWithPath: path)
     }
 
-    var roonArtworkURL: URL? {
-        guard let imageKey = roonBridgeSnapshot.selectedZone?.nowPlaying?.imageKey else {
-            return nil
-        }
-
-        return roonBridgeClient.imageURL(for: imageKey)
-    }
-
     var spotifyArtworkURL: URL? {
-        guard let coverURL = spotifyNowPlaying?.coverURL else { return nil }
+        guard let coverURL = spotifyVisibleNowPlaying?.coverURL else { return nil }
         return URL(string: coverURL)
     }
 
@@ -1543,6 +2482,10 @@ final class OrbisonicViewModel: ObservableObject {
         return sessionQueue[sessionQueueIndex]
     }
 
+    private func queueTrack(for index: Int) -> LocalMusicTrack? {
+        sessionQueue.indices.contains(index) ? sessionQueue[index] : nil
+    }
+
     func tracks(for playlist: LocalMusicPlaylist) -> [LocalMusicTrack] {
         let tracksByPath = Dictionary(uniqueKeysWithValues: localMusicTracks.map { ($0.path, $0) })
         return playlist.trackPaths.compactMap { tracksByPath[$0] }
@@ -1560,6 +2503,26 @@ final class OrbisonicViewModel: ObservableObject {
         selectedSessionQueueIndex = selectedIndex
         selectedLibraryTrackID = nil
         pendingSessionQueueIndex = nil
+    }
+
+    func setSourceModeForTesting(_ mode: SourceMode) {
+        sourceMode = mode
+        if mode != .spotify {
+            clearSpotifyVisibleState(reason: "test source changed")
+        }
+    }
+
+    func setSpotifyNowPlayingForTesting(_ nowPlaying: SpotifyNowPlaying?) {
+        updateSpotifyNowPlaying(nowPlaying, reason: "test", forceVisible: true)
+    }
+
+    func applySpotifyNowPlayingForTesting(_ nowPlaying: SpotifyNowPlaying?) {
+        updateSpotifyNowPlaying(nowPlaying, reason: "test")
+    }
+
+    func setRoonNowPlayingForTesting(_ nowPlaying: RoonNowPlaying?) {
+        roonNowPlaying = nowPlaying
+        roonNowPlayingStatus = nowPlaying?.updatedText ?? "No Roon playback line found in RoonServer log yet."
     }
 
     @discardableResult
@@ -1580,6 +2543,10 @@ final class OrbisonicViewModel: ObservableObject {
         }
         self.isPlaying = isPlaying
     }
+
+    func triggerPlaybackEndedForTesting() {
+        handlePlaybackEnded()
+    }
 #endif
 
     private var sortedLocalMusicTracks: [LocalMusicTrack] {
@@ -1590,62 +2557,377 @@ final class OrbisonicViewModel: ObservableObject {
     private func loadFile(
         url: URL,
         autoplay: Bool,
-        queueCommit: LocalFileQueueCommit? = nil
+        queueCommit: LocalFileQueueCommit? = nil,
+        kind: LocalFileLoadKind = .selectedTrack,
+        startPolicy: LocalFileLoadStartPolicy = .immediate,
+        debugTiming: DebugTimingContext? = nil
     ) -> Bool {
-        let request = nextLocalFileLoadRequest(url: url, autoplay: autoplay, queueCommit: queueCommit)
+        let request = nextLocalFileLoadRequest(
+            url: url,
+            autoplay: autoplay,
+            queueCommit: queueCommit,
+            kind: kind,
+            startPolicy: startPolicy,
+            debugTiming: debugTiming
+        )
+        currentLocalFileLoadGeneration = request.generation
         pendingSessionQueueIndex = queueCommit?.index
-        statusMessage = "Loading \(url.lastPathComponent)..."
+        logLocalTransportTiming(
+            debugTiming,
+            "pending target set",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: url
+        )
+        logLocalPlayNowDebug(
+            "load requested",
+            request: request,
+            loadStarted: false
+        )
+        statusMessage = requestImmediateStatus(request)
+        logLocalTransportTiming(
+            debugTiming,
+            "UI state updated",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: url,
+            extra: ["status=\"\(statusMessage)\""]
+        )
         lastError = nil
+        isLocalFileLoading = true
+        startLocalFileLoadStatusTask(for: request)
 
-        if activeLocalFileLoadRequest != nil {
-            queuedLocalFileLoadRequest = request
-            AppLogger.shared.info(
-                category: "ui",
-                "Queued local load request id=\(request.id) file=\(url.lastPathComponent)"
-            )
-            return true
-        }
-
-        startLocalFileLoad(request)
+        queueLocalFileLoadForStart(request)
         return true
     }
 
     private func nextLocalFileLoadRequest(
         url: URL,
         autoplay: Bool,
-        queueCommit: LocalFileQueueCommit?
+        queueCommit: LocalFileQueueCommit?,
+        kind: LocalFileLoadKind,
+        startPolicy: LocalFileLoadStartPolicy,
+        debugTiming: DebugTimingContext?
     ) -> LocalFileLoadRequest {
         localFileLoadSequence &+= 1
         return LocalFileLoadRequest(
             id: localFileLoadSequence,
+            generation: localFileLoadSequence,
             url: url,
             autoplay: autoplay,
-            queueCommit: queueCommit
+            queueCommit: queueCommit,
+            kind: kind,
+            startPolicy: startPolicy,
+            debugTiming: debugTiming,
+            requestedFromSource: sourceMode,
+            isLocalPlayNow: debugTiming?.id.hasPrefix("local-play-now-") == true
         )
+    }
+
+    private func requestTrackTitle(_ request: LocalFileLoadRequest) -> String? {
+        request.queueCommit.flatMap { queueTrack(for: $0.index)?.displayTitle }
+    }
+
+    private func requestImmediateStatus(_ request: LocalFileLoadRequest) -> String {
+        request.kind.immediateStatus(
+            trackTitle: requestTrackTitle(request),
+            fileName: request.url.lastPathComponent
+        )
+    }
+
+    private func startLocalFileLoadStatusTask(for request: LocalFileLoadRequest) {
+        localFileLoadStatusTask?.cancel()
+        localFileLoadStatusTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.localLoadSubtleStatusNanoseconds)
+                guard let self, self.isLocalFileLoadRequestCurrent(request) else { return }
+                self.statusMessage = request.kind.subtleStatus(
+                    trackTitle: self.requestTrackTitle(request),
+                    fileName: request.url.lastPathComponent
+                )
+                self.logLocalTransportTiming(
+                    request.debugTiming,
+                    "UI state updated",
+                    targetQueueIndex: request.queueCommit?.index,
+                    track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                    fileURL: request.url,
+                    extra: ["status=\"\(self.statusMessage)\""]
+                )
+
+                try await Task.sleep(nanoseconds: Self.localLoadClearStatusNanoseconds - Self.localLoadSubtleStatusNanoseconds)
+                guard self.isLocalFileLoadRequestCurrent(request) else { return }
+                self.statusMessage = request.kind.clearStatus(
+                    trackTitle: self.requestTrackTitle(request),
+                    fileName: request.url.lastPathComponent
+                )
+                self.logLocalTransportTiming(
+                    request.debugTiming,
+                    "UI state updated",
+                    targetQueueIndex: request.queueCommit?.index,
+                    track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                    fileURL: request.url,
+                    extra: ["status=\"\(self.statusMessage)\""]
+                )
+
+                try await Task.sleep(nanoseconds: Self.localLoadStillLoadingNanoseconds - Self.localLoadClearStatusNanoseconds)
+                guard self.isLocalFileLoadRequestCurrent(request) else { return }
+                self.statusMessage = request.kind.stillLoadingStatus
+                self.logLocalTransportTiming(
+                    request.debugTiming,
+                    "UI state updated",
+                    targetQueueIndex: request.queueCommit?.index,
+                    track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                    fileURL: request.url,
+                    extra: ["status=\"\(self.statusMessage)\""]
+                )
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func stopLocalFileLoadStatusTask() {
+        localFileLoadStatusTask?.cancel()
+        localFileLoadStatusTask = nil
+    }
+
+    private func isLocalFileLoadRequestCurrent(_ request: LocalFileLoadRequest) -> Bool {
+        currentLocalFileLoadGeneration == request.generation &&
+            (activeLocalFileLoadRequest?.generation == request.generation ||
+             queuedLocalFileLoadRequest?.generation == request.generation)
+    }
+
+    private func localFileLoadValidationFailure(for request: LocalFileLoadRequest) -> String? {
+        guard currentLocalFileLoadGeneration == request.generation else {
+            return "generation \(request.generation) invalidated by \(currentLocalFileLoadGeneration)"
+        }
+        guard sourceMode == .filePlayback else {
+            return "source mode changed to \(sourceMode.rawValue)"
+        }
+        if let queueCommit = request.queueCommit {
+            guard sessionQueue.indices.contains(queueCommit.index) else {
+                return "target queue index \(queueCommit.index) is no longer valid"
+            }
+            guard sessionQueue[queueCommit.index].id == queueCommit.trackID else {
+                return "target queue index \(queueCommit.index) now points at a different track"
+            }
+            guard pendingSessionQueueIndex == queueCommit.index else {
+                return "pending target no longer matches \(queueCommit.index)"
+            }
+        }
+        return nil
+    }
+
+    private func cancelLocalFileLoadDebounce(reason: String) {
+        guard let request = queuedLocalFileLoadRequest ?? activeLocalFileLoadRequest,
+              localFileLoadDebounceTask != nil
+        else {
+            localFileLoadDebounceTask?.cancel()
+            localFileLoadDebounceTask = nil
+            readyQueuedLocalFileLoadGeneration = nil
+            return
+        }
+
+        localFileLoadDebounceTask?.cancel()
+        localFileLoadDebounceTask = nil
+        readyQueuedLocalFileLoadGeneration = nil
+        logLocalTransportTiming(
+            request.debugTiming,
+            "debounce canceled",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: request.url,
+            extra: ["reason=\"\(reason)\""]
+        )
+        logLocalTransportTiming(
+            request.debugTiming,
+            "generation invalidated",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: request.url,
+            extra: ["reason=\"\(reason)\""]
+        )
+    }
+
+    private func queueLocalFileLoadForStart(_ request: LocalFileLoadRequest) {
+        if let activeRequest = activeLocalFileLoadRequest,
+           activeRequest.generation != request.generation {
+            logLocalTransportTiming(
+                activeRequest.debugTiming,
+                "generation invalidated",
+                targetQueueIndex: activeRequest.queueCommit?.index,
+                track: activeRequest.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: activeRequest.url,
+                extra: ["reason=\"superseded by local load \(request.generation)\""]
+            )
+        }
+        if let queuedRequest = queuedLocalFileLoadRequest,
+           queuedRequest.generation != request.generation {
+            logLocalTransportTiming(
+                queuedRequest.debugTiming,
+                "stale completion discarded",
+                targetQueueIndex: queuedRequest.queueCommit?.index,
+                track: queuedRequest.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: queuedRequest.url,
+                extra: ["reason=\"queued load superseded by \(request.generation)\""]
+            )
+        }
+
+        switch request.startPolicy {
+        case .immediate:
+            cancelLocalFileLoadDebounce(reason: "immediate local load replacing debounce")
+            queuedLocalFileLoadRequest = nil
+            readyQueuedLocalFileLoadGeneration = nil
+            if activeLocalFileLoadRequest == nil {
+                startLocalFileLoad(request)
+            } else {
+                queuedLocalFileLoadRequest = request
+                AppLogger.shared.info(
+                    category: "ui",
+                    "Queued local load request id=\(request.id) file=\(request.url.lastPathComponent)"
+                )
+            }
+        case .debounced:
+            if localFileLoadDebounceTask != nil {
+                cancelLocalFileLoadDebounce(reason: "debounce reset")
+            }
+            queuedLocalFileLoadRequest = request
+            readyQueuedLocalFileLoadGeneration = nil
+            logLocalTransportTiming(
+                request.debugTiming,
+                "debounce started",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: request.url,
+                extra: ["debounceMs=120"]
+            )
+            localFileLoadDebounceTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: Self.localTransportDebounceNanoseconds)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                guard self.currentLocalFileLoadGeneration == request.generation,
+                      self.queuedLocalFileLoadRequest?.generation == request.generation
+                else {
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "stale completion discarded",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url,
+                        extra: ["reason=\"debounce fired for stale generation \(request.generation)\""]
+                    )
+                    return
+                }
+                self.localFileLoadDebounceTask = nil
+                self.readyQueuedLocalFileLoadGeneration = request.generation
+                self.logLocalTransportTiming(
+                    request.debugTiming,
+                    "debounce fired",
+                    targetQueueIndex: request.queueCommit?.index,
+                    track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                    fileURL: request.url
+                )
+                guard self.activeLocalFileLoadRequest == nil else { return }
+                self.queuedLocalFileLoadRequest = nil
+                self.readyQueuedLocalFileLoadGeneration = nil
+                self.startLocalFileLoad(request)
+            }
+        }
     }
 
     private func startLocalFileLoad(_ request: LocalFileLoadRequest) {
         activeLocalFileLoadRequest = request
+        if readyQueuedLocalFileLoadGeneration == request.generation {
+            readyQueuedLocalFileLoadGeneration = nil
+        }
         pendingSessionQueueIndex = request.queueCommit?.index
         isLocalFileLoading = true
-        statusMessage = "Loading \(request.url.lastPathComponent)..."
+        statusMessage = requestImmediateStatus(request)
         let audioLoader = localAudioLoader
+        logLocalTransportTiming(
+            request.debugTiming,
+            "decode scheduled",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: request.url
+        )
+        logLocalPlayNowDebug(
+            "load started",
+            request: request,
+            loadStarted: true
+        )
 
         localFileLoadTask = Task { @MainActor [weak self] in
             do {
-                let loaded = try await Task.detached(priority: .userInitiated) {
-                    try audioLoader(request.url)
+                let decodeStart = DispatchTime.now().uptimeNanoseconds
+                request.debugTiming?.log(
+                    "decode started",
+                    sourceMode: self?.sourceMode,
+                    targetQueueIndex: request.queueCommit?.index,
+                    trackTitle: request.queueCommit.flatMap { self?.queueTrack(for: $0.index)?.displayTitle },
+                    fileURL: request.url
+                )
+                let loaded = try await Task.detached(priority: .utility) {
+                    try audioLoader(request.url, request.debugTiming)
                 }.value
-                guard let self,
-                      !Task.isCancelled,
-                      self.activeLocalFileLoadRequest?.id == request.id
-                else { return }
+                let decodeMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - decodeStart) / 1_000_000.0
+                request.debugTiming?.log(
+                    "decode finished",
+                    sourceMode: self?.sourceMode,
+                    targetQueueIndex: request.queueCommit?.index,
+                    trackTitle: request.queueCommit.flatMap { self?.queueTrack(for: $0.index)?.displayTitle },
+                    fileURL: request.url,
+                    extra: ["decodeMs=\(String(format: "%.1f", decodeMilliseconds))"]
+                )
+                guard let self else { return }
+                guard !Task.isCancelled else {
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "decode canceled",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url
+                    )
+                    return
+                }
+                guard self.activeLocalFileLoadRequest?.id == request.id else {
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "stale completion discarded",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url
+                    )
+                    return
+                }
                 self.completeLocalFileLoad(request: request, result: .success(loaded))
             } catch {
-                guard let self,
-                      !Task.isCancelled,
-                      self.activeLocalFileLoadRequest?.id == request.id
-                else { return }
+                guard let self else { return }
+                guard !Task.isCancelled else {
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "decode canceled",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url,
+                        extra: ["error=\"\(error.localizedDescription)\""]
+                    )
+                    return
+                }
+                guard self.activeLocalFileLoadRequest?.id == request.id else {
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "stale completion discarded",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url,
+                        extra: ["error=\"\(error.localizedDescription)\""]
+                    )
+                    return
+                }
                 self.completeLocalFileLoad(request: request, result: .failure(error))
             }
         }
@@ -1653,34 +2935,128 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func completeLocalFileLoad(request: LocalFileLoadRequest, result: Result<LoadedAudioFile, Error>) {
         localFileLoadTask = nil
-        activeLocalFileLoadRequest = nil
+        if activeLocalFileLoadRequest?.generation == request.generation {
+            activeLocalFileLoadRequest = nil
+        }
 
         if let queuedRequest = queuedLocalFileLoadRequest {
+            logLocalTransportTiming(
+                request.debugTiming,
+                "stale completion discarded",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: request.url,
+                extra: ["reason=\"superseded by queued local load \(queuedRequest.id)\""]
+            )
+            if queuedRequest.startPolicy == .debounced,
+               readyQueuedLocalFileLoadGeneration != queuedRequest.generation {
+                if localFileLoadDebounceTask == nil {
+                    queueLocalFileLoadForStart(queuedRequest)
+                }
+                return
+            }
             queuedLocalFileLoadRequest = nil
+            readyQueuedLocalFileLoadGeneration = nil
             startLocalFileLoad(queuedRequest)
+            return
+        }
+
+        if let validationFailure = localFileLoadValidationFailure(for: request) {
+            stopLocalFileLoadStatusTask()
+            logLocalTransportTiming(
+                request.debugTiming,
+                "stale completion discarded",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: request.url,
+                extra: ["reason=\"\(validationFailure)\""]
+            )
+            if pendingSessionQueueIndex == request.queueCommit?.index {
+                pendingSessionQueueIndex = nil
+            }
+            if activeLocalFileLoadRequest == nil && queuedLocalFileLoadRequest == nil {
+                isLocalFileLoading = false
+            }
+            logLocalPlayNowDebug(
+                "completed",
+                request: request,
+                loadStarted: true,
+                loadCompleted: false,
+                error: validationFailure
+            )
             return
         }
 
         isLocalFileLoading = false
         pendingSessionQueueIndex = nil
+        stopLocalFileLoadStatusTask()
 
         switch result {
         case .success(let loaded):
-            finishLoadedFile(loaded, autoplay: request.autoplay, queueCommit: request.queueCommit)
+            logLocalPlayNowDebug(
+                "load completed",
+                request: request,
+                loadStarted: true,
+                loadCompleted: true
+            )
+            finishLoadedFile(
+                loaded,
+                autoplay: request.autoplay,
+                queueCommit: request.queueCommit,
+                localPlayNowRequest: request,
+                debugTiming: request.debugTiming
+            )
         case .failure(let error):
-            handleLocalFileLoadFailure(url: request.url, error: error, queueCommit: request.queueCommit)
+            logLocalPlayNowDebug(
+                "completed",
+                request: request,
+                loadStarted: true,
+                loadCompleted: false,
+                error: error.localizedDescription
+            )
+            handleLocalFileLoadFailure(
+                url: request.url,
+                error: error,
+                queueCommit: request.queueCommit,
+                debugTiming: request.debugTiming
+            )
         }
     }
 
     private func finishLoadedFile(
         _ loaded: LoadedAudioFile,
         autoplay: Bool,
-        queueCommit: LocalFileQueueCommit?
+        queueCommit: LocalFileQueueCommit?,
+        localPlayNowRequest: LocalFileLoadRequest?,
+        debugTiming: DebugTimingContext?
     ) {
         cancelDiagnosticsForMusicAction()
         sourceMode = .filePlayback
 
-        _ = engine.loadPreparedFile(loaded)
+        let commitStart = DispatchTime.now().uptimeNanoseconds
+        logLocalTransportTiming(
+            debugTiming,
+            "engine commit started",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: loaded.url
+        )
+        _ = engine.loadPreparedFile(loaded, debugTiming: debugTiming)
+        logLocalTransportTiming(
+            debugTiming,
+            "engine commit finished",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: loaded.url,
+            extra: ["commitMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - commitStart) / 1_000_000.0))"]
+        )
+        logLocalTransportTiming(
+            debugTiming,
+            "publish player state start",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: loaded.url
+        )
         loadedFileName = loaded.url.lastPathComponent
         currentFileURL = loaded.url
         if let queueCommit {
@@ -1710,33 +3086,113 @@ final class OrbisonicViewModel: ObservableObject {
         liveBufferStatus = "No live buffer."
         roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
         roonSignalPath = nil
+        logLocalTransportTiming(
+            debugTiming,
+            "now-playing committed",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: loaded.url
+        )
+        logLocalTransportTiming(
+            debugTiming,
+            "publish player state end",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: loaded.url
+        )
 
         if autoplay {
-            guard prepareOutputForMusicPlayback() else { return }
+            guard prepareOutputForMusicPlayback() else {
+                if let localPlayNowRequest {
+                    logLocalPlayNowDebug(
+                        "completed",
+                        request: localPlayNowRequest,
+                        loadStarted: true,
+                        loadCompleted: true,
+                        playStarted: false,
+                        error: "output preparation failed"
+                    )
+                }
+                return
+            }
             do {
-                try engine.play()
+                try engine.play(debugTiming: debugTiming)
                 isPlaying = true
                 statusMessage = "Playing \(loaded.metadata.fileName) through \(routeDisplayName) with \(rendererScene.renderMode.displayName)."
+                if let localPlayNowRequest {
+                    logLocalPlayNowDebug(
+                        "completed",
+                        request: localPlayNowRequest,
+                        loadStarted: true,
+                        loadCompleted: true,
+                        playStarted: true
+                    )
+                }
             } catch {
                 AppLogger.shared.error(category: "ui", "Playback start failed: \(error.localizedDescription)")
                 lastError = error.localizedDescription
+                logLocalTransportTiming(
+                    debugTiming,
+                    "error shown",
+                    targetQueueIndex: queueCommit?.index,
+                    track: queueCommit.flatMap { queueTrack(for: $0.index) },
+                    fileURL: loaded.url,
+                    extra: ["error=\"\(error.localizedDescription)\""]
+                )
+                if let localPlayNowRequest {
+                    logLocalPlayNowDebug(
+                        "completed",
+                        request: localPlayNowRequest,
+                        loadStarted: true,
+                        loadCompleted: true,
+                        playStarted: false,
+                        error: error.localizedDescription
+                    )
+                }
             }
         } else if rendererOutputRoute.isAvailable {
             statusMessage = "Loaded \(loaded.metadata.fileName). Ready to render through \(rendererOutputRoute.deviceName)."
+            if let localPlayNowRequest {
+                logLocalPlayNowDebug(
+                    "completed",
+                    request: localPlayNowRequest,
+                    loadStarted: true,
+                    loadCompleted: true,
+                    playStarted: false
+                )
+            }
         } else {
-            statusMessage = "Loaded \(loaded.metadata.fileName). Playback can use the monitor or current macOS output."
+            statusMessage = "Loaded \(loaded.metadata.fileName). Playback can use Output 1 Monitor or current macOS output."
+            if let localPlayNowRequest {
+                logLocalPlayNowDebug(
+                    "completed",
+                    request: localPlayNowRequest,
+                    loadStarted: true,
+                    loadCompleted: true,
+                    playStarted: false
+                )
+            }
         }
     }
 
     private func handleLocalFileLoadFailure(
         url: URL,
         error: Error,
-        queueCommit: LocalFileQueueCommit?
+        queueCommit: LocalFileQueueCommit?,
+        debugTiming: DebugTimingContext?
     ) {
         let message = "Could not load \(url.lastPathComponent): \(error.localizedDescription)"
         AppLogger.shared.error(category: "ui", "Load failed: \(error.localizedDescription)")
         lastError = message
         statusMessage = message
+        logLocalTransportTiming(
+            debugTiming,
+            "error shown",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: url,
+            extra: ["error=\"\(error.localizedDescription)\""]
+        )
         if queueCommit?.isNaturalAdvance == true {
             isPlaying = false
             meterStore.reset()
@@ -1746,13 +3202,39 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
-    private func cancelPendingLocalFileLoad() {
-        localFileLoadTask?.cancel()
-        localFileLoadTask = nil
-        activeLocalFileLoadRequest = nil
+    private func cancelPendingLocalFileLoad(debugTiming: DebugTimingContext? = nil) {
+        let activeTiming = debugTiming ?? activeLocalFileLoadRequest?.debugTiming ?? queuedLocalFileLoadRequest?.debugTiming
+        let canceledRequest = queuedLocalFileLoadRequest ?? activeLocalFileLoadRequest
+        if localFileLoadDebounceTask != nil {
+            cancelLocalFileLoadDebounce(reason: "local load canceled")
+        }
+        let invalidatedGeneration = currentLocalFileLoadGeneration
+        currentLocalFileLoadGeneration &+= 1
+        if localFileLoadTask != nil || activeLocalFileLoadRequest != nil || queuedLocalFileLoadRequest != nil {
+            logLocalTransportTiming(
+                activeTiming,
+                "decode canceled",
+                targetQueueIndex: canceledRequest?.queueCommit?.index,
+                track: canceledRequest?.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: canceledRequest?.url
+            )
+            logLocalTransportTiming(
+                activeTiming,
+                "generation invalidated",
+                targetQueueIndex: canceledRequest?.queueCommit?.index,
+                track: canceledRequest?.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: canceledRequest?.url,
+                extra: [
+                    "invalidatedGeneration=\(invalidatedGeneration)",
+                    "currentGeneration=\(currentLocalFileLoadGeneration)"
+                ]
+            )
+        }
         queuedLocalFileLoadRequest = nil
+        readyQueuedLocalFileLoadGeneration = nil
         pendingSessionQueueIndex = nil
         isLocalFileLoading = false
+        stopLocalFileLoadStatusTask()
     }
 
     private func loadLocalMusicDatabase() {
@@ -1791,10 +3273,12 @@ final class OrbisonicViewModel: ObservableObject {
         startTrackID: String?,
         shuffle: Bool,
         autoplay: Bool,
-        isNaturalAdvance: Bool = false
+        isNaturalAdvance: Bool = false,
+        debugTiming: DebugTimingContext? = nil
     ) {
         guard !tracks.isEmpty else {
             statusMessage = "No local music matches the current view."
+            logLocalTransportTiming(debugTiming, "error shown", extra: ["error=\"No local music matches the current view.\""])
             return
         }
 
@@ -1811,25 +3295,58 @@ final class OrbisonicViewModel: ObservableObject {
 
         sessionQueue = queue
         let startIndex = queue.firstIndex { $0.id == startTrack.id } ?? 0
+        logLocalTransportTiming(
+            debugTiming,
+            "UI state updated",
+            targetQueueIndex: startIndex,
+            track: startTrack,
+            extra: ["sessionQueueCount=\(queue.count)", "shuffle=\(shuffle)"]
+        )
         _ = loadFile(
             url: startTrack.url,
             autoplay: autoplay,
-            queueCommit: LocalFileQueueCommit(index: startIndex, trackID: startTrack.id, isNaturalAdvance: isNaturalAdvance)
+            queueCommit: LocalFileQueueCommit(index: startIndex, trackID: startTrack.id, isNaturalAdvance: isNaturalAdvance),
+            kind: isNaturalAdvance ? .naturalAdvance : (autoplay ? .startingPlayback : .selectedTrack),
+            debugTiming: debugTiming
         )
     }
 
     func skipLocalTransport(offset: Int) {
-        playQueueOffset(offset, wrap: true)
+        let stateBefore = debugPlaybackStateSnapshot()
+        defer {
+            logTransportDebug(
+                command: offset < 0 ? "back" : "forward",
+                allowed: !sessionQueue.isEmpty || !localMusicTracks.isEmpty,
+                handler: "skipLocalTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot()
+            )
+        }
+        let prefix = offset < 0 ? "local-back" : "local-forward"
+        let debugTiming = DebugTimingLog.makeCommand(prefix: prefix, sourceMode: sourceMode)
+        logLocalTransportTiming(
+            debugTiming,
+            "command received",
+            extra: ["command=\"\(offset < 0 ? "back" : "forward")\"", "offset=\(offset)"]
+        )
+        playQueueOffset(offset, wrap: true, debugTiming: debugTiming)
     }
 
-    private func playQueueOffset(_ offset: Int, wrap: Bool) {
+    private func playQueueOffset(_ offset: Int, wrap: Bool, debugTiming: DebugTimingContext? = nil) {
         if sessionQueue.isEmpty {
             let tracks = visibleLocalMusicTracks
             guard !tracks.isEmpty else {
                 statusMessage = "Add a watch folder in Settings, then scan local music."
+                logLocalTransportTiming(debugTiming, "error shown", extra: ["error=\"Add a watch folder in Settings, then scan local music.\""])
                 return
             }
-            startSessionQueue(from: tracks, startTrackID: tracks.first?.id, shuffle: isShuffleEnabled, autoplay: true)
+            startSessionQueue(
+                from: tracks,
+                startTrackID: tracks.first?.id,
+                shuffle: isShuffleEnabled,
+                autoplay: true,
+                debugTiming: debugTiming
+            )
             return
         }
 
@@ -1852,20 +3369,49 @@ final class OrbisonicViewModel: ObservableObject {
 
         guard sessionQueue.indices.contains(nextIndex) else {
             statusMessage = "End of session queue."
+            logLocalTransportTiming(debugTiming, "error shown", targetQueueIndex: nextIndex, extra: ["error=\"End of session queue.\""])
             return
         }
 
-        playQueueIndex(nextIndex)
+        logLocalTransportTiming(
+            debugTiming,
+            "target queue index resolved",
+            targetQueueIndex: nextIndex,
+            track: queueTrack(for: nextIndex)
+        )
+        playQueueIndex(
+            nextIndex,
+            kind: offset < 0 ? .previousTrack : .nextTrack,
+            startPolicy: .debounced,
+            debugTiming: debugTiming
+        )
     }
 
     @discardableResult
-    private func playQueueIndex(_ index: Int, isNaturalAdvance: Bool = false) -> Bool {
+    private func playQueueIndex(
+        _ index: Int,
+        isNaturalAdvance: Bool = false,
+        kind: LocalFileLoadKind? = nil,
+        startPolicy: LocalFileLoadStartPolicy = .immediate,
+        debugTiming: DebugTimingContext? = nil
+    ) -> Bool {
         guard sessionQueue.indices.contains(index) else { return false }
         let track = sessionQueue[index]
+        let loadKind = kind ?? (isNaturalAdvance ? .naturalAdvance : .selectedTrack)
+        logLocalTransportTiming(
+            debugTiming,
+            "target queue index resolved",
+            targetQueueIndex: index,
+            track: track,
+            extra: ["naturalAdvance=\(isNaturalAdvance)"]
+        )
         return loadFile(
             url: track.url,
             autoplay: true,
-            queueCommit: LocalFileQueueCommit(index: index, trackID: track.id, isNaturalAdvance: isNaturalAdvance)
+            queueCommit: LocalFileQueueCommit(index: index, trackID: track.id, isNaturalAdvance: isNaturalAdvance),
+            kind: loadKind,
+            startPolicy: startPolicy,
+            debugTiming: debugTiming
         )
     }
 
@@ -1962,7 +3508,7 @@ final class OrbisonicViewModel: ObservableObject {
         guard prepareOutputForMusicPlayback() else { return }
 
         refreshSpotifyConnectServerIfNeeded(reason: "manual spotify input", force: true)
-        refreshSpotifyNowPlayingIfNeeded(force: true)
+        refreshSpotifyNowPlayingIfNeeded(force: true, reason: "manual spotify input")
         startLiveInputForCurrentRoute(reason: "manual spotify input")
     }
 
@@ -2034,7 +3580,7 @@ final class OrbisonicViewModel: ObservableObject {
             monitorMeterStore.reset()
             updateRendererMeters(from: Array(repeating: 0, count: liveSource.layout.channelCount))
             isPlaying = true
-            liveMonitorState = .monitoring
+            liveMonitorState = .silent
             lastHeartbeatSecond = -1
             lastLiveMeterLogSecond = -1
             lastLiveBufferLogSecond = -1
@@ -2046,16 +3592,18 @@ final class OrbisonicViewModel: ObservableObject {
                 refreshRoonNowPlayingIfNeeded(force: true)
             }
             if sourceMode == .spotify {
-                refreshSpotifyNowPlayingIfNeeded(force: true)
+                refreshSpotifyNowPlayingIfNeeded(force: true, reason: "monitor started")
                 refreshSpotifyConnectServerIfNeeded(reason: "monitor started")
             }
 
             if sourceMode == .roon, inputRoute.isRoonLoopback {
-                statusMessage = "Capturing Roon and rendering to \(routeDisplayName)."
+                statusMessage = "Use Roon to send audio to Orbisonic."
             } else if sourceMode == .spotify, inputRoute.isSpotifyLoopback {
-                statusMessage = "Capturing Spotify from Orbisonic Spotify Input and rendering to \(routeDisplayName)."
+                statusMessage = spotifyVisibleNowPlaying == nil
+                    ? "Use the Spotify app to connect to \"Orbisonic Spotify\" and press play there."
+                    : "Spotify is connected. Press play in Spotify to hear it through Orbisonic."
             } else {
-                statusMessage = "Capturing Aux Cable and rendering to \(routeDisplayName). Source playback stays in the source app."
+                statusMessage = "Connect an audio source to the selected input."
             }
 
             AppLogger.shared.notice(
@@ -2064,7 +3612,7 @@ final class OrbisonicViewModel: ObservableObject {
             )
         } catch {
             liveMonitorState = .error(error.localizedDescription)
-            AppLogger.shared.error(category: "ui", "Live monitor failed: \(error.localizedDescription)")
+            AppLogger.shared.error(category: "ui", "Live input failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
         }
     }
@@ -2101,6 +3649,19 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func togglePlayback() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        var commandAllowed = true
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                command: "toggle",
+                allowed: commandAllowed,
+                handler: "togglePlayback",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
         cancelDiagnosticsForMusicAction()
 
         if sourceMode == .roon {
@@ -2148,6 +3709,8 @@ final class OrbisonicViewModel: ObservableObject {
         guard duration > 0 else {
             statusMessage = "Open a surround file first."
             AppLogger.shared.debug(category: "ui", "Play requested before a file was loaded.")
+            commandAllowed = false
+            commandError = statusMessage
             return
         }
 
@@ -2167,6 +3730,7 @@ final class OrbisonicViewModel: ObservableObject {
         } catch {
             AppLogger.shared.error(category: "ui", "Playback toggle failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
+            commandError = error.localizedDescription
         }
     }
 
@@ -2257,7 +3821,9 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func startSelectedLiveMonitorNow() {
-        statusMessage = "Preparing \(sourceMode.rawValue) input..."
+        if !isLiveMonitorTransitioning {
+            statusMessage = "Preparing \(sourceMode.rawValue) input..."
+        }
         switch sourceMode {
         case .off:
             stop()
@@ -2272,13 +3838,21 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
-    private func rampTransitionOutput(to target: Float, duration: TimeInterval) async {
+    @discardableResult
+    private func rampTransitionOutput(
+        to target: Float,
+        duration: TimeInterval,
+        abortIfNewSourceSwitchPending: Bool = false
+    ) async -> Bool {
         let clampedTarget = min(max(target, 0), 1)
         let start = transitionOutputGain
         let steps = max(Int((duration / 0.01).rounded(.up)), 1)
 
         for step in 1...steps {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
+            if abortIfNewSourceSwitchPending, sourceSwitchRequests.pendingMode != nil {
+                return false
+            }
             let progress = Float(step) / Float(steps)
             transitionOutputGain = start + (clampedTarget - start) * progress
             applyEffectiveOutputVolume(log: false)
@@ -2287,6 +3861,7 @@ final class OrbisonicViewModel: ObservableObject {
                 await sleepForSourceTransition(duration / Double(steps))
             }
         }
+        return true
     }
 
     private func sleepForSourceTransition(_ duration: TimeInterval) async {
@@ -2419,7 +3994,20 @@ final class OrbisonicViewModel: ObservableObject {
         roonSignalPath = nil
         currentFileURL = sourceMode == .filePlayback ? currentFileURL : nil
         reevaluateAutomaticRendererMode(reason: "stop")
-        statusMessage = "Stopped."
+        switch sourceMode {
+        case .off:
+            statusMessage = "Orbisonic is idle"
+        case .filePlayback:
+            statusMessage = "Local playback stopped"
+        case .spotify:
+            statusMessage = "Spotify playback stopped"
+        case .roon:
+            statusMessage = "Roon playback stopped"
+        case .aux:
+            statusMessage = "Aux has no transport"
+        case .testTone:
+            statusMessage = "Diagnostics stopped."
+        }
     }
 
     var diagnosticToneSequence: [TestTonePipelinePoint] {
@@ -2500,8 +4088,8 @@ final class OrbisonicViewModel: ObservableObject {
         diagnosticSequencePosition = 0
         testToneStatus = ""
         if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
-            diagnosticWalkStatus = "Starting renderer channel walk as preview."
-            statusMessage = "Renderer output is not set. Previewing renderer channel walk through \(routeDisplayName)."
+            diagnosticWalkStatus = "Starting Output 2 Renderer channel walk as preview."
+            statusMessage = "Output 2 Renderer is not set. Previewing Output 2 Renderer channel walk through \(routeDisplayName)."
         } else {
             diagnosticWalkStatus = "Starting \(kind.shortTitle.lowercased()) channel walk."
             statusMessage = "Running \(kind.shortTitle.lowercased()) channel walk through \(routeDisplayName)."
@@ -2509,7 +4097,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         AppLogger.shared.notice(
             category: "diagnostics",
-            "Started \(kind.title) output=\(outputRoute.deviceName) channels=\(activeDiagnosticChannelCount) monitorPreview=\(rendererDiagnosticsUsingMonitorPreview) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
+            "Started \(kind.title) output=\(outputRoute.deviceName) channels=\(activeDiagnosticChannelCount) localPreview=\(rendererDiagnosticsUsingMonitorPreview) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
         )
 
         diagnosticSequenceTask = Task { [weak self] in
@@ -2574,8 +4162,8 @@ final class OrbisonicViewModel: ObservableObject {
             if fallbackRoute.isAvailable, fallbackRoute.isSelectableOutputTarget {
                 outputRoute = fallbackRoute
                 syncRendererAudioRouting()
-                statusMessage = "Renderer output is not set; using \(fallbackRoute.deviceName) for monitor preview."
-                AppLogger.shared.notice(category: "diagnostics", "Renderer diagnostic preview using fallback output=\(fallbackRoute.deviceName)")
+            statusMessage = "Output 2 Renderer is not set; using \(fallbackRoute.deviceName) for Output 1 Monitor."
+                AppLogger.shared.notice(category: "diagnostics", "Output 2 Renderer diagnostic preview using fallback output=\(fallbackRoute.deviceName)")
                 return true
             }
 
@@ -2588,7 +4176,7 @@ final class OrbisonicViewModel: ObservableObject {
         guard monitorOutputRoute.isAvailable,
               monitorOutputRoute.isSelectableOutputTarget
         else {
-            AppLogger.shared.warning(category: "diagnostics", "Monitor downmix unavailable for renderer diagnostic; no monitor output route.")
+            AppLogger.shared.warning(category: "diagnostics", "Output 1 Monitor downmix unavailable for Output 2 Renderer diagnostic; no Output 1 Monitor route.")
             return false
         }
 
@@ -2596,7 +4184,7 @@ final class OrbisonicViewModel: ObservableObject {
             try engine.setDiagnosticMonitorOutputDevice(monitorOutputRoute.deviceID)
             return true
         } catch {
-            AppLogger.shared.warning(category: "diagnostics", "Monitor downmix unavailable: \(error.localizedDescription)")
+            AppLogger.shared.warning(category: "diagnostics", "Output 1 Monitor downmix unavailable: \(error.localizedDescription)")
             return false
         }
     }
@@ -2627,11 +4215,11 @@ final class OrbisonicViewModel: ObservableObject {
             activeDiagnosticWalkTitle = kind.title
             diagnosticSequencePosition = index + 1
             if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
-                diagnosticWalkStatus = "Playing renderer channel \(index + 1) of \(total) as monitor downmix."
-                statusMessage = "Renderer channel \(index + 1) preview is active on \(routeDisplayName)."
+                diagnosticWalkStatus = "Playing Output 2 Renderer channel \(index + 1) of \(total) as Output 1 Monitor downmix."
+                statusMessage = "Output 2 Renderer channel \(index + 1) preview is active on \(routeDisplayName)."
             } else if usesMonitorDownmix {
-                diagnosticWalkStatus = "Playing renderer channel \(index + 1) of \(total) with monitor downmix."
-                statusMessage = "Renderer channel \(index + 1) is active on \(routeDisplayName); monitor downmix is on \(monitorOutputRoute.deviceName)."
+                diagnosticWalkStatus = "Playing Output 2 Renderer channel \(index + 1) of \(total) with Output 1 Monitor downmix."
+                statusMessage = "Output 2 Renderer channel \(index + 1) is active on \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)."
             } else {
                 diagnosticWalkStatus = "Playing \(kind.shortTitle.lowercased()) channel \(index + 1) of \(total)."
                 statusMessage = "\(kind.shortTitle) channel \(index + 1) is active on \(routeDisplayName)."
@@ -2796,7 +4384,7 @@ final class OrbisonicViewModel: ObservableObject {
             isTestTonePlaying = true
             testToneStatus = "Playing \(selectedTestTonePoint.rawValue) for 3 seconds."
             statusMessage = monitorDownmix
-                ? "\(selectedTestTonePoint.pipelineDescription). Renderer output is \(routeDisplayName); monitor downmix is on \(monitorOutputRoute.deviceName)."
+                ? "\(selectedTestTonePoint.pipelineDescription). Output 2 Renderer is \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)."
                 : "\(selectedTestTonePoint.pipelineDescription). Listen on \(routeDisplayName)."
 
             let channels = selectedTestTonePoint.meterChannels
@@ -2883,11 +4471,11 @@ final class OrbisonicViewModel: ObservableObject {
             activeDiagnosticChannelCount = Self.diagnosticSpeakerChannelCount
             activeDiagnosticWalkTitle = "Test Tone"
             testToneStatus = rendererDiagnosticsUsingMonitorPreview
-                ? "Playing channel \(channel) as monitor downmix preview."
-                : (monitorDownmix ? "Playing channel \(channel) on renderer output with monitor downmix." : "Playing channel \(channel) on renderer output.")
+                ? "Playing channel \(channel) as Output 1 Monitor downmix."
+                : (monitorDownmix ? "Playing channel \(channel) on Output 2 Renderer with Output 1 Monitor downmix." : "Playing channel \(channel) on Output 2 Renderer.")
             statusMessage = rendererDiagnosticsUsingMonitorPreview
-                ? "Renderer output is not set. Channel \(channel) is previewing through \(routeDisplayName)."
-                : (monitorDownmix ? "Channel \(channel) tone is active on \(routeDisplayName); monitor downmix is on \(monitorOutputRoute.deviceName)." : "Channel \(channel) tone is active on \(routeDisplayName).")
+                ? "Output 2 Renderer is not set. Channel \(channel) is previewing through \(routeDisplayName)."
+                : (monitorDownmix ? "Channel \(channel) tone is active on \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)." : "Channel \(channel) tone is active on \(routeDisplayName).")
 
             let channels = rendererMeterChannels()
             rendererMeterStore.configureIfNeeded(channels: channels)
@@ -2901,7 +4489,7 @@ final class OrbisonicViewModel: ObservableObject {
 
             AppLogger.shared.notice(
                 category: "diagnostics",
-                "Started speaker test tone channel=\(channel)/\(Self.diagnosticSpeakerChannelCount) monitorPreview=\(rendererDiagnosticsUsingMonitorPreview) output=\(outputRoute.deviceName)"
+                "Started speaker test tone channel=\(channel)/\(Self.diagnosticSpeakerChannelCount) localPreview=\(rendererDiagnosticsUsingMonitorPreview) output=\(outputRoute.deviceName)"
             )
         } catch {
             AppLogger.shared.error(category: "diagnostics", "Speaker test tone failed: \(error.localizedDescription)")
@@ -3178,7 +4766,7 @@ final class OrbisonicViewModel: ObservableObject {
     var renderFlowDetail: String {
         guard let metadata = sourceMetadata else {
             if sourceMode == .testTone {
-                return "Synthetic source for monitor and renderer checks."
+                return "Synthetic source for Output 1 Monitor and Output 2 Renderer checks."
             }
             return sourceMode.isLiveInput ? liveInputReadinessText : "No source loaded."
         }
@@ -3290,7 +4878,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .embeddedModuleUnavailable:
             serverStatus = "Unavailable"
         case .waitingForConnection:
-            if let clientName = spotifyNowPlaying?.clientName?.trimmedNilIfBlank {
+            if let clientName = (spotifyVisibleNowPlaying ?? spotifyNowPlaying)?.clientName?.trimmedNilIfBlank {
                 serverStatus = "Connected to \(clientName)"
             } else {
                 serverStatus = "Advertising as \(spotifyReceiverClient.configuration.receiverName)"
@@ -3324,7 +4912,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     var outputSafetyText: String {
         if rendererOutputSelection == .none {
-            return "Renderer output is not set. Renderer VU remains active."
+            return "Output 2 Renderer is not set. Output 2 Renderer VU remains active."
         }
 
         if DanteSafetyPolicy.requiresHighRateChannelWarning(
@@ -3337,15 +4925,15 @@ final class OrbisonicViewModel: ObservableObject {
         switch rendererOutputRoute.routeRisk {
         case .safe:
             if rendererOutputRoute.isRendererCapableOutput {
-                return "Renderer output selected."
+                return "Output 2 Renderer selected."
             }
-            return "Renderer output selected."
+            return "Output 2 Renderer selected."
         case .feedbackLoop(let name):
             return "Blocked: \(name) would feed Orbisonic back into an input loopback."
         case .virtualOutput(let name):
-            return "Virtual output: verify \(name) is the intended renderer target."
+            return "Virtual output: verify \(name) is the intended Output 2 Renderer target."
         case .unavailable:
-            return "No verified renderer output route."
+            return "No verified Output 2 Renderer route."
         }
     }
 
@@ -3431,14 +5019,14 @@ final class OrbisonicViewModel: ObservableObject {
         return outputStatusText(
             for: monitorOutputRoute,
             selection: monitorOutputSelection,
-            noneDetail: "local monitor disabled",
-            safeDetail: monitorOutputRoute.isRendererCapableOutput ? "multichannel output" : "local monitor"
+            noneDetail: "Output 1 Monitor disabled",
+            safeDetail: monitorOutputRoute.isRendererCapableOutput ? "multichannel output" : "Output 1 Monitor"
         )
     }
 
     var rendererOutputStatusText: String {
         if rendererOutputSelection == .none {
-            return "not set • explicit renderer not selected"
+            return "not set • Output 2 Renderer not selected"
         }
 
         if DanteSafetyPolicy.requiresHighRateChannelWarning(
@@ -3451,8 +5039,8 @@ final class OrbisonicViewModel: ObservableObject {
         return outputStatusText(
             for: rendererOutputRoute,
             selection: rendererOutputSelection,
-            noneDetail: "explicit renderer not selected",
-            safeDetail: "renderer output selected"
+            noneDetail: "Output 2 Renderer not selected",
+            safeDetail: "Output 2 Renderer selected"
         )
     }
 
@@ -3560,7 +5148,7 @@ final class OrbisonicViewModel: ObservableObject {
             return nil
         }
 
-        return "Roon is streaming \(formatSampleRate(roonRate)) but \(liveInputSignalName) is \(formatSampleRate(inputRoute.nominalSampleRate)). Set the Roon output and Orbisonic loopback to the same rate, then restart monitoring."
+        return "Roon is streaming \(formatSampleRate(roonRate)) but \(liveInputSignalName) is \(formatSampleRate(inputRoute.nominalSampleRate)). Set the Roon output and Orbisonic loopback to the same rate, then restart listening."
     }
 
     private var roonLoopbackSampleRateMismatch: Double? {
@@ -3658,8 +5246,18 @@ final class OrbisonicViewModel: ObservableObject {
         purpose: OutputPurpose,
         label: String
     ) -> Bool {
+        let stateBefore = debugPlaybackStateSnapshot()
+        let previousDevice = outputRoute.deviceName
         guard route.isAvailable else {
             statusMessage = "\(purpose.title) output not set."
+            logOutputRoutingDebug(
+                output: purpose.title,
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: statusMessage
+            )
             return false
         }
 
@@ -3667,7 +5265,34 @@ final class OrbisonicViewModel: ObservableObject {
             let message = outputFeedbackMessage(for: route, purpose: purpose)
             statusMessage = message
             lastError = message
+            logOutputRoutingDebug(
+                output: purpose.title,
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: message
+            )
             return false
+        }
+
+        if routesMatch(outputRoute, route) {
+            outputRoute = route
+            configureMonitorMeters()
+            syncRendererAudioRouting()
+            statusMessage = "\(purpose.title) output set to \(label)."
+            AppLogger.shared.notice(
+                category: "route",
+                "\(purpose.title) output label=\(label) already active; keeping current audio graph."
+            )
+            logOutputRoutingDebug(
+                output: purpose.title,
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false
+            )
+            return true
         }
 
         if isPlaying || isTestTonePlaying || isDiagnosticSequencePlaying {
@@ -3684,13 +5309,182 @@ final class OrbisonicViewModel: ObservableObject {
                 category: "route",
                 "Selected \(purpose.lowerTitle) output label=\(label) device=\(route.deviceName) uid=\(route.uid) channels=\(route.outputChannelCount) sampleRate=\(formatSampleRate(route.nominalSampleRate))"
             )
+            logOutputRoutingDebug(
+                output: purpose.title,
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: true
+            )
             return true
         } catch {
             lastError = error.localizedDescription
             statusMessage = "Could not select \(label) for \(purpose.lowerTitle)."
             AppLogger.shared.error(category: "route", "\(purpose.title) output selection failed: \(error.localizedDescription)")
+            logOutputRoutingDebug(
+                output: purpose.title,
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: true,
+                error: error.localizedDescription
+            )
             return false
         }
+    }
+
+    @discardableResult
+    private func applyMonitorOutputRouteIfAvailable(
+        _ route: OutputRouteInfo,
+        previousDevice: String,
+        label: String
+    ) -> Bool {
+        let stateBefore = debugPlaybackStateSnapshot()
+        guard route.isAvailable else {
+            statusMessage = "Output 1 Monitor output not set."
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: statusMessage
+            )
+            return false
+        }
+
+        guard route.isSelectableOutputTarget else {
+            let message = outputFeedbackMessage(for: route, purpose: .monitor)
+            statusMessage = message
+            lastError = message
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false,
+                error: message
+            )
+            return false
+        }
+
+        if !shouldPreserveRendererOutputDuringMonitorChange, routesMatch(outputRoute, route) {
+            outputRoute = route
+            configureMonitorMeters()
+            syncRendererAudioRouting()
+            statusMessage = "Output 1 Monitor output set to \(label)."
+            AppLogger.shared.notice(
+                category: "route",
+                "Output 1 Monitor output label=\(label) already active; keeping current audio graph."
+            )
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false
+            )
+            return true
+        }
+
+        if shouldPreserveRendererOutputDuringMonitorChange {
+            var graphRebuild = false
+            var routeApplyError: String?
+            if !routesMatch(outputRoute, rendererOutputRoute) {
+                do {
+                    graphRebuild = try engine.setOutputDevicePreservingPlayback(rendererOutputRoute.deviceID)
+                    outputRoute = rendererOutputRoute
+                    configureMonitorMeters()
+                    syncRendererAudioRouting()
+                } catch {
+                    routeApplyError = error.localizedDescription
+                    lastError = error.localizedDescription
+                    statusMessage = "Could not preserve Output 2 Renderer while selecting \(label) for Output 1 Monitor."
+                    AppLogger.shared.error(category: "route", statusMessage)
+                }
+            }
+
+            if routeApplyError == nil {
+                statusMessage = "Output 1 Monitor set to \(label). Output 2 Renderer remains \(rendererOutputRoute.deviceName)."
+                AppLogger.shared.notice(
+                    category: "route",
+                    "Selected monitor output label=\(label) device=\(route.deviceName) uid=\(route.uid) while preserving renderer output=\(rendererOutputRoute.deviceName)"
+                )
+            }
+
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: graphRebuild,
+                error: routeApplyError
+            )
+            return routeApplyError == nil
+        }
+
+        do {
+            let graphRebuild = try engine.setOutputDevicePreservingPlayback(route.deviceID)
+            outputRoute = route
+            configureMonitorMeters()
+            syncRendererAudioRouting()
+            statusMessage = "Output 1 Monitor output set to \(label)."
+            AppLogger.shared.notice(
+                category: "route",
+                "Selected monitor output label=\(label) device=\(route.deviceName) uid=\(route.uid) channels=\(route.outputChannelCount) sampleRate=\(formatSampleRate(route.nominalSampleRate))"
+            )
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: graphRebuild
+            )
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = "Could not select \(label) for Output 1 Monitor."
+            AppLogger.shared.error(category: "route", "Output 1 Monitor selection failed: \(error.localizedDescription)")
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: route.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: true,
+                error: error.localizedDescription
+            )
+            return false
+        }
+    }
+
+    @discardableResult
+    private func activateRendererOutputIfMonitorWasActive(previousMonitorRoute: OutputRouteInfo) -> Bool {
+        guard rendererOutputRoute.isAvailable,
+              routesMatch(outputRoute, previousMonitorRoute)
+        else {
+            return false
+        }
+
+        do {
+            let graphRebuild = try engine.setOutputDevicePreservingPlayback(rendererOutputRoute.deviceID)
+            outputRoute = rendererOutputRoute
+            configureMonitorMeters()
+            syncRendererAudioRouting()
+            return graphRebuild
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = "Could not preserve Output 2 Renderer after disabling Output 1 Monitor."
+            AppLogger.shared.error(category: "route", statusMessage)
+            return true
+        }
+    }
+
+    private var shouldPreserveRendererOutputDuringMonitorChange: Bool {
+        rendererOutputSelection != .none && rendererOutputRoute.isAvailable
+    }
+
+    private func routesMatch(_ lhs: OutputRouteInfo, _ rhs: OutputRouteInfo) -> Bool {
+        lhs.matchesAudioDevice(rhs)
     }
 
     private func resolvedMonitorOutputRoute(
@@ -3827,7 +5621,27 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func handlePlaybackEnded() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        guard isPlaying else {
+            logTransportDebug(
+                command: "playback-ended",
+                allowed: false,
+                handler: "handlePlaybackEnded:ignoredWhenNotPlaying",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: "ignored because local playback is not playing"
+            )
+            return
+        }
+
         if playNextLocalMusicTrackAfterNaturalEnd() {
+            logTransportDebug(
+                command: "playback-ended",
+                allowed: true,
+                handler: "handlePlaybackEnded:naturalAdvance",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot()
+            )
             return
         }
 
@@ -3837,6 +5651,13 @@ final class OrbisonicViewModel: ObservableObject {
         rendererMeterStore.reset()
         reevaluateAutomaticRendererMode(reason: "playback ended")
         statusMessage = "Playback finished."
+        logTransportDebug(
+            command: "playback-ended",
+            allowed: true,
+            handler: "handlePlaybackEnded:finish",
+            stateBefore: stateBefore,
+            stateAfter: debugPlaybackStateSnapshot()
+        )
     }
 
     private func playNextLocalMusicTrackAfterNaturalEnd() -> Bool {
@@ -3907,7 +5728,7 @@ final class OrbisonicViewModel: ObservableObject {
             repairBlackHoleSampleRateIfNeeded()
         }
 
-        refreshSpotifyNowPlayingIfNeeded()
+        refreshSpotifyNowPlayingIfNeeded(reason: "transport refresh")
 
         let engineDuration = engine.duration()
         if abs(engineDuration - duration) >= 0.001 {
@@ -3983,10 +5804,19 @@ final class OrbisonicViewModel: ObservableObject {
 
         let nextSystemOutputRoute = OutputRouteMonitor.currentRoute()
         if nextSystemOutputRoute != systemOutputRoute {
+            let stateBefore = debugPlaybackStateSnapshot()
+            let previousDevice = systemOutputRoute.deviceName
             systemOutputRoute = nextSystemOutputRoute
             AppLogger.shared.notice(
                 category: "route",
                 "System output route changed device=\(nextSystemOutputRoute.deviceName) transport=\(nextSystemOutputRoute.transportName) channels=\(nextSystemOutputRoute.outputChannelCount) target=\(nextSystemOutputRoute.targetName)"
+            )
+            logOutputRoutingDebug(
+                output: "System Output",
+                previousDevice: previousDevice,
+                newDevice: nextSystemOutputRoute.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false
             )
         }
 
@@ -4005,11 +5835,20 @@ final class OrbisonicViewModel: ObservableObject {
             systemOutput: nextSystemOutputRoute
         )
         if nextMonitorOutputRoute != monitorOutputRoute {
+            let stateBefore = debugPlaybackStateSnapshot()
+            let previousDevice = monitorOutputRoute.deviceName
             monitorOutputRoute = nextMonitorOutputRoute
             configureMonitorMeters()
             AppLogger.shared.notice(
                 category: "route",
-                "Monitor output route changed device=\(nextMonitorOutputRoute.deviceName) transport=\(nextMonitorOutputRoute.transportName) channels=\(nextMonitorOutputRoute.outputChannelCount) target=\(nextMonitorOutputRoute.targetName)"
+                "Output 1 Monitor route changed device=\(nextMonitorOutputRoute.deviceName) transport=\(nextMonitorOutputRoute.transportName) channels=\(nextMonitorOutputRoute.outputChannelCount) target=\(nextMonitorOutputRoute.targetName)"
+            )
+            logOutputRoutingDebug(
+                output: "Output 1 Monitor",
+                previousDevice: previousDevice,
+                newDevice: nextMonitorOutputRoute.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: false
             )
         }
 
@@ -4018,25 +5857,40 @@ final class OrbisonicViewModel: ObservableObject {
             systemOutput: nextSystemOutputRoute
         )
         if nextRendererOutputRoute != rendererOutputRoute {
+            let stateBefore = debugPlaybackStateSnapshot()
+            let previousDevice = rendererOutputRoute.deviceName
             rendererOutputRoute = nextRendererOutputRoute
             configureMonitorMeters()
             configureRendererMeters()
             syncRendererAudioRouting()
             AppLogger.shared.notice(
                 category: "route",
-                "Renderer output route changed device=\(nextRendererOutputRoute.deviceName) transport=\(nextRendererOutputRoute.transportName) channels=\(nextRendererOutputRoute.outputChannelCount) target=\(nextRendererOutputRoute.targetName)"
+                "Output 2 Renderer route changed device=\(nextRendererOutputRoute.deviceName) transport=\(nextRendererOutputRoute.transportName) channels=\(nextRendererOutputRoute.outputChannelCount) target=\(nextRendererOutputRoute.targetName)"
+            )
+            logOutputRoutingDebug(
+                output: "Output 2 Renderer",
+                previousDevice: previousDevice,
+                newDevice: nextRendererOutputRoute.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: true
             )
         }
 
         let refreshedActiveRoute = refreshedActiveOutputRoute(from: nextAvailableOutputRoutes)
         if refreshedActiveRoute != outputRoute {
+            let stateBefore = debugPlaybackStateSnapshot()
+            let previousDevice = outputRoute.deviceName
             outputRoute = refreshedActiveRoute
             configureMonitorMeters()
 
+            var routeApplyError: String?
+            var didApplyOutputDevice = false
             if refreshedActiveRoute.isAvailable, !isPlaying, !isTestTonePlaying, !isDiagnosticSequencePlaying {
                 do {
                     try engine.setOutputDevice(refreshedActiveRoute.deviceID)
+                    didApplyOutputDevice = true
                 } catch {
+                    routeApplyError = error.localizedDescription
                     AppLogger.shared.warning(category: "route", "Could not apply refreshed output device: \(error.localizedDescription)")
                 }
             }
@@ -4051,12 +5905,20 @@ final class OrbisonicViewModel: ObservableObject {
             } else if let metadata = sourceMetadata {
                 statusMessage = "Loaded \(metadata.fileName). Current route: \(routeDisplayName)."
             } else if rendererOutputRoute.isAvailable {
-                statusMessage = "Load a surround file. Current renderer output: \(rendererOutputRoute.deviceName)."
+                statusMessage = "Load a surround file. Current Output 2 Renderer: \(rendererOutputRoute.deviceName)."
             } else if monitorOutputRoute.isAvailable {
-                statusMessage = "Load a surround file. Current monitor output: \(monitorOutputRoute.deviceName)."
+                statusMessage = "Load a surround file. Current Output 1 Monitor: \(monitorOutputRoute.deviceName)."
             } else {
-                statusMessage = "Load a surround file. Monitor and renderer outputs are not set."
+                statusMessage = "Load a surround file. Output 1 Monitor and Output 2 Renderer are not set."
             }
+            logOutputRoutingDebug(
+                output: "Active Output",
+                previousDevice: previousDevice,
+                newDevice: refreshedActiveRoute.deviceName,
+                playbackStateBefore: stateBefore,
+                graphRebuild: didApplyOutputDevice,
+                error: routeApplyError
+            )
         }
 
         let nextAvailableInputRoutes = OutputRouteMonitor.availableInputRoutes()
@@ -4110,7 +5972,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         if sourceMode.isLiveInput, isPlaying, outputRoute.routeRisk.blocksLiveMonitoring {
             stop()
-            let message = "Live input stopped because macOS output changed to a loopback input. Set output to a monitor or renderer target, then start the route again."
+            let message = "Live input stopped because macOS output changed to a loopback input. Set output to Output 1 Monitor or Output 2 Renderer, then start the route again."
             AppLogger.shared.error(category: "route", message)
             statusMessage = message
             lastError = message
@@ -4402,7 +6264,7 @@ final class OrbisonicViewModel: ObservableObject {
                 liveMonitorState = .monitoring
             }
             if lastLiveSignalPresent != true && !liveMonitorState.isMuted {
-                statusMessage = "Live signal detected from \(liveInputSignalName); rendering to \(routeDisplayName)."
+                statusMessage = "Playing through Orbisonic."
                 AppLogger.shared.notice(
                     category: "live-input",
                     "Live signal detected peak=\(String(format: "%.2f", peak)) input=\(inputRoute.deviceName) output=\(outputRoute.deviceName)"
@@ -4576,14 +6438,114 @@ final class OrbisonicViewModel: ObservableObject {
         startPersistentHelperServices(reason: "periodic service check")
     }
 
-    private func refreshSpotifyNowPlayingIfNeeded(force: Bool = false) {
+    private func spotifyTrackIdentity(_ state: SpotifyNowPlaying?) -> String? {
+        guard let state else { return nil }
+        if let uri = state.uri?.trimmedNilIfBlank {
+            return uri
+        }
+
+        return [
+            state.displayTitle,
+            state.artistText,
+            state.durationMs.map(String.init) ?? "-"
+        ].joined(separator: "|")
+    }
+
+    private func clearSpotifyVisibleState(reason: String) {
+        spotifyPlaybackStatusDebounceTask?.cancel()
+        spotifyPlaybackStatusDebounceTask = nil
+        if spotifyVisibleNowPlaying != nil {
+            spotifyVisibleNowPlaying = nil
+            logSpotifyStatusDebug(
+                rawState: spotifyNowPlaying,
+                debouncedState: spotifyVisibleNowPlaying,
+                reasonForUpdate: reason
+            )
+        }
+    }
+
+    private func updateSpotifyVisibleState(
+        from rawState: SpotifyNowPlaying?,
+        reason: String,
+        forceImmediate: Bool = false
+    ) {
+        guard sourceMode == .spotify else {
+            clearSpotifyVisibleState(reason: "\(reason):inactive source")
+            return
+        }
+
+        let currentVisible = spotifyVisibleNowPlaying
+        let trackChanged = spotifyTrackIdentity(currentVisible) != spotifyTrackIdentity(rawState)
+        let playbackChanged = currentVisible?.isPlaying != rawState?.isPlaying
+        let shouldDebounce = currentVisible != nil && !trackChanged && playbackChanged && !forceImmediate
+
+        spotifyPlaybackStatusDebounceTask?.cancel()
+        spotifyPlaybackStatusDebounceTask = nil
+
+        guard shouldDebounce else {
+            if spotifyVisibleNowPlaying != rawState {
+                spotifyVisibleNowPlaying = rawState
+            }
+            logSpotifyStatusDebug(
+                rawState: rawState,
+                debouncedState: spotifyVisibleNowPlaying,
+                reasonForUpdate: forceImmediate ? "\(reason):immediate" : reason
+            )
+            return
+        }
+
+        logSpotifyStatusDebug(
+            rawState: rawState,
+            debouncedState: currentVisible,
+            reasonForUpdate: "\(reason):debounce pending"
+        )
+        spotifyPlaybackStatusDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.spotifyPlaybackStatusDebounceNanoseconds)
+            } catch {
+                return
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self, self.sourceMode == .spotify else { return }
+                self.spotifyVisibleNowPlaying = rawState
+                self.logSpotifyStatusDebug(
+                    rawState: self.spotifyNowPlaying,
+                    debouncedState: self.spotifyVisibleNowPlaying,
+                    reasonForUpdate: "\(reason):debounced"
+                )
+            }
+        }
+    }
+
+    private func updateSpotifyNowPlaying(
+        _ next: SpotifyNowPlaying?,
+        reason: String,
+        forceVisible: Bool = false
+    ) {
+        spotifyNowPlaying = next
+        guard sourceMode == .spotify else {
+            clearSpotifyVisibleState(reason: "\(reason):inactive source")
+            logSpotifyStatusDebug(
+                rawState: next,
+                debouncedState: spotifyVisibleNowPlaying,
+                reasonForUpdate: "\(reason):inactive source"
+            )
+            return
+        }
+        updateSpotifyVisibleState(from: next, reason: reason, forceImmediate: forceVisible)
+    }
+
+    private func refreshSpotifyNowPlayingIfNeeded(force: Bool = false, reason: String = "periodic refresh") {
         let now = Date()
         guard force || now.timeIntervalSince(lastSpotifyNowPlayingRefreshTime) >= Self.spotifyNowPlayingRefreshInterval else { return }
         lastSpotifyNowPlayingRefreshTime = now
 
         let next = spotifyReceiverClient.readNowPlaying()
         if next != spotifyNowPlaying {
-            spotifyNowPlaying = next
+            updateSpotifyNowPlaying(next, reason: reason, forceVisible: force && sourceMode == .spotify)
+        } else if force {
+            updateSpotifyVisibleState(from: next, reason: reason, forceImmediate: sourceMode == .spotify)
         }
 
         if next == nil, spotifyReceiverStatus.isRunning {
@@ -4625,20 +6587,82 @@ final class OrbisonicViewModel: ObservableObject {
         sendSpotifyControl(.seek(positionMs: next))
     }
 
+    private func spotifyControlDebugName(_ control: SpotifyReceiverControl) -> String {
+        switch control {
+        case .playPause:
+            return "playPause"
+        case .previous:
+            return "previous"
+        case .next:
+            return "next"
+        case .seek(let positionMs):
+            return "seek:\(positionMs)"
+        case .setVolume(let percent):
+            return "setVolume:\(percent)"
+        }
+    }
+
     private func sendSpotifyControl(_ control: SpotifyReceiverControl) {
-        guard sourceMode == .spotify else { return }
+        let stateBefore = debugPlaybackStateSnapshot()
+        guard sourceMode == .spotify else {
+            logTransportDebug(
+                command: spotifyControlDebugName(control),
+                allowed: false,
+                handler: "sendSpotifyControl",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: "source is \(sourceMode.rawValue)"
+            )
+            return
+        }
         if spotifyReceiverClient.send(control) {
-            refreshSpotifyNowPlayingIfNeeded(force: true)
+            refreshSpotifyNowPlayingIfNeeded(force: true, reason: "spotify control sent")
             statusMessage = "Sent Spotify Connect control."
+            logTransportDebug(
+                command: spotifyControlDebugName(control),
+                allowed: true,
+                handler: "sendSpotifyControl",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot()
+            )
         } else {
             statusMessage = "Spotify Connect control is not available in this build or the receiver is not active."
             refreshSpotifyConnectServerIfNeeded(reason: "control failed", force: true)
+            logTransportDebug(
+                command: spotifyControlDebugName(control),
+                allowed: true,
+                handler: "sendSpotifyControl",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: "spotify receiver control unavailable"
+            )
         }
     }
 
     private func sendRoonTransport(_ control: RoonBridgeControl) {
-        guard sourceMode == .roon else { return }
-        guard !isRoonTransportCommandInFlight else { return }
+        let stateBefore = debugPlaybackStateSnapshot()
+        guard sourceMode == .roon else {
+            logTransportDebug(
+                command: control.rawValue,
+                allowed: false,
+                handler: "sendRoonTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: "source is \(sourceMode.rawValue)"
+            )
+            return
+        }
+        guard !isRoonTransportCommandInFlight else {
+            logTransportDebug(
+                command: control.rawValue,
+                allowed: false,
+                handler: "sendRoonTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: "roon command already in flight"
+            )
+            return
+        }
         isRoonTransportCommandInFlight = true
         statusMessage = "Sending \(control.rawValue) to Roon..."
 
@@ -4655,11 +6679,26 @@ final class OrbisonicViewModel: ObservableObject {
                 }
                 statusMessage = response.message ?? "Sent \(control.rawValue) to Roon."
                 AppLogger.shared.notice(category: "roon-bridge", "Sent transport control=\(control.rawValue)")
+                logTransportDebug(
+                    command: control.rawValue,
+                    allowed: true,
+                    handler: "sendRoonTransport",
+                    stateBefore: stateBefore,
+                    stateAfter: debugPlaybackStateSnapshot()
+                )
             } catch {
                 applyRoonBridgeError(error)
                 statusMessage = error.localizedDescription
                 lastError = error.localizedDescription
                 AppLogger.shared.error(category: "roon-bridge", "Transport control failed control=\(control.rawValue) error=\(error.localizedDescription)")
+                logTransportDebug(
+                    command: control.rawValue,
+                    allowed: true,
+                    handler: "sendRoonTransport",
+                    stateBefore: stateBefore,
+                    stateAfter: debugPlaybackStateSnapshot(),
+                    error: error.localizedDescription
+                )
             }
         }
     }
@@ -4667,6 +6706,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func applyRoonBridgeSnapshot(_ snapshot: RoonBridgeSnapshot) {
         if snapshot != roonBridgeSnapshot {
             roonBridgeSnapshot = snapshot
+            updateRoonArtwork(for: snapshot, reason: "bridge snapshot")
             let logStatus = [
                 snapshot.bridge.state,
                 snapshot.selectedZoneId ?? "no-zone",
@@ -4679,6 +6719,80 @@ final class OrbisonicViewModel: ObservableObject {
                 AppLogger.shared.notice(
                     category: "roon-bridge",
                     "State=\(snapshot.bridge.state) status=\(snapshot.statusText)"
+                )
+            }
+        } else {
+            updateRoonArtwork(for: snapshot, reason: "bridge snapshot unchanged")
+        }
+    }
+
+    private func updateRoonArtwork(for snapshot: RoonBridgeSnapshot, reason: String) {
+        guard let request = snapshot.selectedZone?.nowPlaying?.artworkRequest else {
+            roonArtworkFetchTask?.cancel()
+            roonArtworkFetchTask = nil
+            roonArtworkRequestedKey = nil
+            let signature = [
+                snapshot.selectedZoneId ?? "no-zone",
+                snapshot.selectedZone?.titleText ?? "no-title",
+                snapshot.selectedZone?.subtitleText ?? "no-subtitle"
+            ].joined(separator: "|")
+            if signature != lastLoggedRoonArtworkMissingSignature {
+                lastLoggedRoonArtworkMissingSignature = signature
+                AppLogger.shared.debug(category: "roon-artwork", "No Roon artwork key available reason=\(reason)")
+            }
+            return
+        }
+
+        lastLoggedRoonArtworkMissingSignature = nil
+
+        if let cachedURL = roonArtworkCache.cachedURL(for: request.stableKey) {
+            roonArtworkFetchTask?.cancel()
+            roonArtworkFetchTask = nil
+            roonArtworkRequestedKey = request.stableKey
+            if roonArtworkURL != cachedURL {
+                roonArtworkURL = cachedURL
+                AppLogger.shared.notice(
+                    category: "roon-artwork",
+                    "Loaded cached Roon artwork title=\(request.title) key=\(request.stableKey)"
+                )
+            }
+            return
+        }
+
+        if roonArtworkRequestedKey == request.stableKey, roonArtworkFetchTask != nil {
+            return
+        }
+
+        if roonArtworkFailedKeys.contains(request.stableKey) {
+            AppLogger.shared.debug(category: "roon-artwork", "Skipping previously failed Roon artwork key=\(request.stableKey)")
+            return
+        }
+
+        roonArtworkFetchTask?.cancel()
+        roonArtworkRequestedKey = request.stableKey
+        roonArtworkFetchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let data = try await roonBridgeClient.fetchImageDataStartingIfNeeded(for: request.imageKey)
+                guard !Task.isCancelled else { return }
+                let cachedURL = try roonArtworkCache.store(data, for: request.stableKey)
+                guard roonArtworkRequestedKey == request.stableKey else { return }
+                roonArtworkURL = cachedURL
+                roonArtworkFetchTask = nil
+                roonArtworkFailedKeys.remove(request.stableKey)
+                AppLogger.shared.notice(
+                    category: "roon-artwork",
+                    "Fetched Roon artwork title=\(request.title) key=\(request.stableKey) bytes=\(data.count)"
+                )
+            } catch {
+                guard !Task.isCancelled else { return }
+                if roonArtworkRequestedKey == request.stableKey {
+                    roonArtworkFetchTask = nil
+                    roonArtworkFailedKeys.insert(request.stableKey)
+                }
+                AppLogger.shared.warning(
+                    category: "roon-artwork",
+                    "Roon artwork fetch failed title=\(request.title) key=\(request.stableKey) error=\(error.localizedDescription)"
                 )
             }
         }

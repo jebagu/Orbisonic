@@ -343,6 +343,42 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertFalse(DanteSafetyPolicy.requiresHighRateChannelWarning(outputChannelCount: 30, sampleRate: 96_000))
     }
 
+    func testOutputRoutesMatchSameUidOrSameDeviceForNoOpSelection() {
+        let current = OutputRouteInfo(
+            deviceID: AudioDeviceID(42),
+            uid: "built-in-speakers",
+            deviceName: "MacBook Pro Speakers",
+            manufacturer: "Apple",
+            transportName: "Built-In",
+            outputChannelCount: 2,
+            nominalSampleRate: 44_100
+        )
+        let sameUID = OutputRouteInfo(
+            deviceID: AudioDeviceID(84),
+            uid: "built-in-speakers",
+            deviceName: "MacBook Pro Speakers",
+            manufacturer: "Apple",
+            transportName: "Built-In",
+            outputChannelCount: 2,
+            nominalSampleRate: 44_100
+        )
+        let sameDevice = OutputRouteInfo(
+            deviceID: AudioDeviceID(42),
+            uid: "system-default",
+            deviceName: "System Default",
+            manufacturer: "Apple",
+            transportName: "Built-In",
+            outputChannelCount: 2,
+            nominalSampleRate: 44_100
+        )
+        let other = outputRoute(uid: "usb-speakers", name: "USB Speakers", transport: "USB", channels: 2)
+
+        XCTAssertTrue(current.matchesAudioDevice(sameUID))
+        XCTAssertTrue(current.matchesAudioDevice(sameDevice))
+        XCTAssertFalse(current.matchesAudioDevice(other))
+        XCTAssertFalse(current.matchesAudioDevice(.unavailable))
+    }
+
     private func inputRoute(uid: String, name: String, manufacturer: String) -> InputRouteInfo {
         InputRouteInfo(
             deviceID: AudioDeviceID(1),

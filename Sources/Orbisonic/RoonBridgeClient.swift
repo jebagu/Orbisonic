@@ -179,6 +179,8 @@ struct RoonBridgeNowPlaying: Codable, Equatable {
     var seekPosition: Double?
     var length: Double?
     var imageKey: String?
+    var albumId: String?
+    var trackId: String?
     var oneLine: RoonBridgeOneLine?
     var twoLine: RoonBridgeTwoLine?
     var threeLine: RoonBridgeThreeLine?
@@ -192,6 +194,35 @@ struct RoonBridgeNowPlaying: Codable, Equatable {
             return "\(line2) - \(line3)"
         }
         return threeLine?.line2 ?? twoLine?.line2
+    }
+
+    var artworkRequest: RoonArtworkRequest? {
+        guard let imageKey = imageKey?.trimmedNilIfBlank else { return nil }
+        let stableKey = artworkStableKey ?? "image:\(imageKey)"
+        return RoonArtworkRequest(
+            stableKey: stableKey,
+            imageKey: imageKey,
+            title: titleText?.trimmedNilIfBlank ?? "Roon artwork"
+        )
+    }
+
+    private var artworkStableKey: String? {
+        if let imageKey = imageKey?.trimmedNilIfBlank {
+            return "image:\(imageKey)"
+        }
+        if let albumId = albumId?.trimmedNilIfBlank {
+            return "album:\(albumId)"
+        }
+        if let trackId = trackId?.trimmedNilIfBlank {
+            return "track:\(trackId)"
+        }
+
+        let fallback = [
+            titleText?.trimmedNilIfBlank,
+            subtitleText?.trimmedNilIfBlank,
+            length.map { String(format: "%.3f", $0) }
+        ].compactMap { $0 }.joined(separator: "|")
+        return fallback.isEmpty ? nil : "metadata:\(fallback)"
     }
 }
 
@@ -385,6 +416,29 @@ final class RoonBridgeClient {
         }
 
         return endpoint("/image/\(encoded)")
+    }
+
+    func fetchImageData(for imageKey: String) async throws -> Data {
+        guard let url = imageURL(for: imageKey) else {
+            throw RoonBridgeClientError.requestFailed("Roon artwork image key is empty.")
+        }
+
+        let (data, response) = try await session.data(from: url)
+        try validate(response: response)
+        return data
+    }
+
+    func fetchImageDataStartingIfNeeded(for imageKey: String) async throws -> Data {
+        do {
+            return try await fetchImageData(for: imageKey)
+        } catch {
+            guard shouldStartBridge(after: error) else {
+                throw error
+            }
+
+            try startIfNeeded()
+            return try await fetchImageData(for: imageKey)
+        }
     }
 
     private func endpoint(_ path: String) -> URL {

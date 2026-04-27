@@ -83,7 +83,7 @@ struct SpotifyReceiverStatus: Equatable {
     )
 }
 
-struct SpotifyNowPlaying: Codable, Equatable {
+struct SpotifyNowPlaying: Codable, Equatable, Sendable {
     var title: String?
     var album: String?
     var artists: [String]

@@ -13,8 +13,6 @@
 ## Local Hosting
 
 - Permanent local public page: `http://127.0.0.1:37943/Orbisonic/`
-- Permanent local control page: `http://127.0.0.1:37943/Orbisonic/control/`
-- The control page uses a runtime access token shown by the desktop app. Do not commit copied tokenized URLs.
 
 ## Privacy Hygiene
 

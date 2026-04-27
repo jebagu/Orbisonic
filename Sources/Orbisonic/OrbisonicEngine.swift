@@ -68,6 +68,12 @@ final class OrbisonicEngine {
     private var monitorMeterLevelSnapshot: [Float] = []
     private var currentStartFrame: AVAudioFramePosition = 0
     private var completionToken = UUID()
+    private var pausedPlaybackNeedsReschedule = false
+#if DEBUG
+    private(set) var debugPlaybackGraphBuildCount = 0
+    private(set) var debugScheduleFromCurrentPositionCount = 0
+    var debugPausedPlaybackNeedsReschedule: Bool { pausedPlaybackNeedsReschedule }
+#endif
 
     init() {
         configureGraph()
@@ -85,23 +91,39 @@ final class OrbisonicEngine {
         return loadPreparedFile(loaded)
     }
 
-    func loadPreparedFile(_ loaded: LoadedAudioFile) -> LoadedAudioFile {
+    func loadPreparedFile(_ loaded: LoadedAudioFile, debugTiming: DebugTimingContext? = nil) -> LoadedAudioFile {
+        let commitStart = DispatchTime.now().uptimeNanoseconds
+        debugTiming?.log("commit start", fileURL: loaded.url)
         AppLogger.shared.info(category: "engine", "Loading prepared file into engine: \(loaded.url.lastPathComponent)")
 
+        debugTiming?.log(
+            "stop old local playback start",
+            fileURL: loaded.url,
+            extra: ["engineState=\"\(state.rawValue)\"", "hadLoadedFile=\(loadedFile != nil)"]
+        )
         stopLiveInput()
         detachSourceNodes()
+        debugTiming?.log("stop old local playback end", fileURL: loaded.url)
 
+        debugTiming?.log("replace current source start", fileURL: loaded.url)
         loadedFile = loaded
         liveInputSource = nil
         currentStartFrame = 0
+        pausedPlaybackNeedsReschedule = false
         state = .ready
+        debugTiming?.log("replace current source end", fileURL: loaded.url)
 
-        rebuildPlaybackGraph(for: loaded)
+        rebuildPlaybackGraph(for: loaded, debugTiming: debugTiming)
         applyTuning(tuning)
 
         AppLogger.shared.notice(
             category: "engine",
             "Load complete state=\(state.rawValue) layout=\(loaded.layout.name) channels=\(loaded.layout.channelSummary)"
+        )
+        debugTiming?.log(
+            "commit finish",
+            fileURL: loaded.url,
+            extra: ["commitMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - commitStart) / 1_000_000.0))"]
         )
 
         return loaded
@@ -117,8 +139,8 @@ final class OrbisonicEngine {
         self.directRendererAudioEnabled = directRendererAudioEnabled
 
         guard let loadedFile, liveInputSource == nil, testToneNodes.isEmpty else { return }
-        guard state != .playing else {
-            AppLogger.shared.info(category: "renderer", "Deferred renderer graph rebuild until playback stops.")
+        guard state != .playing, state != .paused else {
+            AppLogger.shared.info(category: "renderer", "Deferred renderer graph rebuild until playback stops or resumes.")
             return
         }
 
@@ -308,7 +330,7 @@ final class OrbisonicEngine {
         return liveSource
     }
 
-    func play() throws {
+    func play(debugTiming: DebugTimingContext? = nil) throws {
         stopTestTone()
 
         guard let loadedFile else {
@@ -317,7 +339,7 @@ final class OrbisonicEngine {
         }
 
         if usesDirectRendererPlayback {
-            try playDirectRenderer(loadedFile: loadedFile)
+            try playDirectRenderer(loadedFile: loadedFile, debugTiming: debugTiming)
             return
         }
 
@@ -328,13 +350,20 @@ final class OrbisonicEngine {
 
         switch state {
         case .paused:
-            playerNodes.forEach { $0.play() }
+            if pausedPlaybackNeedsReschedule {
+                scheduleFromCurrentPosition(debugTiming: debugTiming)
+                startPlayers()
+                AppLogger.shared.notice(category: "transport", "Rescheduled paused playback at frame=\(currentStartFrame).")
+            } else {
+                playerNodes.forEach { $0.play() }
+            }
+            pausedPlaybackNeedsReschedule = false
             state = .playing
             AppLogger.shared.notice(category: "transport", "Resumed playback at \(formatTime(currentTime())) / \(loadedFile.metadata.durationText).")
         case .playing:
             AppLogger.shared.debug(category: "transport", "Play requested while already playing.")
         case .idle, .ready:
-            scheduleFromCurrentPosition()
+            scheduleFromCurrentPosition(debugTiming: debugTiming)
             startPlayers()
             state = .playing
             AppLogger.shared.notice(
@@ -347,6 +376,7 @@ final class OrbisonicEngine {
     func pause() {
         guard state == .playing else { return }
         currentStartFrame = playbackFrame()
+        pausedPlaybackNeedsReschedule = false
         if usesDirectRendererPlayback {
             engine.pause()
             resetMonitorMeterLevels()
@@ -373,6 +403,7 @@ final class OrbisonicEngine {
         }
 
         if engine.isRunning {
+            markPausedPlaybackNeedsReschedule(reason: "output device change")
             engine.stop()
             resetMonitorMeterLevels()
         }
@@ -394,6 +425,27 @@ final class OrbisonicEngine {
         AppLogger.shared.notice(category: "engine", "Selected output device id=\(deviceID).")
     }
 
+    @discardableResult
+    func setOutputDevicePreservingPlayback(_ deviceID: AudioDeviceID) throws -> Bool {
+        let snapshot = OutputDevicePlaybackSnapshot(
+            wasEngineRunning: engine.isRunning,
+            transportState: state,
+            resumeFrame: playbackFrame(),
+            wasDirectRendererPlayback: usesDirectRendererPlayback,
+            hadLiveInput: liveInputSource != nil || livePipe != nil || liveCapture != nil || !sourceNodes.isEmpty,
+            hadTestTone: !testToneNodes.isEmpty
+        )
+
+        do {
+            try setOutputDevice(deviceID)
+        } catch {
+            _ = try? restorePlayback(afterOutputDeviceChange: snapshot)
+            throw error
+        }
+
+        return try restorePlayback(afterOutputDeviceChange: snapshot)
+    }
+
     func stop() {
         playerNodes.forEach { $0.stop() }
         resetRendererPlayback(to: 0)
@@ -405,6 +457,7 @@ final class OrbisonicEngine {
         stopEngineIfRunning(reason: "transport stop")
         completionToken = UUID()
         currentStartFrame = 0
+        pausedPlaybackNeedsReschedule = false
         state = loadedFile == nil ? .idle : .ready
         AppLogger.shared.notice(category: "transport", "Stopped playback. state=\(state.rawValue)")
     }
@@ -601,6 +654,7 @@ final class OrbisonicEngine {
         } else if state == .paused {
             playerNodes.forEach { $0.stop() }
             resetRendererPlayback(to: currentStartFrame)
+            markPausedPlaybackNeedsReschedule(reason: "seek while paused")
         }
     }
 
@@ -699,11 +753,84 @@ final class OrbisonicEngine {
         installMonitorMeterTap()
     }
 
+    private struct OutputDevicePlaybackSnapshot {
+        let wasEngineRunning: Bool
+        let transportState: TransportState
+        let resumeFrame: AVAudioFramePosition
+        let wasDirectRendererPlayback: Bool
+        let hadLiveInput: Bool
+        let hadTestTone: Bool
+    }
+
+    @discardableResult
+    private func restorePlayback(afterOutputDeviceChange snapshot: OutputDevicePlaybackSnapshot) throws -> Bool {
+        guard snapshot.wasEngineRunning else { return false }
+
+        if snapshot.transportState == .playing, let loadedFile {
+            currentStartFrame = min(snapshot.resumeFrame, loadedFile.frameCount)
+            if snapshot.wasDirectRendererPlayback {
+                resetRendererPlayback(to: currentStartFrame)
+                if !engine.isRunning {
+                    try engine.start()
+                }
+            } else {
+                scheduleFromCurrentPosition()
+                if !engine.isRunning {
+                    try engine.start()
+                }
+                startPlayers()
+            }
+            state = .playing
+            AppLogger.shared.notice(category: "transport", "Resumed playback after output device change at frame=\(currentStartFrame).")
+            return true
+        }
+
+        if snapshot.transportState == .paused, let loadedFile {
+            currentStartFrame = min(snapshot.resumeFrame, loadedFile.frameCount)
+            if snapshot.wasDirectRendererPlayback {
+                resetRendererPlayback(to: currentStartFrame)
+            } else {
+                pausedPlaybackNeedsReschedule = true
+            }
+            if !engine.isRunning {
+                try engine.start()
+            }
+            state = .paused
+            AppLogger.shared.notice(category: "transport", "Preserved paused playback after output device change at frame=\(currentStartFrame).")
+            return true
+        }
+
+        if snapshot.hadLiveInput || snapshot.hadTestTone {
+            if !engine.isRunning {
+                try engine.start()
+            }
+            state = snapshot.transportState
+            AppLogger.shared.notice(category: "engine", "Restarted AVAudioEngine after output device change.")
+            return true
+        }
+
+        if !engine.isRunning {
+            try engine.start()
+        }
+        return true
+    }
+
     private var usesDirectRendererPlayback: Bool {
         directRendererAudioEnabled && rendererMode.usesDirectRendererAudio && rendererSourceNode != nil
     }
 
-    private func rebuildPlaybackGraph(for loadedFile: LoadedAudioFile) {
+    private func markPausedPlaybackNeedsReschedule(reason: String) {
+        guard state == .paused else { return }
+        pausedPlaybackNeedsReschedule = true
+        AppLogger.shared.debug(category: "transport", "Paused playback will reschedule on resume. reason=\(reason) frame=\(currentStartFrame)")
+    }
+
+    private func rebuildPlaybackGraph(for loadedFile: LoadedAudioFile, debugTiming: DebugTimingContext? = nil) {
+        let graphStart = DispatchTime.now().uptimeNanoseconds
+#if DEBUG
+        debugPlaybackGraphBuildCount += 1
+#endif
+        debugTiming?.log("replace current source graph rebuild start", fileURL: loadedFile.url)
         detachPlayerNodes()
         detachRendererSourceNode()
 
@@ -724,6 +851,14 @@ final class OrbisonicEngine {
                 category: "engine",
                 "Rebuilt playback graph with direct FEY renderer outputs=\(rendererScene.matrix.outputCount) bypass=\(rendererScene.matrix.isBypass)."
             )
+            debugTiming?.log(
+                "replace current source graph rebuild end",
+                fileURL: loadedFile.url,
+                extra: [
+                    "graphMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - graphStart) / 1_000_000.0))",
+                    "path=\"direct-renderer\""
+                ]
+            )
             return
         }
 
@@ -738,15 +873,24 @@ final class OrbisonicEngine {
             category: "engine",
             "Rebuilt player graph with \(playerNodes.count) mono point sources."
         )
+        debugTiming?.log(
+            "replace current source graph rebuild end",
+            fileURL: loadedFile.url,
+            extra: [
+                "graphMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - graphStart) / 1_000_000.0))",
+                "path=\"environment\"",
+                "playerNodes=\(playerNodes.count)"
+            ]
+        )
     }
 
-    private func playDirectRenderer(loadedFile: LoadedAudioFile) throws {
+    private func playDirectRenderer(loadedFile: LoadedAudioFile, debugTiming: DebugTimingContext? = nil) throws {
         if rendererSourceNode == nil {
-            rebuildPlaybackGraph(for: loadedFile)
+            rebuildPlaybackGraph(for: loadedFile, debugTiming: debugTiming)
         }
 
         guard rendererSourceNode != nil else {
-            scheduleFromCurrentPosition()
+            scheduleFromCurrentPosition(debugTiming: debugTiming)
             startPlayers()
             state = .playing
             return
@@ -764,7 +908,9 @@ final class OrbisonicEngine {
             AppLogger.shared.debug(category: "transport", "Direct renderer play requested while already playing.")
         case .idle, .ready:
             completionToken = UUID()
+            debugTiming?.log("schedule buffer start", fileURL: loadedFile.url, extra: ["path=\"direct-renderer\""])
             resetRendererPlayback(to: currentStartFrame)
+            debugTiming?.log("schedule buffer end", fileURL: loadedFile.url, extra: ["path=\"direct-renderer\""])
             if !engine.isRunning {
                 try engine.start()
                 AppLogger.shared.notice(category: "engine", "AVAudioEngine started for direct renderer playback.")
@@ -805,8 +951,17 @@ final class OrbisonicEngine {
         }
     }
 
-    private func scheduleFromCurrentPosition() {
+    private func scheduleFromCurrentPosition(debugTiming: DebugTimingContext? = nil) {
         guard let loadedFile else { return }
+        let scheduleStart = DispatchTime.now().uptimeNanoseconds
+#if DEBUG
+        debugScheduleFromCurrentPositionCount += 1
+#endif
+        debugTiming?.log(
+            "schedule buffer start",
+            fileURL: loadedFile.url,
+            extra: ["startFrame=\(currentStartFrame)", "channels=\(playerNodes.count)"]
+        )
         completionToken = UUID()
 
         AppLogger.shared.debug(
@@ -824,6 +979,13 @@ final class OrbisonicEngine {
                 player.scheduleBuffer(scheduledBuffer, at: nil, options: []) { [token] in
                     Task { @MainActor [weak self] in
                         guard let self, self.completionToken == token else { return }
+                        guard self.state == .playing else {
+                            AppLogger.shared.debug(
+                                category: "transport",
+                                "Ignored playback completion while state=\(self.state.rawValue)."
+                            )
+                            return
+                        }
                         AppLogger.shared.notice(category: "transport", "Playback finished naturally.")
                         self.stop()
                         self.onPlaybackEnded?()
@@ -833,6 +995,15 @@ final class OrbisonicEngine {
                 player.scheduleBuffer(scheduledBuffer, at: nil, options: [])
             }
         }
+        pausedPlaybackNeedsReschedule = false
+        debugTiming?.log(
+            "schedule buffer end",
+            fileURL: loadedFile.url,
+            extra: [
+                "scheduleMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - scheduleStart) / 1_000_000.0))",
+                "channels=\(playerNodes.count)"
+            ]
+        )
     }
 
     private func startPlayers() {
@@ -975,6 +1146,13 @@ final class OrbisonicEngine {
         let token = completionToken
         Task { @MainActor [weak self] in
             guard let self, self.completionToken == token else { return }
+            guard self.state == .playing else {
+                AppLogger.shared.debug(
+                    category: "transport",
+                    "Ignored direct renderer playback completion while state=\(self.state.rawValue)."
+                )
+                return
+            }
             AppLogger.shared.notice(category: "transport", "Direct renderer playback finished naturally.")
             self.stop()
             self.onPlaybackEnded?()
@@ -1174,6 +1352,7 @@ final class OrbisonicEngine {
     }
 
     private func detachPlayerNodes() {
+        markPausedPlaybackNeedsReschedule(reason: "player graph detached")
         playerNodes.forEach { player in
             player.stop()
             engine.disconnectNodeOutput(player)

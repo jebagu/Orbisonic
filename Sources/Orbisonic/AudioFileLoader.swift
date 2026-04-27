@@ -64,7 +64,49 @@ enum AudioFileLoaderError: LocalizedError {
 }
 
 final class AudioFileLoader {
-    func load(url: URL, forceFFmpegFLACFallback: Bool = false) throws -> LoadedAudioFile {
+    func load(
+        url: URL,
+        forceFFmpegFLACFallback: Bool = false,
+        debugTiming: DebugTimingContext? = nil
+    ) throws -> LoadedAudioFile {
+        let timing = debugTiming ?? DebugTimingLog.makeCommand(prefix: "audio-load")
+        let decodeStart = DispatchTime.now().uptimeNanoseconds
+        var decodeSucceeded = false
+        var finalSampleRate: Double?
+        var finalChannelCount: UInt32?
+        var finalDuration: TimeInterval?
+        var finalPreparedBufferBytes: Int?
+
+        timing.log(
+            "decode start",
+            fileURL: url,
+            extra: [
+                "fileSizeBytes=\(Self.fileSizeBytes(url) ?? -1)",
+                "scope=\"loader\""
+            ]
+        )
+        defer {
+            var fields = [
+                "totalDecodeMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - decodeStart) / 1_000_000.0))",
+                "result=\"\(decodeSucceeded ? "success" : "failed")\"",
+                "scope=\"loader\""
+            ]
+            if let finalSampleRate {
+                fields.append("sampleRate=\(String(format: "%.1f", finalSampleRate))")
+            }
+            if let finalChannelCount {
+                fields.append("channelCount=\(finalChannelCount)")
+            }
+            if let finalDuration {
+                fields.append("durationSeconds=\(String(format: "%.3f", finalDuration))")
+            }
+            if let finalPreparedBufferBytes {
+                fields.append("preparedBufferBytes=\(finalPreparedBufferBytes)")
+                fields.append("preparedBufferMiB=\(String(format: "%.2f", Double(finalPreparedBufferBytes) / 1_048_576.0))")
+            }
+            timing.log("decode finish", fileURL: url, extra: fields)
+        }
+
         AppLogger.shared.info(category: "loader", "Opening file: \(url.path)")
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw AudioFileLoaderError.fileMissing(url.lastPathComponent)
@@ -77,8 +119,18 @@ final class AudioFileLoader {
         var tags = AudioMetadataBuilder.tags(for: url)
 
         if MatroskaFLACSupport.isMatroska(url) {
+            let containerDecodeStart = DispatchTime.now().uptimeNanoseconds
+            timing.log("container decode start", fileURL: url, extra: ["container=\"Matroska\""])
             let streamInfo = try MatroskaAudioProbe().probe(url: url)
             let decodedURL = try MatroskaFLACDemuxer().demuxToCAF(url: url, streamInfo: streamInfo)
+            timing.log(
+                "container decode end",
+                fileURL: url,
+                extra: [
+                    "container=\"Matroska\"",
+                    "containerDecodeMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - containerDecodeStart) / 1_000_000.0))"
+                ]
+            )
             readURL = decodedURL
             temporaryDecodedURL = decodedURL
             matroskaStreamInfo = streamInfo
@@ -89,7 +141,18 @@ final class AudioFileLoader {
                     "sampleRate=\(streamInfo.sampleRate) bitDepth=\(streamInfo.bitDepth)"
             )
         } else if StandaloneFLACSupport.isFLAC(url), forceFFmpegFLACFallback {
+            let containerDecodeStart = DispatchTime.now().uptimeNanoseconds
+            timing.log("container decode start", fileURL: url, extra: ["container=\"FLAC\"", "decoder=\"ffmpeg\""])
             let decodedURL = try FFmpegAudioDecoder().decodeToCAF(url: url, sourceDescription: "FLAC")
+            timing.log(
+                "container decode end",
+                fileURL: url,
+                extra: [
+                    "container=\"FLAC\"",
+                    "decoder=\"ffmpeg\"",
+                    "containerDecodeMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - containerDecodeStart) / 1_000_000.0))"
+                ]
+            )
             readURL = decodedURL
             temporaryDecodedURL = decodedURL
             codecNameOverride = "FLAC"
@@ -103,13 +166,39 @@ final class AudioFileLoader {
         }
 
         let file: AVAudioFile
+        let openStart = DispatchTime.now().uptimeNanoseconds
+        timing.log("open audio file start", fileURL: readURL)
         do {
             file = try AVAudioFile(forReading: readURL)
+            timing.log(
+                "open audio file end",
+                fileURL: readURL,
+                extra: ["openMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - openStart) / 1_000_000.0))"]
+            )
         } catch {
             guard StandaloneFLACSupport.isFLAC(url), temporaryDecodedURL == nil else {
                 throw AudioFileLoaderError.unsupportedAudioFile(url.lastPathComponent, error.localizedDescription)
             }
+            timing.log(
+                "open audio file end",
+                fileURL: readURL,
+                extra: [
+                    "openMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - openStart) / 1_000_000.0))",
+                    "error=\"\(error.localizedDescription)\""
+                ]
+            )
+            let fallbackDecodeStart = DispatchTime.now().uptimeNanoseconds
+            timing.log("container decode start", fileURL: url, extra: ["container=\"FLAC\"", "decoder=\"ffmpeg\"", "reason=\"native open failed\""])
             let decodedURL = try FFmpegAudioDecoder().decodeToCAF(url: url, sourceDescription: "FLAC")
+            timing.log(
+                "container decode end",
+                fileURL: url,
+                extra: [
+                    "container=\"FLAC\"",
+                    "decoder=\"ffmpeg\"",
+                    "containerDecodeMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - fallbackDecodeStart) / 1_000_000.0))"
+                ]
+            )
             readURL = decodedURL
             temporaryDecodedURL = decodedURL
             codecNameOverride = "FLAC"
@@ -117,7 +206,17 @@ final class AudioFileLoader {
                 category: "loader",
                 "Native FLAC open failed; decoded with ffmpeg file=\(url.lastPathComponent) error=\(error.localizedDescription)"
             )
+            let fallbackOpenStart = DispatchTime.now().uptimeNanoseconds
+            timing.log("open audio file start", fileURL: readURL, extra: ["decoder=\"ffmpeg\""])
             file = try AVAudioFile(forReading: readURL)
+            timing.log(
+                "open audio file end",
+                fileURL: readURL,
+                extra: [
+                    "decoder=\"ffmpeg\"",
+                    "openMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - fallbackOpenStart) / 1_000_000.0))"
+                ]
+            )
         }
         let inputFormat = file.processingFormat
         let channelCount = inputFormat.channelCount
@@ -143,10 +242,30 @@ final class AudioFileLoader {
         )
 
         let frameCapacity = AVAudioFrameCount(file.length)
+        let sourceAllocationStart = DispatchTime.now().uptimeNanoseconds
+        timing.log("buffer allocation start", fileURL: readURL, extra: ["buffer=\"source\"", "frameCapacity=\(frameCapacity)"])
         guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: frameCapacity) else {
             throw AudioFileLoaderError.sourceBufferAllocationFailed
         }
+        timing.log(
+            "buffer allocation end",
+            fileURL: readURL,
+            extra: [
+                "buffer=\"source\"",
+                "allocationMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - sourceAllocationStart) / 1_000_000.0))"
+            ]
+        )
+        let fullReadStart = DispatchTime.now().uptimeNanoseconds
+        timing.log("full read start", fileURL: readURL, extra: ["frames=\(file.length)"])
         try file.read(into: sourceBuffer)
+        timing.log(
+            "full read end",
+            fileURL: readURL,
+            extra: [
+                "frames=\(sourceBuffer.frameLength)",
+                "readMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - fullReadStart) / 1_000_000.0))"
+            ]
+        )
 
         let surroundFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -159,9 +278,19 @@ final class AudioFileLoader {
             throw AudioFileLoaderError.surroundFormatCreationFailed(inputFormat.sampleRate, channelCount)
         }
 
+        let conversionAllocationStart = DispatchTime.now().uptimeNanoseconds
+        timing.log("buffer allocation start", fileURL: readURL, extra: ["buffer=\"converted\"", "frameCapacity=\(sourceBuffer.frameLength)"])
         guard let surroundBuffer = AVAudioPCMBuffer(pcmFormat: surroundFormat, frameCapacity: sourceBuffer.frameLength) else {
             throw AudioFileLoaderError.convertedBufferAllocationFailed
         }
+        timing.log(
+            "buffer allocation end",
+            fileURL: readURL,
+            extra: [
+                "buffer=\"converted\"",
+                "allocationMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - conversionAllocationStart) / 1_000_000.0))"
+            ]
+        )
 
         guard let converter = AVAudioConverter(from: inputFormat, to: surroundFormat) else {
             throw AudioFileLoaderError.converterCreationFailed
@@ -170,6 +299,8 @@ final class AudioFileLoader {
         var suppliedInput = false
         var conversionError: NSError?
 
+        let conversionStart = DispatchTime.now().uptimeNanoseconds
+        timing.log("format conversion start", fileURL: readURL)
         let status = converter.convert(to: surroundBuffer, error: &conversionError) { _, outStatus in
             if suppliedInput {
                 outStatus.pointee = .endOfStream
@@ -184,6 +315,11 @@ final class AudioFileLoader {
         if status == .error || conversionError != nil {
             throw AudioFileLoaderError.formatConversionFailed(conversionError?.localizedDescription ?? "unknown converter error")
         }
+        timing.log(
+            "format conversion end",
+            fileURL: readURL,
+            extra: ["conversionMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - conversionStart) / 1_000_000.0))"]
+        )
 
         surroundBuffer.frameLength = sourceBuffer.frameLength
 
@@ -198,6 +334,8 @@ final class AudioFileLoader {
             throw AudioFileLoaderError.formatConversionFailed("missing float channel data")
         }
 
+        let splitStart = DispatchTime.now().uptimeNanoseconds
+        timing.log("channel split start", fileURL: readURL, extra: ["channels=\(channelCount)", "frames=\(surroundBuffer.frameLength)"])
         let monoBuffers = try (0..<Int(channelCount)).map { channelIndex in
             guard let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: surroundBuffer.frameLength) else {
                 throw AudioFileLoaderError.monoBufferAllocationFailed
@@ -212,6 +350,15 @@ final class AudioFileLoader {
             destination.update(from: source, count: Int(surroundBuffer.frameLength))
             return monoBuffer
         }
+        timing.log(
+            "channel split end",
+            fileURL: readURL,
+            extra: [
+                "channels=\(channelCount)",
+                "frames=\(surroundBuffer.frameLength)",
+                "splitMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - splitStart) / 1_000_000.0))"
+            ]
+        )
 
         let duration = Double(surroundBuffer.frameLength) / surroundFormat.sampleRate
         let metadata = AudioMetadataBuilder.build(
@@ -231,6 +378,12 @@ final class AudioFileLoader {
                 "channels=\(metadata.channelCount) sampleRate=\(metadata.sampleRateText) bitDepth=\(metadata.bitDepthText) duration=\(metadata.durationText)"
         )
 
+        finalSampleRate = surroundFormat.sampleRate
+        finalChannelCount = channelCount
+        finalDuration = duration
+        finalPreparedBufferBytes = Int(surroundBuffer.frameLength) * Int(channelCount) * MemoryLayout<Float>.size
+        decodeSucceeded = true
+
         return LoadedAudioFile(
             url: url,
             monoFormat: monoFormat,
@@ -240,6 +393,15 @@ final class AudioFileLoader {
             metadata: metadata,
             monoBuffers: monoBuffers
         )
+    }
+
+    private static func fileSizeBytes(_ url: URL) -> Int? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber
+        else {
+            return nil
+        }
+        return size.intValue
     }
 
     private func buildChannelLayout(for inputFormat: AVAudioFormat, fallback: SurroundLayout) throws -> AVAudioChannelLayout {

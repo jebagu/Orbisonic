@@ -27,10 +27,8 @@ private enum PlayerTransportKind: String, CaseIterable, Identifiable {
     case back
     case play
     case pause
-    case forward
     case stop
-    case playAll
-    case shuffle
+    case forward
 
     var id: String { rawValue }
 
@@ -39,10 +37,8 @@ private enum PlayerTransportKind: String, CaseIterable, Identifiable {
         case .back: "Back"
         case .play: "Play"
         case .pause: "Pause"
-        case .forward: "Forward"
         case .stop: "Stop"
-        case .playAll: "Play All"
-        case .shuffle: "Shuffle"
+        case .forward: "Forward"
         }
     }
 
@@ -51,10 +47,8 @@ private enum PlayerTransportKind: String, CaseIterable, Identifiable {
         case .back: "backward.fill"
         case .play: "play.fill"
         case .pause: "pause.fill"
-        case .forward: "forward.fill"
         case .stop: "stop.fill"
-        case .playAll: "play.circle"
-        case .shuffle: "shuffle"
+        case .forward: "forward.fill"
         }
     }
 }
@@ -406,6 +400,7 @@ private enum LabTheme {
     static let textSoft = Color(red: 159.0 / 255.0, green: 185.0 / 255.0, blue: 189.0 / 255.0)
     static let cyan = Color(red: 94.0 / 255.0, green: 234.0 / 255.0, blue: 212.0 / 255.0)
     static let blue = Color(red: 96.0 / 255.0, green: 165.0 / 255.0, blue: 250.0 / 255.0)
+    static let green = Color(red: 34.0 / 255.0, green: 197.0 / 255.0, blue: 94.0 / 255.0)
     static let amber = Color(red: 250.0 / 255.0, green: 204.0 / 255.0, blue: 21.0 / 255.0)
     static let red = Color(red: 251.0 / 255.0, green: 113.0 / 255.0, blue: 133.0 / 255.0)
 
@@ -414,28 +409,42 @@ private enum LabTheme {
 }
 
 private struct LabButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     var isActive = false
     var accent = LabTheme.cyan
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(isActive ? LabTheme.text : LabTheme.textSoft)
+            .foregroundStyle(isEnabled ? (isActive ? LabTheme.text : LabTheme.textSoft) : LabTheme.textSoft.opacity(0.58))
             .frame(minHeight: 34)
             .padding(.horizontal, 12)
             .background(
                 RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                    .fill(isActive ? accent.opacity(configuration.isPressed ? 0.22 : 0.14) : Color.white.opacity(configuration.isPressed ? 0.075 : 0.045))
+                    .fill(buttonFill(configuration: configuration))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                    .stroke(isActive ? accent.opacity(0.55) : LabTheme.line, lineWidth: 1)
+                    .stroke(isEnabled ? (isActive ? accent.opacity(0.55) : LabTheme.line) : LabTheme.line.opacity(0.48), lineWidth: 1)
             )
+            .opacity(isEnabled ? 1 : 0.62)
+    }
+
+    private func buttonFill(configuration: Configuration) -> Color {
+        if !isEnabled {
+            return Color.white.opacity(0.024)
+        }
+        if isActive {
+            return accent.opacity(configuration.isPressed ? 0.22 : 0.14)
+        }
+        return Color.white.opacity(configuration.isPressed ? 0.075 : 0.045)
     }
 }
 
 private struct PlayerArtworkView: View {
     let url: URL?
+    private let size: CGFloat = 58
 
     var body: some View {
         ZStack {
@@ -448,14 +457,12 @@ private struct PlayerArtworkView: View {
 
             if let url {
                 if url.isFileURL, let image = NSImage(contentsOf: url) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
+                    artworkImage(Image(nsImage: image))
                 } else {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let image):
-                            image.resizable().scaledToFill()
+                            artworkImage(image)
                         default:
                             artworkPlaceholder
                         }
@@ -465,7 +472,17 @@ private struct PlayerArtworkView: View {
                 artworkPlaceholder
             }
         }
+        .frame(width: size, height: size)
+        .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous))
+    }
+
+    private func artworkImage(_ image: Image) -> some View {
+        image
+            .resizable()
+            .scaledToFill()
+            .frame(width: size, height: size)
+            .clipped()
     }
 
     private var artworkPlaceholder: some View {
@@ -493,12 +510,13 @@ struct ContentView: View {
     @AppStorage("Orbisonic.vuMeterNormalizesVisualEnergy") private var vuMeterNormalizesVisualEnergy = false
     @AppStorage("Orbisonic.vuMeterScaleVersion") private var vuMeterScaleVersion = 0
     @State private var showsLoopbackSetupDialog = false
-    @State private var showsResetWebControlTokenDialog = false
     @State private var routingVUOptionsExpanded = false
     @State private var analyzerVUSettingsExpanded = false
     @State private var showsSaveQueuePlaylistDialog = false
     @State private var saveQueuePlaylistName = ""
     private let outputLanePanelMinHeight: CGFloat = 216
+    private let outputLaneLabelColumnWidth: CGFloat = 112
+    private let outputLaneColumnSpacing: CGFloat = 12
     private let localMusicSettingsPanelMinHeight: CGFloat = 300
 
     var body: some View {
@@ -545,18 +563,6 @@ struct ContentView: View {
             Button("Remind Me Later", role: .cancel) {}
         } message: {
             Text("Install Orbisonic Inputs to use Roon, Spotify, and Aux Cable live capture. Roon and Spotify Connect are optional source helpers. Local Files works without live inputs.")
-        }
-        .confirmationDialog(
-            "Reset Control Token",
-            isPresented: $showsResetWebControlTokenDialog,
-            titleVisibility: .visible
-        ) {
-            Button("Reset Token", role: .destructive) {
-                model.resetWebControlToken()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This immediately invalidates previously copied control URLs. Open or copy the new control URL after reset.")
         }
         .onAppear {
             migrateCenteredVUMeterDefaultsIfNeeded()
@@ -729,7 +735,7 @@ struct ContentView: View {
             analyzerVUSettingsPanel
 
             AudioMotionVUMeterPanel(
-                title: "Renderer VU",
+                title: "Output 2 Renderer VU",
                 subtitle: rendererVUMeterSubtitle,
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
@@ -745,7 +751,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 analyzerVUStylePicker
                 vuSliderRow(
-                    title: "Renderer Visual Gain",
+                    title: "Output 2 Renderer Visual Gain",
                     valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
                     lowText: "-10",
                     highText: "+10",
@@ -804,10 +810,6 @@ struct ContentView: View {
 
     private var sourceSelectorPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Source")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(LabTheme.text)
-
             HStack(alignment: .top, spacing: 12) {
                 VStack(spacing: 8) {
                     ForEach(primarySourceModes) { mode in
@@ -815,20 +817,14 @@ struct ContentView: View {
                     }
                 }
                 .frame(width: 146)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Source")
 
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(model.sourceMode.rawValue)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(LabTheme.text)
-
-                        Spacer()
-
-                        Text(selectedSourceStatusText)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(selectedSourceStatusColor)
-                            .lineLimit(1)
-                    }
+                    Text((model.sourceSwitchTargetMode ?? model.sourceMode).rawValue)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(LabTheme.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text(selectedSourceHeadline)
                         .font(.system(size: 14, weight: .semibold))
@@ -864,86 +860,65 @@ struct ContentView: View {
         Button {
             model.selectSourceMode(mode)
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(mode.rawValue)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(LabTheme.text)
-                    .lineLimit(1)
-                Text(sourceButtonSubtitle(for: mode))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(LabTheme.textSoft)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(mode.rawValue)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(LabTheme.text)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(LabButtonStyle(isActive: model.sourceMode == mode, accent: sourceButtonAccent(for: mode)))
-    }
-
-    private var selectedSourceStatusText: String {
-        if model.isLiveMonitorTransitioning {
-            return "Switching"
-        }
-        if model.sourceMode == .off {
-            return "Idle"
-        }
-        if case .error = model.liveMonitorState, model.sourceMode.isLiveInput {
-            return "Unavailable"
-        }
-        if case .unavailable = model.liveMonitorState, model.sourceMode.isLiveInput {
-            return "Unavailable"
-        }
-        if model.sourceMode.isLiveInput {
-            switch model.liveMonitorState {
-            case .monitoring:
-                return "Playing through Orbisonic"
-            case .silent:
-                return "Waiting for audio"
-            case .muted:
-                return "Muted"
-            case .stopped:
-                return "Ready"
-            case .unavailable, .error:
-                return "Unavailable"
-            }
-        }
-        if model.sourceMode == .testTone {
-            return model.isTestTonePlaying ? "Playing" : "Ready"
-        }
-        return model.isPlaying ? "Playing" : "Ready"
+        .buttonStyle(LabButtonStyle(isActive: sourceButtonIsActive(mode), accent: sourceButtonAccent(for: mode)))
     }
 
     private var selectedSourceStatusColor: Color {
-        if model.isLiveMonitorTransitioning {
+        if model.sourceSwitchStatusText != nil {
             return LabTheme.amber
         }
         if model.sourceMode == .off {
             return LabTheme.textSoft
         }
         if model.sourceMode.isLiveInput {
+            if isSelectedLiveSourceUnavailable ||
+                (model.sourceMode == .spotify && isSpotifyReceiverUnavailable) ||
+                (model.sourceMode == .aux && liveInputReadyValue(expected: .auxCable) == "Missing") {
+                return LabTheme.red
+            }
             switch model.liveMonitorState {
             case .monitoring:
-                return LabTheme.cyan
+                return LabTheme.green
             case .silent, .stopped, .muted:
                 return LabTheme.amber
             case .unavailable, .error:
                 return LabTheme.red
             }
         }
-        return model.isPlaying || model.isTestTonePlaying ? LabTheme.cyan : LabTheme.blue
+        return model.isPlaying || model.isTestTonePlaying ? LabTheme.green : LabTheme.blue
     }
 
     private var selectedSourceHeadline: String {
+        if let sourceSwitchStatusText = model.sourceSwitchStatusText {
+            return sourceSwitchStatusText
+        }
+
         switch model.sourceMode {
         case .off:
             return "Orbisonic is idle"
         case .roon:
+            if isSelectedLiveSourceUnavailable {
+                return "Roon unavailable"
+            }
             return model.liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Waiting for Roon audio"
         case .spotify:
-            if model.spotifyNowPlaying?.isPlaying == true || model.liveMonitorState == .monitoring {
+            if isSpotifyReceiverUnavailable {
+                return "Spotify receiver unavailable"
+            }
+            if model.liveMonitorState == .monitoring {
                 return "Playing through Orbisonic"
             }
-            return model.spotifyNowPlaying == nil ? "Waiting for Spotify" : "Waiting for audio"
+            return model.spotifyVisibleNowPlaying == nil ? "Waiting for Spotify" : "Waiting for audio"
         case .aux:
+            if isSelectedLiveSourceUnavailable || liveInputReadyValue(expected: .auxCable) == "Missing" {
+                return "Input unavailable"
+            }
             return model.liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Listening for input"
         case .filePlayback:
             return "Ready"
@@ -953,21 +928,36 @@ struct ContentView: View {
     }
 
     private var selectedSourceDetailText: String {
+        if let sourceSwitchStatusText = model.sourceSwitchStatusText {
+            return sourceSwitchStatusText == "Stopping audio..."
+                ? "Orbisonic is ramping down before stopping the active audio path."
+                : "Orbisonic is ramping down before changing the active audio path."
+        }
+
         switch model.sourceMode {
         case .off:
             return "Select a source to begin listening or playback."
         case .roon:
+            if isSelectedLiveSourceUnavailable {
+                return "Orbisonic could not connect to the Roon service."
+            }
             return model.liveMonitorState == .monitoring
                 ? "Roon audio is being rendered by Orbisonic."
                 : "Use Roon to send audio to Orbisonic."
         case .spotify:
-            if model.spotifyNowPlaying != nil, model.liveMonitorState != .monitoring {
+            if isSpotifyReceiverUnavailable {
+                return "Orbisonic could not start the Spotify receiver."
+            }
+            if model.spotifyVisibleNowPlaying != nil, model.liveMonitorState != .monitoring {
                 return "Spotify is connected. Press play in Spotify to hear it through Orbisonic."
             }
             return model.liveMonitorState == .monitoring
                 ? "Spotify audio is being rendered by Orbisonic."
                 : "Use the Spotify app to connect to \"Orbisonic Spotify\" and press play there."
         case .aux:
+            if isSelectedLiveSourceUnavailable || liveInputReadyValue(expected: .auxCable) == "Missing" {
+                return "Orbisonic could not find the selected Aux input."
+            }
             return model.liveMonitorState == .monitoring
                 ? "Aux audio is being rendered by Orbisonic."
                 : "Connect an audio source to the selected input."
@@ -1027,20 +1017,42 @@ struct ContentView: View {
     private var spotifyReceiverStatusValue: String {
         switch model.spotifyReceiverStatus.state {
         case .waitingForConnection:
-            return model.spotifyNowPlaying == nil ? "Ready" : "Connected"
+            return model.spotifyVisibleNowPlaying == nil ? "Ready" : "Connected"
         case .running:
             return "Connected"
         case .restarting:
-            return "Restarting"
-        case .failed:
+            return "Ready"
+        case .failed, .embeddedModuleUnavailable:
             return "Failed"
-        case .notStarted, .embeddedModuleUnavailable:
-            return "Unavailable"
+        case .notStarted:
+            return "Ready"
         }
     }
 
     private func liveInputReadyValue(expected: OrbisonicLoopbackDevice) -> String {
         model.inputRoute.uid == expected.deviceUID ? "Ready" : "Missing"
+    }
+
+    private var isSelectedLiveSourceUnavailable: Bool {
+        guard model.sourceMode.isLiveInput else { return false }
+        if model.sourceMode == .roon && model.liveMonitorState != .monitoring && !model.roonBridgeSnapshot.isReadyForTransport {
+            return true
+        }
+        switch model.liveMonitorState {
+        case .unavailable, .error:
+            return true
+        case .stopped, .monitoring, .muted, .silent:
+            return false
+        }
+    }
+
+    private var isSpotifyReceiverUnavailable: Bool {
+        switch model.spotifyReceiverStatus.state {
+        case .failed, .embeddedModuleUnavailable:
+            return true
+        case .notStarted, .waitingForConnection, .running, .restarting:
+            return false
+        }
     }
 
     private var liveSignalValue: String {
@@ -1054,59 +1066,15 @@ struct ContentView: View {
         }
     }
 
-    private func sourceButtonSubtitle(for mode: SourceMode) -> String {
-        guard model.sourceMode == mode else {
-            return sourceSelectorDescriptor(for: mode)
-        }
-
-        if mode == .off {
-            return "idle"
-        }
-
-        if mode.isLiveInput {
-            switch model.liveMonitorState {
-            case .monitoring:
-                return "signal present"
-            case .silent:
-                return "waiting"
-            case .muted:
-                return "muted"
-            case .stopped:
-                return "ready"
-            case .unavailable, .error:
-                return "unavailable"
-            }
-        }
-
-        if mode == .filePlayback {
-            return model.sourceMetadata == nil ? "choose file" : "ready"
-        }
-
-        return model.isTestTonePlaying ? "playing" : "ready"
+    private func sourceButtonIsActive(_ mode: SourceMode) -> Bool {
+        model.sourceSwitchTargetMode == mode || model.sourceMode == mode
     }
 
     private func sourceButtonAccent(for mode: SourceMode) -> Color {
-        guard model.sourceMode == mode else {
-            return LabTheme.cyan
+        guard sourceButtonIsActive(mode) else {
+            return LabTheme.blue
         }
         return selectedSourceStatusColor
-    }
-
-    private func sourceSelectorDescriptor(for mode: SourceMode) -> String {
-        switch mode {
-        case .off:
-            "idle"
-        case .roon:
-            "ready"
-        case .spotify:
-            "receiver ready"
-        case .aux:
-            "input ready"
-        case .filePlayback:
-            "ready"
-        case .testTone:
-            "diagnostic"
-        }
     }
 
     private var primarySourceModes: [SourceMode] {
@@ -1174,7 +1142,7 @@ struct ContentView: View {
                 Text("Signal Flow")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(LabTheme.text)
-                Text("input arrives automatically; routing creates monitor and renderer streams")
+                Text("input arrives automatically; routing creates Output 1 Monitor and Output 2 Renderer streams")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(LabTheme.textSoft)
                     .lineLimit(1)
@@ -1203,7 +1171,7 @@ struct ContentView: View {
                 routingNodeCard(
                     step: "Routing",
                     title: "Split to two outputs",
-                    detail: "Monitor stream stays local; renderer feed targets the selected Sonic Sphere or sound system.",
+                    detail: "Output 1 Monitor stays on this Mac; Output 2 Renderer targets the selected Sonic Sphere or sound system.",
                     icon: "arrow.triangle.branch"
                 )
 
@@ -1212,7 +1180,7 @@ struct ContentView: View {
                 VStack(spacing: 10) {
                     routingOutputCard(
                         title: "Output 1",
-                        subtitle: "Monitor",
+                        subtitle: "Output 1 Monitor",
                         device: model.monitorOutputNowText,
                         status: model.monitorOutputStatusText,
                         icon: "headphones",
@@ -1221,7 +1189,7 @@ struct ContentView: View {
 
                     routingOutputCard(
                         title: "Output 2",
-                        subtitle: "Renderer",
+                        subtitle: "Output 2 Renderer",
                         device: model.rendererOutputNowText,
                         matrix: model.rendererSceneOutputText,
                         status: model.rendererOutputStatusText,
@@ -1359,7 +1327,7 @@ struct ContentView: View {
                 )
 
                 AudioMotionVUMeterPanel(
-                    title: "Monitor",
+                    title: "Output 1 Monitor",
                     subtitle: monitorVUMeterSubtitle,
                     style: selectedAudioMotionVUStyle,
                     appearance: monitorVUMeterAppearance,
@@ -1370,7 +1338,7 @@ struct ContentView: View {
             }
 
             AudioMotionVUMeterPanel(
-                title: "Renderer",
+                title: "Output 2 Renderer",
                 subtitle: rendererVUMeterSubtitle,
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
@@ -1384,21 +1352,31 @@ struct ContentView: View {
     private var outputTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Monitor", minHeight: outputLanePanelMinHeight) {
+                outputDestinationCard(
+                    title: "Output 1: Listen locally",
+                    subtitle: "For headphones, speakers, or stereo preview."
+                ) {
                     VStack(alignment: .leading, spacing: 10) {
-                        monitorOutputMenu
-                        outputLaneRow(label: "Device", value: model.monitorOutputNowText)
-                        outputLaneRow(label: "Status", value: model.monitorOutputStatusText, isStatus: true)
+                        outputLaneControlRow(label: "Device") {
+                            monitorOutputMenu
+                        }
+                        outputLaneTextRow(label: "Effective", value: model.monitorOutputNowText)
+                        outputLaneTextRow(label: "Status", value: monitorOutputDestinationStatusText, isStatus: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                settingsPanel(title: "Renderer", minHeight: outputLanePanelMinHeight) {
+                outputDestinationCard(
+                    title: "Output 2: Renderer output",
+                    subtitle: "For Sonic Sphere or multichannel playback."
+                ) {
                     VStack(alignment: .leading, spacing: 10) {
-                        rendererOutputMenu
-                        outputLaneRow(label: "Device", value: model.rendererOutputNowText)
-                        outputLaneRow(label: "Matrix", value: model.rendererSceneOutputText)
-                        outputLaneRow(label: "Status", value: model.rendererOutputStatusText, isStatus: true)
+                        outputLaneControlRow(label: "Device") {
+                            rendererOutputMenu
+                        }
+                        outputLaneTextRow(label: "Effective", value: model.rendererOutputNowText)
+                        outputLaneTextRow(label: "Matrix", value: model.rendererSceneOutputText)
+                        outputLaneTextRow(label: "Status", value: rendererOutputDestinationStatusText, isStatus: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1426,23 +1404,12 @@ struct ContentView: View {
                 .disabled(!route.isSelectableOutputTarget)
             }
         } label: {
-            HStack {
-                Text("MONITOR")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(LabTheme.textSoft)
-                Spacer()
-                Text(model.monitorOutputSelectionText)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(LabTheme.text)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(LabTheme.cyan)
-            }
-            .frame(maxWidth: .infinity)
+            outputLaneMenuValue(model.monitorOutputSelectionText)
         }
         .buttonStyle(LabButtonStyle(isActive: true))
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("Output 1 Monitor")
+        .accessibilityValue(model.monitorOutputSelectionText)
     }
 
     private var rendererOutputMenu: some View {
@@ -1460,23 +1427,22 @@ struct ContentView: View {
                 .disabled(!route.isSelectableOutputTarget)
             }
         } label: {
-            HStack {
-                Text("RENDERER")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(LabTheme.textSoft)
-                Spacer()
-                Text(model.rendererOutputSelectionText)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(LabTheme.text)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(LabTheme.cyan)
-            }
-            .frame(maxWidth: .infinity)
+            outputLaneMenuValue(model.rendererOutputSelectionText)
         }
         .buttonStyle(LabButtonStyle(isActive: true))
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("Output 2 Renderer")
+        .accessibilityValue(model.rendererOutputSelectionText)
+    }
+
+    private var monitorOutputDestinationStatusText: String {
+        model.monitorOutputStatusText
+            .replacingOccurrences(of: "Output 1 Monitor", with: "local listening")
+    }
+
+    private var rendererOutputDestinationStatusText: String {
+        model.rendererOutputStatusText
+            .replacingOccurrences(of: "Output 2 Renderer", with: "renderer output")
     }
 
     private func outputMenuTitle(for route: OutputRouteInfo) -> String {
@@ -1500,7 +1466,7 @@ struct ContentView: View {
                 )
 
                 DenseVUMeterPanel(
-                    title: "Monitor",
+                    title: "Output 1 Monitor",
                     subtitle: monitorVUMeterSubtitle,
                     style: selectedVUMeterStyle,
                     appearance: monitorVUMeterAppearance,
@@ -1510,7 +1476,7 @@ struct ContentView: View {
             }
 
             AudioMotionVUMeterPanel(
-                title: "Renderer",
+                title: "Output 2 Renderer",
                 subtitle: rendererVUMeterSubtitle,
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
@@ -1682,7 +1648,7 @@ struct ContentView: View {
                     Button {
                         model.setRendererRenderMode(mode)
                     } label: {
-                        Text(mode.displayName)
+                        Text(rendererModeButtonLabel(for: mode))
                             .font(.system(size: 12, weight: .bold))
                             .lineLimit(1)
                             .frame(maxWidth: .infinity)
@@ -1699,17 +1665,17 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack {
-                Text("Using")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(LabTheme.textSoft)
-                Spacer()
-                Text(model.rendererScene.renderMode.statusName)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(LabTheme.cyan)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
+        }
+    }
+
+    private func rendererModeButtonLabel(for mode: RendererRenderMode) -> String {
+        switch mode {
+        case .auro111714h:
+            "Auro 11.1"
+        case .auro111515hT:
+            "Auro 11.1 T"
+        default:
+            mode.displayName
         }
     }
 
@@ -1856,17 +1822,17 @@ struct ContentView: View {
     }
 
     private var statusChipText: String {
-        if model.isLocalFileLoading {
-            return "Loading"
+        if model.sourceMode == .filePlayback, model.isLocalFileLoading {
+            return localPlaybackStatusText
         }
         if model.isDiagnosticTransitioning {
             return "Settling"
         }
-        if model.isRoonTransportCommandInFlight {
-            return "Sending"
+        if model.sourceMode == .roon, model.isRoonTransportCommandInFlight {
+            return roonPlaybackStatusText
         }
         if model.isLiveMonitorTransitioning {
-            return "Switching"
+            return model.sourceSwitchStatusText ?? "Stopping audio..."
         }
         if model.sourceMode == .off {
             return "Orbisonic is idle"
@@ -1874,33 +1840,89 @@ struct ContentView: View {
         if model.sourceMode.isLiveInput {
             switch model.sourceMode {
             case .roon:
-                return model.liveMonitorState == .monitoring ? "Roon playing" : "Waiting for Roon"
+                return roonPlaybackStatusText
             case .spotify:
-                if model.spotifyNowPlaying?.isPlaying == true {
-                    return "Spotify playing"
-                }
-                return model.spotifyNowPlaying == nil ? "No Spotify track selected" : "Spotify playback paused"
+                return spotifyPlaybackStatusText
             case .aux:
-                return model.liveMonitorState == .monitoring ? "Aux signal present" : "Aux has no transport"
+                return "Aux has no transport"
             case .off, .filePlayback, .testTone:
-                return model.liveMonitorState.statusLabel
+                return "No audio yet"
             }
         }
         if model.sourceMode == .testTone {
             return model.isTestTonePlaying ? "Test tone playing" : "Test tone ready"
         }
         if model.sourceMode == .filePlayback {
-            return model.isPlaying ? "Local playback playing" : "Local playback stopped"
+            return localPlaybackStatusText
         }
         return "Ready"
     }
 
-    private var statusChipIsActive: Bool {
+    private var localPlaybackStatusText: String {
         if model.isLocalFileLoading {
+            return condensedLocalLoadingStatus(model.statusMessage)
+        }
+        if model.isPlaying {
+            return "Local playback playing"
+        }
+        if model.statusMessage.localizedCaseInsensitiveContains("paused") {
+            return "Local playback paused"
+        }
+        return "Local playback stopped"
+    }
+
+    private func condensedLocalLoadingStatus(_ status: String) -> String {
+        if status.hasPrefix("Starting playback") {
+            return "Starting playback..."
+        }
+        if status.hasPrefix("Loading selected track") {
+            return "Loading selected track..."
+        }
+        if status.hasPrefix("Loading previous track") {
+            return "Loading previous track..."
+        }
+        if status.hasPrefix("Loading large audio file") {
+            return "Loading large audio file..."
+        }
+        if status.hasPrefix("Still loading") {
+            return "Still loading. You can press Stop to cancel."
+        }
+        return "Loading next track..."
+    }
+
+    private var roonPlaybackStatusText: String {
+        guard let state = model.roonBridgeSnapshot.selectedZone?.state.lowercased() else {
+            return model.liveMonitorState == .monitoring ? "Roon playing" : "Roon playback stopped"
+        }
+        switch state {
+        case "playing", "loading":
+            return "Roon playing"
+        case "paused":
+            return "Roon playback paused"
+        default:
+            return "Roon playback stopped"
+        }
+    }
+
+    private var spotifyPlaybackStatusText: String {
+        guard model.spotifyReceiverStatus.isRunning else {
+            return "Spotify playback stopped"
+        }
+        if model.spotifyVisibleNowPlaying?.isPlaying == true {
+            return "Spotify playing"
+        }
+        return model.spotifyVisibleNowPlaying == nil ? "No Spotify track selected" : "Spotify playback paused"
+    }
+
+    private var statusChipIsActive: Bool {
+        if model.sourceMode == .filePlayback, model.isLocalFileLoading {
             return true
         }
         if transportIsBusy {
             return true
+        }
+        if model.sourceMode == .spotify {
+            return model.spotifyVisibleNowPlaying?.isPlaying == true
         }
         if model.sourceMode.isLiveInput {
             return model.liveMonitorState == .monitoring
@@ -1910,7 +1932,7 @@ struct ContentView: View {
 
     private var transportIsBusy: Bool {
         model.isDiagnosticTransitioning ||
-            model.isRoonTransportCommandInFlight ||
+            (model.sourceMode == .roon && model.isRoonTransportCommandInFlight) ||
             model.isLiveMonitorTransitioning
     }
 
@@ -1945,75 +1967,61 @@ struct ContentView: View {
     }
 
     private var nowPlayingTitle: String {
-        if model.sourceMode == .off {
+        switch model.sourceMode {
+        case .off:
             return "Off"
-        }
-
-        if model.sourceMode == .roon, let title = model.roonTransportTitleText, !title.isEmpty {
-            return title
-        }
-
-        if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roon {
-            return nowPlaying.title
-        }
-
-        if model.sourceMode == .testTone {
+        case .roon:
+            if let title = model.roonTransportTitleText, !title.isEmpty {
+                return title
+            }
+            if let nowPlaying = model.roonNowPlaying {
+                return nowPlaying.title
+            }
+            return "Roon"
+        case .testTone:
             return model.selectedTestTonePoint.rawValue
-        }
-
-        if model.sourceMode == .aux {
+        case .aux:
             return "Aux Cable"
+        case .spotify:
+            return model.spotifyVisibleNowPlaying?.displayTitle ?? "Spotify"
+        case .filePlayback:
+            if let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
+                return track.displayTitle
+            }
+            if let metadata = model.sourceMetadata {
+                return metadata.fileName
+            }
+            return "No source loaded"
         }
-
-        if model.sourceMode == .spotify {
-            return model.spotifyNowPlaying?.displayTitle ?? "Spotify"
-        }
-
-        if model.sourceMode == .filePlayback, let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
-            return track.displayTitle
-        }
-
-        if let metadata = model.sourceMetadata {
-            return metadata.fileName
-        }
-
-        return "No source loaded"
     }
 
     private var nowPlayingSubtitle: String {
-        if model.sourceMode == .off {
+        switch model.sourceMode {
+        case .off:
             return "Orbisonic is idle"
-        }
-
-        if model.sourceMode == .roon, let subtitle = model.roonTransportSubtitleText, !subtitle.isEmpty {
-            return subtitle
-        }
-
-        if let nowPlaying = model.roonNowPlaying, model.sourceMode == .roon {
-            return nowPlaying.artist.isEmpty ? "Roon" : nowPlaying.artist
-        }
-
-        if model.sourceMode == .testTone {
+        case .roon:
+            if let subtitle = model.roonTransportSubtitleText, !subtitle.isEmpty {
+                return subtitle
+            }
+            if let nowPlaying = model.roonNowPlaying {
+                return nowPlaying.artist.isEmpty ? "Roon" : nowPlaying.artist
+            }
+            return "Controlled from Roon."
+        case .testTone:
             return model.testToneStatus.isEmpty ? "Test Tone" : model.testToneStatus
-        }
-
-        if model.sourceMode == .aux {
+        case .aux:
             return "Controlled in the source app."
+        case .spotify:
+            return model.spotifyVisibleNowPlaying?.artistText ?? "Controlled from Spotify Connect."
+        case .filePlayback:
+            if let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
+                return track.displaySubtitle
+            }
+            if let metadata = model.sourceMetadata {
+                return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
+            }
+            return "Choose Roon, Spotify, Aux Cable, or Local Files."
         }
-
-        if model.sourceMode == .spotify {
-            return model.spotifyNowPlaying?.artistText ?? "Controlled from Spotify Connect."
-        }
-
-        if model.sourceMode == .filePlayback, let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
-            return track.displaySubtitle
-        }
-
-        if let metadata = model.sourceMetadata {
-            return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
-        }
-
-        return "Choose Roon, Spotify, Aux Cable, or Local Files."
     }
 
     private var nowPlayingArtworkURL: URL? {
@@ -2045,34 +2053,15 @@ struct ContentView: View {
                         .frame(width: 154, height: 22)
                         .background(
                             RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                .fill(statusChipIsActive ? LabTheme.cyan : LabTheme.panelSoft)
+                                .fill(statusChipIsActive ? LabTheme.green : LabTheme.panelSoft)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                        .stroke(statusChipIsActive ? LabTheme.cyan.opacity(0.55) : LabTheme.line, lineWidth: 1)
+                                        .stroke(statusChipIsActive ? LabTheme.green.opacity(0.55) : LabTheme.line, lineWidth: 1)
                                 )
                         )
                 }
 
-                HStack(alignment: .center, spacing: 12) {
-                    PlayerArtworkView(url: nowPlayingArtworkURL)
-                        .frame(width: 58, height: 58)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(nowPlayingTitle)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(LabTheme.text)
-                            .lineLimit(2)
-                            .truncationMode(.tail)
-                            .frame(height: 42, alignment: .bottomLeading)
-
-                        Text(nowPlayingSubtitle)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(LabTheme.textSoft)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(height: 18, alignment: .leading)
-                    }
-                }
+                nowPlayingMediaBlock
 
                 playerTransportControls
 
@@ -2088,18 +2077,71 @@ struct ContentView: View {
         }
     }
 
+    private var nowPlayingMediaBlock: some View {
+        HStack(alignment: .center, spacing: 12) {
+            PlayerArtworkView(url: nowPlayingArtworkURL)
+                .padding(6)
+                .background(
+                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                        .fill(Color.black.opacity(0.14))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                                .stroke(LabTheme.line, lineWidth: 1)
+                        )
+                )
+                .accessibilityHidden(nowPlayingArtworkURL == nil)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(nowPlayingTitle)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(nowPlayingSubtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                .fill(Color.black.opacity(0.10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                        .stroke(LabTheme.line.opacity(0.72), lineWidth: 1)
+                )
+        )
+    }
+
     private var playerTransportControls: some View {
-        HStack(spacing: 8) {
-            ForEach(PlayerTransportKind.allCases) { kind in
-                Button(action: { performPlayerTransport(kind) }) {
-                    Label(kind.title, systemImage: kind.systemImage)
-                        .labelStyle(.iconOnly)
-                        .font(.system(size: 13, weight: .bold))
-                        .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ForEach(PlayerTransportKind.allCases) { kind in
+                    Button(action: { performPlayerTransport(kind) }) {
+                        Label(kind.title, systemImage: kind.systemImage)
+                            .labelStyle(.iconOnly)
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LabButtonStyle(isActive: playerTransportIsActive(kind)))
+                    .disabled(playerTransportIsDisabled(kind))
+                    .help(kind.title)
                 }
-                .buttonStyle(LabButtonStyle(isActive: playerTransportIsActive(kind)))
-                .disabled(playerTransportIsDisabled(kind))
-                .help(kind.title)
+            }
+
+            if model.sourceMode == .spotify {
+                Text("Control player from Spotify app.")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -2109,16 +2151,12 @@ struct ContentView: View {
         case .back:
             if model.sourceMode == .roon {
                 model.playPreviousRoonTrack()
-            } else if model.sourceMode == .spotify {
-                model.playPreviousSpotifyTrack()
             } else if model.sourceMode == .filePlayback {
                 model.skipLocalTransport(offset: -1)
             }
         case .play:
             if model.sourceMode == .roon {
                 model.playRoonTransport()
-            } else if model.sourceMode == .spotify {
-                model.toggleSpotifyTransport()
             } else if model.sourceMode == .filePlayback {
                 model.playLocalTransport()
             } else if model.sourceMode == .testTone {
@@ -2127,16 +2165,12 @@ struct ContentView: View {
         case .pause:
             if model.sourceMode == .roon {
                 model.pauseRoonTransport()
-            } else if model.sourceMode == .spotify {
-                model.toggleSpotifyTransport()
             } else if model.sourceMode == .filePlayback {
                 model.pauseLocalTransport()
             }
         case .forward:
             if model.sourceMode == .roon {
                 model.playNextRoonTrack()
-            } else if model.sourceMode == .spotify {
-                model.playNextSpotifyTrack()
             } else if model.sourceMode == .filePlayback {
                 model.skipLocalTransport(offset: 1)
             }
@@ -2148,23 +2182,22 @@ struct ContentView: View {
             } else if model.sourceMode == .testTone {
                 model.stop()
             }
-        case .playAll:
-            if model.sourceMode == .filePlayback {
-                model.playAllLocalMusic(shuffle: false)
-            }
-        case .shuffle:
-            if model.sourceMode == .filePlayback {
-                model.playAllLocalMusic(shuffle: true)
-            }
         }
     }
 
     private func playerTransportIsActive(_ kind: PlayerTransportKind) -> Bool {
         switch kind {
         case .play:
-            return model.isPlaying || model.spotifyNowPlaying?.isPlaying == true || model.isRoonTransportPlaying
-        case .shuffle:
-            return model.sourceMode == .filePlayback && model.isShuffleEnabled
+            switch model.sourceMode {
+            case .roon:
+                return model.isRoonTransportPlaying
+            case .filePlayback:
+                return model.isPlaying
+            case .testTone:
+                return model.isTestTonePlaying
+            case .off, .spotify, .aux:
+                return false
+            }
         default:
             return false
         }
@@ -2190,20 +2223,9 @@ struct ContentView: View {
                 return !model.canSendRoonTransport(.next)
             case .stop:
                 return !model.canSendRoonTransport(.stop)
-            case .playAll, .shuffle:
-                return true
             }
         case .spotify:
-            switch kind {
-            case .back, .forward:
-                return !model.spotifyReceiverStatus.isRunning
-            case .play:
-                return !model.spotifyReceiverStatus.isRunning || model.spotifyNowPlaying?.isPlaying == true
-            case .pause:
-                return !model.spotifyReceiverStatus.isRunning || model.spotifyNowPlaying?.isPlaying != true
-            case .stop, .playAll, .shuffle:
-                return true
-            }
+            return true
         case .filePlayback:
             let hasPlayableLocalSource = model.sourceMetadata != nil || !model.localMusicTracks.isEmpty
             switch kind {
@@ -2215,8 +2237,6 @@ struct ContentView: View {
                 return !model.isPlaying && !model.isLocalFileLoading
             case .stop:
                 return !hasPlayableLocalSource && !model.isLocalFileLoading
-            case .playAll, .shuffle:
-                return model.localMusicTracks.isEmpty || model.isLocalFileLoading
             }
         case .testTone:
             switch kind {
@@ -2224,7 +2244,7 @@ struct ContentView: View {
                 return model.isTestTonePlaying
             case .stop:
                 return !model.isTestTonePlaying
-            case .back, .pause, .forward, .playAll, .shuffle:
+            case .back, .pause, .forward:
                 return true
             }
         }
@@ -2286,8 +2306,8 @@ struct ContentView: View {
             else { return 0 }
             return min(max(position / length, 0), 1)
         case .spotify:
-            guard let position = model.spotifyNowPlaying?.positionMs,
-                  let duration = model.spotifyNowPlaying?.durationMs,
+            guard let position = model.spotifyVisibleNowPlaying?.positionMs,
+                  let duration = model.spotifyVisibleNowPlaying?.durationMs,
                   duration > 0
             else { return 0 }
             return min(max(Double(position) / Double(duration), 0), 1)
@@ -2303,7 +2323,7 @@ struct ContentView: View {
         case .roon:
             return timeText(seconds: model.roonBridgeSnapshot.selectedZone?.nowPlaying?.seekPosition)
         case .spotify:
-            return model.spotifyNowPlaying?.positionText ?? "0:00"
+            return model.spotifyVisibleNowPlaying?.positionText ?? "0:00"
         case .filePlayback:
             return model.sourceMetadata == nil ? "0:00" : model.formattedCurrentTime()
         case .off:
@@ -2320,7 +2340,7 @@ struct ContentView: View {
         case .roon:
             return timeText(seconds: model.roonBridgeSnapshot.selectedZone?.nowPlaying?.length)
         case .spotify:
-            return model.spotifyNowPlaying?.durationText ?? "0:00"
+            return model.spotifyVisibleNowPlaying?.durationText ?? "0:00"
         case .filePlayback:
             return model.sourceMetadata == nil ? "0:00" : model.formattedDuration()
         case .off, .aux, .testTone:
@@ -2414,7 +2434,7 @@ struct ContentView: View {
         rows.append(PlayerDetailRow(title: "Channels", value: "2"))
         rows.append(PlayerDetailRow(title: "Layout", value: "Stereo"))
         rows.append(contentsOf: model.spotifySourceHealthLines.map { PlayerDetailRow(title: $0.title, value: $0.value) })
-        rows.append(PlayerDetailRow(title: "Length", value: model.spotifyNowPlaying?.durationText ?? "-"))
+        rows.append(PlayerDetailRow(title: "Length", value: model.spotifyVisibleNowPlaying?.durationText ?? "-"))
         return rows
     }
 
@@ -2431,15 +2451,27 @@ struct ContentView: View {
     }
 
     private var localFilePlayerRows: [PlayerDetailRow] {
+        var rows: [PlayerDetailRow] = []
+
+        if model.isLocalFileLoading {
+            rows.append(PlayerDetailRow(title: "Loading", value: model.statusMessage))
+            if let pendingIndex = model.pendingSessionQueueIndex,
+               model.sessionQueue.indices.contains(pendingIndex) {
+                rows.append(PlayerDetailRow(title: "Pending", value: model.sessionQueue[pendingIndex].displayTitle))
+            }
+        }
+
         if let metadata = model.sourceMetadata {
-            return LocalFilePlayerRowsModel.rows(metadata: metadata).map(playerDetailRow)
+            rows.append(contentsOf: LocalFilePlayerRowsModel.rows(metadata: metadata).map(playerDetailRow))
+            return rows
         }
 
         if let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
-            return LocalFilePlayerRowsModel.rows(track: track).map(playerDetailRow)
+            rows.append(contentsOf: LocalFilePlayerRowsModel.rows(track: track).map(playerDetailRow))
+            return rows
         }
 
-        return []
+        return rows
     }
 
     private func playerDetailRow(_ row: PlayerDetailRowContent) -> PlayerDetailRow {
@@ -2460,10 +2492,14 @@ struct ContentView: View {
             "Orbisonic is idle."
         case .filePlayback:
             "Load a surround mix to see file metadata here."
+        case .roon:
+            "Use Roon to send audio to Orbisonic."
+        case .spotify:
+            "Use the Spotify app to connect to Orbisonic Spotify."
+        case .aux:
+            "Connect an audio source to the selected input."
         case .testTone:
             "Use Diagnostics to run a tone or channel walk."
-        default:
-            "Waiting for source status."
         }
     }
 
@@ -2550,20 +2586,6 @@ struct ContentView: View {
                 }
                 .buttonStyle(LabButtonStyle())
             }
-
-            HStack(spacing: 10) {
-                Button(action: { model.playAllLocalMusic(shuffle: false) }) {
-                    Label("Play All", systemImage: "play.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle())
-
-                Button(action: { model.playAllLocalMusic(shuffle: true) }) {
-                    Label("Shuffle", systemImage: "shuffle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: model.isShuffleEnabled))
-            }
         }
         .disabled(model.localMusicTracks.isEmpty)
     }
@@ -2614,17 +2636,16 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 spotifyTransportButton(systemImage: "backward.fill", help: "Previous in Spotify", action: model.playPreviousSpotifyTrack)
                 spotifyTransportButton(
-                    systemImage: (model.spotifyNowPlaying?.isPlaying ?? false) ? "pause.fill" : "play.fill",
-                    help: (model.spotifyNowPlaying?.isPlaying ?? false) ? "Pause Spotify" : "Play Spotify",
-                    isActive: model.spotifyNowPlaying?.isPlaying ?? false,
+                    systemImage: (model.spotifyVisibleNowPlaying?.isPlaying ?? false) ? "pause.fill" : "play.fill",
+                    help: (model.spotifyVisibleNowPlaying?.isPlaying ?? false) ? "Pause Spotify" : "Play Spotify",
                     action: model.toggleSpotifyTransport
                 )
                 spotifyTransportButton(systemImage: "forward.fill", help: "Next in Spotify", action: model.playNextSpotifyTrack)
             }
 
-            Text(spotifyCompactStatusText)
+            Text("Control player from Spotify app.")
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(model.spotifyReceiverStatus.isRunning ? LabTheme.cyan : LabTheme.textSoft)
+                .foregroundStyle(LabTheme.textSoft)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2633,7 +2654,7 @@ struct ContentView: View {
 
     private var spotifyCompactStatusText: String {
         var parts: [String] = []
-        if let nowPlaying = model.spotifyNowPlaying {
+        if let nowPlaying = model.spotifyVisibleNowPlaying {
             if nowPlaying.positionText != "-" || nowPlaying.durationText != "-" {
                 parts.append("\(nowPlaying.positionText) / \(nowPlaying.durationText)")
             }
@@ -2656,7 +2677,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(LabButtonStyle(isActive: isActive))
-        .disabled(!model.spotifyReceiverStatus.isRunning)
+        .disabled(true)
         .help(help)
     }
 
@@ -2740,12 +2761,6 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(LabButtonStyle(isActive: true))
-
-                Button(action: { model.addSelectedLocalMusicPlaylistToQueue(shuffle: true) }) {
-                    Label("Shuffle to Queue", systemImage: "shuffle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle())
             }
 
             infoRow(title: "Playlists", value: model.localMusicPlaylistCountText)
@@ -2766,9 +2781,6 @@ struct ContentView: View {
                         .contextMenu {
                             Button("Add to Queue") {
                                 model.addLocalMusicPlaylistToQueue(playlist, shuffle: false)
-                            }
-                            Button("Shuffle to Queue") {
-                                model.addLocalMusicPlaylistToQueue(playlist, shuffle: true)
                             }
                         }
                     }
@@ -3096,28 +3108,6 @@ struct ContentView: View {
             settingsPanel(title: "Web Pages") {
                 infoRow(title: "Status", value: model.webServerStatus)
                 webURLRow(title: "Public", url: model.webPublicPageURL)
-                webURLRow(title: "Control", url: model.webControlPageURL)
-
-                HStack(alignment: .center, spacing: 10) {
-                    Text("SECURITY")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .frame(width: 110, alignment: .leading)
-
-                    Text("Resetting invalidates old control URLs immediately.")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Button {
-                        showsResetWebControlTokenDialog = true
-                    } label: {
-                        Label("Reset Control Token", systemImage: "key.horizontal")
-                    }
-                    .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.red))
-                    .disabled(model.webControlPageURL.isEmpty)
-                    .help("Generate a new control URL token")
-                }
             }
 
             HStack(alignment: .top, spacing: 18) {
@@ -3261,7 +3251,7 @@ struct ContentView: View {
                 range: VUMeterControlScale.sliderRange
             )
             vuSliderRow(
-                title: "Monitor Visual Gain",
+                title: "Output 1 Monitor Visual Gain",
                 valueText: signedOffsetText(vuMeterMonitorVisualGain, suffix: String(format: " / %.2fx", monitorVUMeterAppearance.resolvedVisualGain)),
                 lowText: "-10",
                 highText: "+10",
@@ -3269,7 +3259,7 @@ struct ContentView: View {
                 range: VUMeterControlScale.sliderRange
             )
             vuSliderRow(
-                title: "Renderer Visual Gain",
+                title: "Output 2 Renderer Visual Gain",
                 valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
                 lowText: "-10",
                 highText: "+10",
@@ -3502,22 +3492,22 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
                 diagnosticWalkPanel(
-                    title: "Monitor Channel Walk",
+                    title: "Output 1 Monitor Channel Walk",
                     channelText: "\(model.monitorChannelWalkCount) ch",
-                    actionTitle: "Walk Monitor",
-                    meterTitle: "Monitor VU",
-                    meterSubtitle: "2-channel monitor walk",
+                    actionTitle: "Walk Output 1 Monitor",
+                    meterTitle: "Output 1 Monitor VU",
+                    meterSubtitle: "2-channel Output 1 Monitor walk",
                     meterAppearance: monitorVUMeterAppearance,
                     meterStore: model.monitorMeterStore,
                     action: model.startMonitorChannelWalk
                 )
 
                 diagnosticWalkPanel(
-                    title: "Renderer Channel Walk",
+                    title: "Output 2 Renderer Channel Walk",
                     channelText: "\(model.rendererOutputChannelWalkCount) ch",
-                    actionTitle: "Walk Renderer",
-                    meterTitle: "Renderer VU",
-                    meterSubtitle: "30.1 renderer walk",
+                    actionTitle: "Walk Output 2 Renderer",
+                    meterTitle: "Output 2 Renderer VU",
+                    meterSubtitle: "30.1 Output 2 Renderer walk",
                     meterAppearance: rendererVUMeterAppearance,
                     meterStore: model.rendererMeterStore,
                     action: model.startRendererOutputChannelWalk
@@ -3858,20 +3848,86 @@ struct ContentView: View {
         }
     }
 
-    private func outputLaneRow(label: String, value: String, isStatus: Bool = false) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(label.uppercased())
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(LabTheme.textSoft)
-                .frame(width: 72, alignment: .leading)
+    private func outputDestinationCard<Content: View>(
+        title: String,
+        subtitle: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+
+                Text(subtitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            content()
+        }
+        .frame(maxWidth: .infinity, minHeight: outputLanePanelMinHeight, alignment: .topLeading)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                .fill(LabTheme.panelSoft)
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+        )
+    }
+
+    private func outputLaneControlRow<Control: View>(
+        label: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(alignment: .center, spacing: outputLaneColumnSpacing) {
+            outputLaneLabel(label)
+            control()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func outputLaneTextRow(label: String, value: String, isStatus: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: outputLaneColumnSpacing) {
+            outputLaneLabel(label)
             Text(value)
                 .font(.system(size: 12, weight: isStatus ? .bold : .semibold))
                 .foregroundStyle(isStatus ? LabTheme.cyan : LabTheme.text)
                 .textSelection(.enabled)
                 .lineLimit(2)
                 .truncationMode(isStatus ? .tail : .middle)
-                .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: 26, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func outputLaneLabel(_ label: String) -> some View {
+        Text(label.uppercased())
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(LabTheme.textSoft)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: outputLaneLabelColumnWidth, alignment: .leading)
+    }
+
+    private func outputLaneMenuValue(_ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(value)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(LabTheme.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LabTheme.cyan)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func outputLaneHelperText(_ value: String) -> some View {

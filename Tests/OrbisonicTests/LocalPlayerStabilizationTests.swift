@@ -167,6 +167,63 @@ final class LocalPlayerStabilizationTests: XCTestCase {
     }
 
     @MainActor
+    func testPlayNowSwitchesFromSpotifyBeforeLoadingLocalTrack() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let localURL = fixture.directory.appendingPathComponent("local.wav")
+        try Self.writeSilentAudioFile(to: localURL)
+
+        let model = OrbisonicViewModel()
+        let localTrack = Self.track(url: localURL)
+        model.replaceLocalMusicQueueForTesting(
+            tracks: [localTrack],
+            currentIndex: nil,
+            selectedIndex: nil
+        )
+        model.setSourceModeForTesting(.spotify)
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Paused Spotify Track", isPlaying: false))
+
+        model.playLocalMusicTrackNow(localTrack)
+        try await Self.waitForCurrentFile(model, path: localTrack.path)
+
+        XCTAssertEqual(model.sourceMode, .filePlayback)
+        XCTAssertEqual(model.currentFileURL?.path, localTrack.path)
+        XCTAssertEqual(model.currentQueueTrack?.id, localTrack.id)
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertEqual(model.webStateForTesting(controlEnabled: true).player.title, localTrack.displayTitle)
+        XCTAssertFalse(model.statusMessage.localizedCaseInsensitiveContains("Spotify"))
+        XCTAssertFalse(model.lastError?.contains("source mode changed") == true)
+    }
+
+    @MainActor
+    func testPlayNowSwitchesFromRoonBeforeLoadingLocalTrack() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let localURL = fixture.directory.appendingPathComponent("local.wav")
+        try Self.writeSilentAudioFile(to: localURL)
+
+        let model = OrbisonicViewModel()
+        let localTrack = Self.track(url: localURL)
+        model.replaceLocalMusicQueueForTesting(
+            tracks: [localTrack],
+            currentIndex: nil,
+            selectedIndex: nil
+        )
+        model.setSourceModeForTesting(.roon)
+
+        model.playLocalMusicTrackNow(localTrack)
+        try await Self.waitForCurrentFile(model, path: localTrack.path)
+
+        XCTAssertEqual(model.sourceMode, .filePlayback)
+        XCTAssertEqual(model.currentFileURL?.path, localTrack.path)
+        XCTAssertEqual(model.currentQueueTrack?.id, localTrack.id)
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertFalse(model.lastError?.contains("source mode changed") == true)
+    }
+
+    @MainActor
     func testPauseCancelsPendingQueueLoadWithoutAdvancing() async throws {
         let fixture = try TemporaryLocalMusicFixture()
         defer { fixture.remove() }
@@ -198,6 +255,85 @@ final class LocalPlayerStabilizationTests: XCTestCase {
         XCTAssertNil(model.pendingSessionQueueIndex)
         XCTAssertFalse(model.isLocalFileLoading)
         XCTAssertFalse(model.isPlaying)
+    }
+
+    @MainActor
+    func testStalePlaybackEndedAfterPauseDoesNotAdvanceQueueOrResetPosition() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let currentURL = fixture.directory.appendingPathComponent("current.wav")
+        let nextURL = fixture.directory.appendingPathComponent("next.wav")
+        try Self.writeSilentAudioFile(to: currentURL)
+        try Self.writeSilentAudioFile(to: nextURL)
+
+        let model = OrbisonicViewModel()
+        let current = Self.track(url: currentURL)
+        let next = Self.track(url: nextURL)
+        model.replaceLocalMusicQueueForTesting(
+            tracks: [current, next],
+            currentIndex: nil,
+            selectedIndex: nil
+        )
+        try await model.loadQueueIndexForTesting(0, isPlaying: true)
+
+        for _ in 0..<3 {
+            model.currentTime = max(model.duration - 0.01, 0)
+            let pausedTime = model.currentTime
+            model.pauseLocalTransport()
+            model.triggerPlaybackEndedForTesting()
+
+            XCTAssertEqual(model.sessionQueueIndex, 0)
+            XCTAssertEqual(model.currentFileURL?.path, current.path)
+            XCTAssertEqual(model.currentQueueTrack?.id, current.id)
+            XCTAssertEqual(model.currentTime, pausedTime)
+            XCTAssertFalse(model.isPlaying)
+
+            model.playLocalTransport()
+
+            XCTAssertEqual(model.sessionQueueIndex, 0)
+            XCTAssertEqual(model.currentFileURL?.path, current.path)
+            XCTAssertEqual(model.currentQueueTrack?.id, current.id)
+            XCTAssertTrue(model.isPlaying)
+        }
+    }
+
+    func testPausedEngineDefersRendererGraphRebuildAndReschedulesAfterPausedSeek() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let audioURL = fixture.directory.appendingPathComponent("paused-resume.wav")
+        try Self.writeSilentAudioFile(to: audioURL, frames: 48_000)
+
+        let engine = OrbisonicEngine()
+        defer { engine.stop() }
+
+        let loaded = try engine.loadFile(url: audioURL)
+        let scene = RendererMatrixBuilder.sceneModel(
+            for: loaded.layout,
+            preset: .sonicSphere30Point1,
+            renderMode: .stereo
+        )
+
+        try engine.play()
+        engine.pause()
+
+        XCTAssertEqual(engine.state, .paused)
+        let graphBuildCountAfterPause = engine.debugPlaybackGraphBuildCount
+
+        engine.updateRenderer(mode: scene.renderMode, scene: scene, directRendererAudioEnabled: false)
+        XCTAssertEqual(engine.debugPlaybackGraphBuildCount, graphBuildCountAfterPause)
+
+        engine.seek(toProgress: 0.5)
+        XCTAssertTrue(engine.debugPausedPlaybackNeedsReschedule)
+        let scheduleCountBeforeResume = engine.debugScheduleFromCurrentPositionCount
+
+        try engine.play()
+
+        XCTAssertEqual(engine.state, .playing)
+        XCTAssertFalse(engine.debugPausedPlaybackNeedsReschedule)
+        XCTAssertGreaterThan(engine.debugScheduleFromCurrentPositionCount, scheduleCountBeforeResume)
+        XCTAssertGreaterThanOrEqual(engine.currentTime(), 0.5)
     }
 
     @MainActor
@@ -268,6 +404,45 @@ final class LocalPlayerStabilizationTests: XCTestCase {
     }
 
     @MainActor
+    func testRapidForwardStartsOnlyFinalDebouncedDecode() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let urls = (0..<4).map { fixture.directory.appendingPathComponent("track-\($0).wav") }
+        try urls.forEach { try Self.writeSilentAudioFile(to: $0) }
+
+        let recorder = LocalLoadRecorder()
+        let loader: @Sendable (URL) throws -> LoadedAudioFile = { url in
+            try recorder.load(url: url)
+        }
+        let model = OrbisonicViewModel(localAudioLoader: loader)
+        let tracks = urls.map { Self.track(url: $0) }
+        model.replaceLocalMusicQueueForTesting(
+            tracks: tracks,
+            currentIndex: nil,
+            selectedIndex: 0
+        )
+        try await model.loadQueueIndexForTesting(0, isPlaying: true)
+        recorder.reset()
+
+        model.skipLocalTransport(offset: 1)
+        model.skipLocalTransport(offset: 1)
+        model.skipLocalTransport(offset: 1)
+
+        XCTAssertEqual(model.sessionQueueIndex, 0)
+        XCTAssertEqual(model.pendingSessionQueueIndex, 3)
+
+        try await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(recorder.fileNames, [])
+
+        try await Self.waitForLocalLoadToFinish(model)
+
+        XCTAssertEqual(recorder.fileNames, ["track-3.wav"])
+        XCTAssertEqual(model.sessionQueueIndex, 3)
+        XCTAssertEqual(model.currentFileURL?.path, tracks[3].path)
+    }
+
+    @MainActor
     func testWebPlayerControlsRemainUsableDuringPendingLocalLoad() async throws {
         let fixture = try TemporaryLocalMusicFixture()
         defer { fixture.remove() }
@@ -290,21 +465,21 @@ final class LocalPlayerStabilizationTests: XCTestCase {
 
         let state = model.webStateForTesting(controlEnabled: true)
 
-        XCTAssertEqual(state.player.controls, ["previous", "play", "pause", "next", "stop", "playAll", "shuffle"])
+        XCTAssertEqual(state.player.controls, ["previous", "play", "pause", "stop", "next"])
         XCTAssertTrue(state.player.enabledControls.contains("pause"))
         XCTAssertTrue(state.player.enabledControls.contains("stop"))
         XCTAssertTrue(state.player.enabledControls.contains("next"))
         XCTAssertFalse(state.player.enabledControls.contains("play"))
     }
 
-    private static func writeSilentAudioFile(to url: URL) throws {
+    private static func writeSilentAudioFile(to url: URL, frames: AVAudioFrameCount = 480) throws {
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480)
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)
         else {
             XCTFail("Could not create test audio format")
             return
         }
-        buffer.frameLength = 480
+        buffer.frameLength = frames
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         try file.write(from: buffer)
     }
@@ -323,6 +498,31 @@ final class LocalPlayerStabilizationTests: XCTestCase {
             sampleRate: 48_000,
             duration: 1,
             artworkPath: nil
+        )
+    }
+
+    private static func spotifyNowPlaying(title: String, isPlaying: Bool) -> SpotifyNowPlaying {
+        SpotifyNowPlaying(
+            title: title,
+            album: "Album",
+            artists: ["Artist"],
+            albumArtists: ["Artist"],
+            uri: "spotify:track:test",
+            durationMs: 180_000,
+            positionMs: 42_000,
+            isPlaying: isPlaying,
+            isExplicit: false,
+            popularity: nil,
+            trackNumber: nil,
+            discNumber: nil,
+            coverURL: nil,
+            volume: nil,
+            shuffle: nil,
+            repeatContext: nil,
+            repeatTrack: nil,
+            autoPlay: nil,
+            clientName: "Spotify",
+            updatedAt: "test"
         )
     }
 
@@ -345,6 +545,50 @@ final class LocalPlayerStabilizationTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTAssertFalse(model.isLocalFileLoading)
+    }
+
+    @MainActor
+    private static func waitForCurrentFile(
+        _ model: OrbisonicViewModel,
+        path: String,
+        timeout: TimeInterval = 3
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while model.currentFileURL?.path != path, Date() < deadline {
+            if let lastError = model.lastError, !lastError.isEmpty {
+                XCTFail("Unexpected local Play Now error: \(lastError)")
+                return
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.currentFileURL?.path, path)
+        XCTAssertFalse(model.isLocalFileLoading)
+        XCTAssertNil(model.pendingSessionQueueIndex)
+    }
+}
+
+private final class LocalLoadRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var loadedFileNames: [String] = []
+
+    var fileNames: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadedFileNames
+    }
+
+    func reset() {
+        lock.lock()
+        loadedFileNames.removeAll()
+        lock.unlock()
+    }
+
+    func load(url: URL) throws -> LoadedAudioFile {
+        lock.lock()
+        loadedFileNames.append(url.lastPathComponent)
+        lock.unlock()
+        return try AudioFileLoader().load(url: url)
     }
 }
 

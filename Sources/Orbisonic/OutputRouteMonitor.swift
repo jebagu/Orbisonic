@@ -24,6 +24,14 @@ struct OutputRouteInfo: Equatable, Identifiable {
         uid.isEmpty ? "\(deviceID)" : uid
     }
 
+    func matchesAudioDevice(_ other: OutputRouteInfo) -> Bool {
+        guard isAvailable, other.isAvailable else { return false }
+        if !uid.isEmpty, uid == other.uid {
+            return true
+        }
+        return deviceID == other.deviceID
+    }
+
     var isAvailable: Bool {
         deviceID != 0 && outputChannelCount > 0
     }
