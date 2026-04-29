@@ -69,6 +69,38 @@ final class LocalPlayerStabilizationTests: XCTestCase {
         XCTAssertEqual(loaded.playlists[0].trackPaths, [existingURL.path])
     }
 
+    @MainActor
+    func testStartupPreloadsFirstLibraryTrackPaused() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let firstURL = fixture.directory.appendingPathComponent("01-first.wav")
+        let secondURL = fixture.directory.appendingPathComponent("02-second.wav")
+        try Self.writeSilentAudioFile(to: firstURL)
+        try Self.writeSilentAudioFile(to: secondURL)
+
+        let first = Self.track(url: firstURL)
+        let second = Self.track(url: secondURL)
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(),
+            tracks: [second, first],
+            playlists: []
+        ))
+
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library,
+            preloadFirstLocalMusicTrack: true
+        )
+        try await Self.waitForCurrentFile(model, path: first.path)
+
+        XCTAssertEqual(model.sessionQueue.map(\.id), [first.id, second.id])
+        XCTAssertEqual(model.sessionQueueIndex, 0)
+        XCTAssertEqual(model.currentQueueTrack?.id, first.id)
+        XCTAssertFalse(model.isPlaying)
+    }
+
     func testGeneratedFLACCanUseFFmpegFallbackDecodePath() throws {
         guard let ffmpegURL = FFmpegToolLocator.ffmpegURL() else {
             throw XCTSkip("ffmpeg unavailable")

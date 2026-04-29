@@ -317,7 +317,10 @@ final class OrbisonicViewModel: ObservableObject {
     private static let liveSignalNoSignalSeconds = 15
     private static var isRunningUnitTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
-            NSClassFromString("XCTest.XCTestCase") != nil
+            ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil ||
+            Bundle.allBundles.contains { $0.bundlePath.hasSuffix(".xctest") } ||
+            NSClassFromString("XCTest.XCTestCase") != nil ||
+            NSClassFromString("XCTestCase") != nil
     }
 
     @Published var preset: SpatialPreset = .defaultPreset {
@@ -480,7 +483,8 @@ final class OrbisonicViewModel: ObservableObject {
 
     private let engine = OrbisonicEngine()
     private let localAudioLoader: @Sendable (URL, DebugTimingContext?) throws -> LoadedAudioFile
-    private let localMusicLibrary = LocalMusicLibrary()
+    private let localMusicLibrary: LocalMusicLibrary
+    private let preloadsFirstLocalMusicTrack: Bool
     private let rendererPresetStore = RendererPresetStore()
     private let roonNowPlayingReader = RoonNowPlayingReader()
     private let roonBridgeClient = RoonBridgeClient()
@@ -546,13 +550,21 @@ final class OrbisonicViewModel: ObservableObject {
         self.localAudioLoader = { url, debugTiming in
             try AudioFileLoader().load(url: url, debugTiming: debugTiming)
         }
+        self.localMusicLibrary = LocalMusicLibrary()
+        self.preloadsFirstLocalMusicTrack = !Self.isRunningUnitTests
         finishInitialization()
     }
 
-    init(localAudioLoader: @escaping @Sendable (URL) throws -> LoadedAudioFile) {
+    init(
+        localAudioLoader: @escaping @Sendable (URL) throws -> LoadedAudioFile,
+        localMusicLibrary: LocalMusicLibrary = LocalMusicLibrary(),
+        preloadFirstLocalMusicTrack: Bool? = nil
+    ) {
         self.localAudioLoader = { url, _ in
             try localAudioLoader(url)
         }
+        self.localMusicLibrary = localMusicLibrary
+        self.preloadsFirstLocalMusicTrack = preloadFirstLocalMusicTrack ?? !Self.isRunningUnitTests
         finishInitialization()
     }
 
@@ -1565,7 +1577,8 @@ final class OrbisonicViewModel: ObservableObject {
             liveMonitorState = .stopped
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
-            statusMessage = "Use the Player below to choose files and control playback."
+            statusMessage = "Use the Local Music tab to play music."
+            preloadFirstLocalMusicTrackIfNeeded(reason: "Local Music selected")
         case .roon:
             updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             currentFileURL = nil
@@ -1911,6 +1924,7 @@ final class OrbisonicViewModel: ObservableObject {
             category: "local-music",
             "Scanned watchFolders=\(localMusicSettings.watchFolderPaths.count) explicitPlaylists=\(localMusicSettings.m3uPlaylistPaths.count) tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) skippedMissing=\(result.skippedMissingFiles)"
         )
+        preloadFirstLocalMusicTrackIfNeeded(reason: "local music scan completed")
     }
 
     func loadSelectedLocalMusicTrack() {
@@ -3317,6 +3331,25 @@ final class OrbisonicViewModel: ObservableObject {
         AppLogger.shared.notice(
             category: "local-music",
             "Loaded local music database tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) watchFolders=\(localMusicSettings.watchFolderPaths.count)"
+        )
+        preloadFirstLocalMusicTrackIfNeeded(reason: "local music database loaded")
+    }
+
+    private func preloadFirstLocalMusicTrackIfNeeded(reason: String) {
+        guard preloadsFirstLocalMusicTrack,
+              sourceMode == .filePlayback,
+              currentFileURL == nil,
+              !isPlaying,
+              !isLocalFileLoading,
+              let firstTrack = sortedLocalMusicTracks.first
+        else { return }
+
+        AppLogger.shared.notice(category: "local-music", "Preloading first library track reason=\(reason) track=\(firstTrack.fileName)")
+        startSessionQueue(
+            from: sortedLocalMusicTracks,
+            startTrackID: firstTrack.id,
+            shuffle: false,
+            autoplay: false
         )
     }
 
