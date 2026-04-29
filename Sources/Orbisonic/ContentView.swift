@@ -175,6 +175,16 @@ struct PlayerDetailRowContent: Equatable {
     var hasTopDivider = false
 }
 
+private struct DiagnosticInfoRow {
+    let title: String
+    let value: String
+
+    init(_ title: String, _ value: String) {
+        self.title = title
+        self.value = value
+    }
+}
+
 enum LocalFilePlayerRowsModel {
     static func rows(metadata: AudioSourceMetadata) -> [PlayerDetailRowContent] {
         var rows = [
@@ -183,7 +193,7 @@ enum LocalFilePlayerRowsModel {
             PlayerDetailRowContent(title: "Layout", value: layoutText(count: metadata.channelCount, layoutName: metadata.layoutName)),
             PlayerDetailRowContent(title: "Length", value: metadata.durationText)
         ]
-        if let note = metadata.formatNote?.trimmedNilIfBlank {
+        if let note = conciseFormatNote(metadata.formatNote) {
             rows.insert(PlayerDetailRowContent(title: "Note", value: note), at: 1)
         }
         return rows
@@ -212,6 +222,15 @@ enum LocalFilePlayerRowsModel {
     private static func localTrackFormatText(for track: LocalMusicTrack) -> String {
         let container = track.url.pathExtension.uppercased()
         return container.isEmpty ? "Local file" : container
+    }
+
+    private static func conciseFormatNote(_ note: String?) -> String? {
+        guard let note = note?.trimmedNilIfBlank else { return nil }
+        if note.localizedCaseInsensitiveContains("Dolby Atmos metadata present"),
+           note.localizedCaseInsensitiveContains("object rendering") {
+            return "Atmos bed decoded; object metadata not rendered"
+        }
+        return note.count <= 72 ? note : nil
     }
 
     private static func channelCountText(_ count: Int) -> String {
@@ -838,7 +857,7 @@ struct ContentView: View {
 
                     VStack(alignment: .leading, spacing: 7) {
                         ForEach(selectedSourceRows) { row in
-                            transportRow(title: row.title, value: row.value)
+                            inputSourceStatusRow(title: row.title, value: row.value)
                         }
                     }
                 }
@@ -869,6 +888,33 @@ struct ContentView: View {
         .buttonStyle(LabButtonStyle(isActive: sourceButtonIsActive(mode), accent: sourceButtonAccent(for: mode)))
     }
 
+    private func inputSourceStatusRow(title: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 184, alignment: .leading)
+
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(LabTheme.text)
+                .lineLimit(inputSourceStatusValueLineLimit(for: title))
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func inputSourceStatusValueLineLimit(for title: String) -> Int {
+        switch title {
+        case "Now playing":
+            return 2
+        default:
+            return 3
+        }
+    }
+
     private var selectedSourceStatusColor: Color {
         if model.sourceSwitchStatusText != nil {
             return LabTheme.amber
@@ -878,7 +924,11 @@ struct ContentView: View {
         }
         if model.sourceMode.isLiveInput {
             if isSelectedLiveSourceUnavailable ||
-                (model.sourceMode == .spotify && isSpotifyReceiverUnavailable) ||
+                (model.sourceMode == .roon && liveInputReadyValue(expected: .roonInput) == "Missing") ||
+                (model.sourceMode == .spotify && (
+                    isSpotifyReceiverUnavailable ||
+                    liveInputReadyValue(expected: .spotifyInput) == "Missing"
+                )) ||
                 (model.sourceMode == .aux && liveInputReadyValue(expected: .auxCable) == "Missing") {
                 return LabTheme.red
             }
@@ -895,137 +945,16 @@ struct ContentView: View {
     }
 
     private var selectedSourceHeadline: String {
-        if let sourceSwitchStatusText = model.sourceSwitchStatusText {
-            return sourceSwitchStatusText
-        }
-
-        switch model.sourceMode {
-        case .off:
-            return "Orbisonic is idle"
-        case .roon:
-            if isSelectedLiveSourceUnavailable {
-                return "Roon unavailable"
-            }
-            return model.liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Waiting for Roon audio"
-        case .spotify:
-            if isSpotifyReceiverUnavailable {
-                return "Spotify receiver unavailable"
-            }
-            if model.liveMonitorState == .monitoring {
-                return "Playing through Orbisonic"
-            }
-            return model.spotifyVisibleNowPlaying == nil ? "Waiting for Spotify" : "Waiting for audio"
-        case .aux:
-            if isSelectedLiveSourceUnavailable || liveInputReadyValue(expected: .auxCable) == "Missing" {
-                return "Input unavailable"
-            }
-            return model.liveMonitorState == .monitoring ? "Playing through Orbisonic" : "Listening for input"
-        case .filePlayback:
-            return "Ready"
-        case .testTone:
-            return "Diagnostics source is selected."
-        }
+        model.inputSourceStatusPanel.headline
     }
 
     private var selectedSourceDetailText: String {
-        if let sourceSwitchStatusText = model.sourceSwitchStatusText {
-            return sourceSwitchStatusText == "Stopping audio..."
-                ? "Orbisonic is ramping down before stopping the active audio path."
-                : "Orbisonic is ramping down before changing the active audio path."
-        }
-
-        switch model.sourceMode {
-        case .off:
-            return "Select a source to begin listening or playback."
-        case .roon:
-            if isSelectedLiveSourceUnavailable {
-                return "Orbisonic could not connect to the Roon service."
-            }
-            return model.liveMonitorState == .monitoring
-                ? "Roon audio is being rendered by Orbisonic."
-                : "Use Roon to send audio to Orbisonic."
-        case .spotify:
-            if isSpotifyReceiverUnavailable {
-                return "Orbisonic could not start the Spotify receiver."
-            }
-            if model.spotifyVisibleNowPlaying != nil, model.liveMonitorState != .monitoring {
-                return "Spotify is connected. Press play in Spotify to hear it through Orbisonic."
-            }
-            return model.liveMonitorState == .monitoring
-                ? "Spotify audio is being rendered by Orbisonic."
-                : "Use the Spotify app to connect to \"Orbisonic Spotify\" and press play there."
-        case .aux:
-            if isSelectedLiveSourceUnavailable || liveInputReadyValue(expected: .auxCable) == "Missing" {
-                return "Orbisonic could not find the selected Aux input."
-            }
-            return model.liveMonitorState == .monitoring
-                ? "Aux audio is being rendered by Orbisonic."
-                : "Connect an audio source to the selected input."
-        case .filePlayback:
-            return "Use the Player below to choose files and control playback."
-        case .testTone:
-            return "Test tones remain available for diagnostics."
-        }
+        model.inputSourceStatusPanel.body
     }
 
     private var selectedSourceRows: [PlayerDetailRow] {
-        switch model.sourceMode {
-        case .off:
-            return [
-                PlayerDetailRow(title: "Engine", value: "Idle"),
-                PlayerDetailRow(title: "Output", value: "Silent")
-            ]
-        case .roon:
-            return [
-                PlayerDetailRow(title: "Roon", value: roonSourceStatusValue),
-                PlayerDetailRow(title: "Input", value: liveInputReadyValue(expected: .roonInput)),
-                PlayerDetailRow(title: "Signal", value: liveSignalValue)
-            ]
-        case .spotify:
-            return [
-                PlayerDetailRow(title: "Receiver", value: spotifyReceiverStatusValue),
-                PlayerDetailRow(title: "Input", value: liveInputReadyValue(expected: .spotifyInput)),
-                PlayerDetailRow(title: "Signal", value: liveSignalValue)
-            ]
-        case .aux:
-            return [
-                PlayerDetailRow(title: "Input", value: liveInputReadyValue(expected: .auxCable)),
-                PlayerDetailRow(title: "Signal", value: liveSignalValue)
-            ]
-        case .filePlayback:
-            return [
-                PlayerDetailRow(title: "Library", value: "Ready"),
-                PlayerDetailRow(title: "Playback", value: "Controlled by Orbisonic")
-            ]
-        case .testTone:
-            return [
-                PlayerDetailRow(title: "Diagnostics", value: model.testToneStatus.isEmpty ? "Ready" : model.testToneStatus)
-            ]
-        }
-    }
-
-    private var roonSourceStatusValue: String {
-        if case .error = model.liveMonitorState {
-            return "Unavailable"
-        }
-        if model.roonBridgeSnapshot.isReadyForTransport {
-            return model.liveMonitorState == .monitoring ? "Connected" : "Ready"
-        }
-        return "Unavailable"
-    }
-
-    private var spotifyReceiverStatusValue: String {
-        switch model.spotifyReceiverStatus.state {
-        case .waitingForConnection:
-            return model.spotifyVisibleNowPlaying == nil ? "Ready" : "Connected"
-        case .running:
-            return "Connected"
-        case .restarting:
-            return "Ready"
-        case .failed, .embeddedModuleUnavailable:
-            return "Failed"
-        case .notStarted:
-            return "Ready"
+        model.inputSourceStatusPanel.rows.map { row in
+            PlayerDetailRow(title: row.title, value: row.value)
         }
     }
 
@@ -1035,9 +964,6 @@ struct ContentView: View {
 
     private var isSelectedLiveSourceUnavailable: Bool {
         guard model.sourceMode.isLiveInput else { return false }
-        if model.sourceMode == .roon && model.liveMonitorState != .monitoring && !model.roonBridgeSnapshot.isReadyForTransport {
-            return true
-        }
         switch model.liveMonitorState {
         case .unavailable, .error:
             return true
@@ -1832,10 +1758,10 @@ struct ContentView: View {
             return roonPlaybackStatusText
         }
         if model.isLiveMonitorTransitioning {
-            return model.sourceSwitchStatusText ?? "Stopping audio..."
+            return compactTransitionStatus(model.sourceSwitchStatusText)
         }
         if model.sourceMode == .off {
-            return "Orbisonic is idle"
+            return "Idle"
         }
         if model.sourceMode.isLiveInput {
             switch model.sourceMode {
@@ -1844,13 +1770,13 @@ struct ContentView: View {
             case .spotify:
                 return spotifyPlaybackStatusText
             case .aux:
-                return "Aux has no transport"
+                return "Aux live"
             case .off, .filePlayback, .testTone:
-                return "No audio yet"
+                return "Idle"
             }
         }
         if model.sourceMode == .testTone {
-            return model.isTestTonePlaying ? "Test tone playing" : "Test tone ready"
+            return model.isTestTonePlaying ? "Tone playing" : "Tone ready"
         }
         if model.sourceMode == .filePlayback {
             return localPlaybackStatusText
@@ -1863,55 +1789,77 @@ struct ContentView: View {
             return condensedLocalLoadingStatus(model.statusMessage)
         }
         if model.isPlaying {
-            return "Local playback playing"
+            return "Local playing"
         }
         if model.statusMessage.localizedCaseInsensitiveContains("paused") {
-            return "Local playback paused"
+            return "Local paused"
         }
-        return "Local playback stopped"
+        return "Local stopped"
     }
 
     private func condensedLocalLoadingStatus(_ status: String) -> String {
         if status.hasPrefix("Starting playback") {
-            return "Starting playback..."
+            return "Starting"
         }
         if status.hasPrefix("Loading selected track") {
-            return "Loading selected track..."
+            return "Loading"
         }
         if status.hasPrefix("Loading previous track") {
-            return "Loading previous track..."
+            return "Loading"
         }
         if status.hasPrefix("Loading large audio file") {
-            return "Loading large audio file..."
+            return "Loading"
         }
         if status.hasPrefix("Still loading") {
-            return "Still loading. You can press Stop to cancel."
+            return "Still loading"
         }
-        return "Loading next track..."
+        return "Loading"
+    }
+
+    private func compactTransitionStatus(_ status: String?) -> String {
+        guard let status else {
+            return "Stopping"
+        }
+        if status.localizedCaseInsensitiveContains("stopping") {
+            return "Stopping"
+        }
+        if let targetMode = model.sourceSwitchTargetMode {
+            return "Switching to \(targetMode.rawValue)"
+        }
+        if status.localizedCaseInsensitiveContains("switching") {
+            return "Switching"
+        }
+        return status
     }
 
     private var roonPlaybackStatusText: String {
-        guard let state = model.roonBridgeSnapshot.selectedZone?.state.lowercased() else {
-            return model.liveMonitorState == .monitoring ? "Roon playing" : "Roon playback stopped"
+        let state = model.roonBridgeSnapshot.selectedZone?.state.lowercased() ??
+            model.roonNowPlaying?.state.lowercased()
+        guard let state else {
+            return model.liveAudioSignalState.isRecentlyReceiving || model.liveMonitorState == .monitoring
+                ? "Roon playing"
+                : "Roon stopped"
         }
         switch state {
         case "playing", "loading":
             return "Roon playing"
         case "paused":
-            return "Roon playback paused"
+            return "Roon paused"
         default:
-            return "Roon playback stopped"
+            return "Roon stopped"
         }
     }
 
     private var spotifyPlaybackStatusText: String {
         guard model.spotifyReceiverStatus.isRunning else {
-            return "Spotify playback stopped"
+            return "Spotify stopped"
         }
-        if model.spotifyVisibleNowPlaying?.isPlaying == true {
+        if model.liveAudioSignalState.isRecentlyReceiving ||
+            model.liveMonitorState == .monitoring ||
+            model.spotifyVisibleNowPlaying?.isPlaying == true {
             return "Spotify playing"
         }
-        return model.spotifyVisibleNowPlaying == nil ? "No Spotify track selected" : "Spotify playback paused"
+        return model.spotifyVisibleNowPlaying == nil ? "No Spotify track" : "Spotify paused"
     }
 
     private var statusChipIsActive: Bool {
@@ -1921,11 +1869,18 @@ struct ContentView: View {
         if transportIsBusy {
             return true
         }
-        if model.sourceMode == .spotify {
-            return model.spotifyVisibleNowPlaying?.isPlaying == true
+        if model.sourceMode == .roon {
+            return model.roonBridgeSnapshot.selectedZone?.isPlaying == true ||
+                model.liveAudioSignalState.isRecentlyReceiving ||
+                model.liveMonitorState == .monitoring
         }
-        if model.sourceMode.isLiveInput {
-            return model.liveMonitorState == .monitoring
+        if model.sourceMode == .spotify {
+            return model.liveAudioSignalState.isRecentlyReceiving ||
+                model.liveMonitorState == .monitoring ||
+                model.spotifyVisibleNowPlaying?.isPlaying == true
+        }
+        if model.sourceMode == .aux {
+            return model.liveAudioSignalState.isRecentlyReceiving || model.liveMonitorState == .monitoring
         }
         return model.isPlaying || model.isTestTonePlaying
     }
@@ -2095,7 +2050,7 @@ struct ContentView: View {
                 Text(nowPlayingTitle)
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(LabTheme.text)
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -2103,7 +2058,7 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(LabTheme.textSoft)
                     .lineLimit(2)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -2357,6 +2312,19 @@ struct ContentView: View {
         return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
+    private func formatSampleRate(_ sampleRate: Double) -> String {
+        guard sampleRate > 0 else {
+            return "unknown rate"
+        }
+
+        let kilohertz = sampleRate / 1_000
+        if abs(kilohertz.rounded() - kilohertz) < 0.01 {
+            return "\(Int(kilohertz.rounded())) kHz"
+        }
+
+        return String(format: "%.1f kHz", kilohertz)
+    }
+
     @ViewBuilder
     private var playerDetailContent: some View {
         let rows = playerDetailRows
@@ -2374,7 +2342,7 @@ struct ContentView: View {
                             .overlay(Color.white.opacity(0.08))
                             .padding(.vertical, 2)
                     }
-                    transportRow(title: row.title, value: row.value)
+                    playerDetailRowView(row)
                 }
             }
         }
@@ -2391,7 +2359,7 @@ struct ContentView: View {
         case .aux:
             return auxPlayerRows
         case .filePlayback:
-            return localFilePlayerRows
+            return nonEmptyPlayerRows(localFilePlayerRows)
         case .testTone:
             return testTonePlayerRows
         }
@@ -2400,54 +2368,40 @@ struct ContentView: View {
     private var roonPlayerRows: [PlayerDetailRow] {
         var rows: [PlayerDetailRow] = []
 
-        if let setupRow = liveInputSetupRow {
-            rows.append(setupRow)
-        } else {
-            rows.append(PlayerDetailRow(title: "Roon", value: model.roonBridgeSnapshot.isReadyForTransport ? "Ready" : "Unavailable"))
-        }
-
         if let nowPlaying = model.roonNowPlaying {
             rows.append(PlayerDetailRow(title: "Format", value: nowPlaying.tidyFormatText))
-        } else if !model.roonNowPlayingStatus.isEmpty {
-            rows.append(PlayerDetailRow(title: "Metadata", value: model.roonNowPlayingStatus))
+            if let signalPathText = roonSignalPathDetailText {
+                rows.append(PlayerDetailRow(title: "Signal path", value: signalPathText))
+            }
+            rows.append(PlayerDetailRow(title: "Length", value: nowPlaying.durationText))
         }
 
-        if let signalPathText = roonSignalPathDetailText {
-            rows.append(PlayerDetailRow(title: "Signal Path", value: signalPathText))
-        } else if shouldShowLiveSignalRow {
-            rows.append(PlayerDetailRow(title: "Signal", value: model.liveSignalStatus))
+        if let errorText = liveInputPlaybackErrorText {
+            rows.append(PlayerDetailRow(title: "Error", value: errorText, hasTopDivider: !rows.isEmpty))
         }
 
-        if shouldShowLiveBufferRow {
-            rows.append(PlayerDetailRow(title: "Buffer", value: model.liveBufferStatus))
-        }
-
-        return rows
+        return nonEmptyPlayerRows(rows)
     }
 
     private var spotifyPlayerRows: [PlayerDetailRow] {
         var rows: [PlayerDetailRow] = []
-        if let setupRow = liveInputSetupRow {
-            rows.append(setupRow)
-        }
         rows.append(PlayerDetailRow(title: "Format", value: "Spotify Connect 320 kbps"))
-        rows.append(PlayerDetailRow(title: "Channels", value: "2"))
-        rows.append(PlayerDetailRow(title: "Layout", value: "Stereo"))
-        rows.append(contentsOf: model.spotifySourceHealthLines.map { PlayerDetailRow(title: $0.title, value: $0.value) })
+        rows.append(PlayerDetailRow(title: "Channels", value: "2 stereo"))
         rows.append(PlayerDetailRow(title: "Length", value: model.spotifyVisibleNowPlaying?.durationText ?? "-"))
-        return rows
+        if let errorText = liveInputPlaybackErrorText {
+            rows.append(PlayerDetailRow(title: "Error", value: errorText, hasTopDivider: true))
+        }
+        return nonEmptyPlayerRows(rows)
     }
 
     private var auxPlayerRows: [PlayerDetailRow] {
         var rows: [PlayerDetailRow] = []
-        if let setupRow = liveInputSetupRow {
-            rows.append(setupRow)
+        rows.append(PlayerDetailRow(title: "Input", value: "Aux Cable"))
+        rows.append(PlayerDetailRow(title: "Audio signal", value: liveSignalShortText))
+        if let errorText = liveInputPlaybackErrorText {
+            rows.append(PlayerDetailRow(title: "Error", value: errorText, hasTopDivider: true))
         }
-        rows.append(PlayerDetailRow(title: "Signal", value: model.liveSignalStatus))
-        if shouldShowLiveBufferRow {
-            rows.append(PlayerDetailRow(title: "Buffer", value: model.liveBufferStatus))
-        }
-        return rows
+        return nonEmptyPlayerRows(rows)
     }
 
     private var localFilePlayerRows: [PlayerDetailRow] {
@@ -2483,7 +2437,7 @@ struct ContentView: View {
             return []
         }
 
-        return [PlayerDetailRow(title: "Diagnostics", value: model.activeDiagnosticText)]
+        return [PlayerDetailRow(title: "Tone", value: model.activeDiagnosticText)]
     }
 
     private var playerDetailPlaceholder: String {
@@ -2493,42 +2447,63 @@ struct ContentView: View {
         case .filePlayback:
             "Load a surround mix to see file metadata here."
         case .roon:
-            "Use Roon to send audio to Orbisonic."
+            "Waiting for Roon metadata."
         case .spotify:
-            "Use the Spotify app to connect to Orbisonic Spotify."
+            "Waiting for Spotify metadata."
         case .aux:
-            "Connect an audio source to the selected input."
+            "Waiting for Aux Cable audio."
         case .testTone:
             "Use Diagnostics to run a tone or channel walk."
         }
     }
 
-    private var liveInputSetupRow: PlayerDetailRow? {
-        guard let expectedLoopback = model.sourceMode.expectedLoopback,
-              model.inputRoute.uid != expectedLoopback.deviceUID
-        else {
+    private func playerDetailRowView(_ row: PlayerDetailRow) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(row.title.uppercased())
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 72, alignment: .leading)
+
+            Text(row.value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(LabTheme.text)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
+        }
+    }
+
+    private func nonEmptyPlayerRows(_ rows: [PlayerDetailRow]) -> [PlayerDetailRow] {
+        rows.filter { row in
+            guard let value = row.value.trimmedNilIfBlank else { return false }
+            return value != "-"
+        }
+    }
+
+    private var liveInputPlaybackErrorText: String? {
+        switch model.liveMonitorState {
+        case .unavailable(let message), .error(let message):
+            return message.trimmedNilIfBlank
+        case .stopped, .monitoring, .muted, .silent:
             return nil
         }
-
-        return PlayerDetailRow(title: "Setup", value: model.selectedSourceDeviceStatusText)
     }
 
-    private var shouldShowLiveSignalRow: Bool {
-        guard model.sourceMode.isLiveInput else { return false }
-        let signalStatus = model.liveSignalStatus
-        return signalStatus != "No live input."
-            && !signalStatus.localizedCaseInsensitiveContains("Signal present")
-    }
-
-    private var shouldShowLiveBufferRow: Bool {
-        guard model.sourceMode.isLiveInput,
-              model.liveBufferStatus != "No live buffer."
-        else {
-            return false
+    private var liveSignalShortText: String {
+        switch model.liveAudioSignalState {
+        case .receiving:
+            return "Receiving"
+        case .briefSilence:
+            return "Brief silence"
+        case .silentPassage:
+            return "Paused or silent"
+        case .noSignal:
+            return "No signal"
+        case .unknown:
+            return model.liveMonitorState == .monitoring ? "Receiving" : "Waiting"
         }
-
-        return model.liveMonitorState != .monitoring
-            || model.liveBufferStatus.localizedCaseInsensitiveContains("priming")
     }
 
     private var roonSignalPathDetailText: String? {
@@ -2660,7 +2635,7 @@ struct ContentView: View {
             }
         }
         if parts.isEmpty {
-            parts.append(model.spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect Server" })?.value ?? "Spotify Connect")
+            parts.append(model.spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect receiver" })?.value ?? "Spotify Connect")
         }
         return parts.joined(separator: " • ")
     }
@@ -3490,6 +3465,14 @@ struct ContentView: View {
 
     private var diagnosticsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
+            settingsPanel(title: "Source Health") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(sourceHealthDiagnosticRows.enumerated()), id: \.offset) { _, row in
+                        sourceHealthDiagnosticRow(row)
+                    }
+                }
+            }
+
             HStack(alignment: .top, spacing: 18) {
                 diagnosticWalkPanel(
                     title: "Output 1 Monitor Channel Walk",
@@ -3524,6 +3507,107 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var sourceHealthDiagnosticRows: [DiagnosticInfoRow] {
+        var rows: [DiagnosticInfoRow] = [
+            DiagnosticInfoRow("Active source", model.sourceMode.rawValue)
+        ]
+
+        if model.sourceMode.isLiveInput {
+            rows.append(DiagnosticInfoRow("Selected input device", model.selectedSourceDeviceStatusText))
+        }
+
+        rows.append(contentsOf: model.inputSourceStatusPanel.rows.map {
+            DiagnosticInfoRow($0.title, $0.value)
+        })
+
+        if model.sourceMode == .spotify {
+            rows.append(contentsOf: model.spotifySourceHealthLines.map {
+                DiagnosticInfoRow($0.title, $0.value)
+            })
+        }
+
+        if model.sourceMode.isLiveInput {
+            rows.append(DiagnosticInfoRow("Audio signal detail", model.liveSignalStatus))
+            rows.append(DiagnosticInfoRow("Buffer", model.liveBufferStatus))
+            rows.append(DiagnosticInfoRow("Capture format", liveCaptureFormatText))
+        }
+
+        if let streamFormatText {
+            rows.append(DiagnosticInfoRow("Stream format", streamFormatText))
+        }
+
+        if let sampleRateMismatchText = model.liveSourceSampleRateMismatchText {
+            rows.append(DiagnosticInfoRow("Sample-rate mismatch", sampleRateMismatchText))
+        }
+
+        if model.sourceMode == .roon {
+            rows.append(DiagnosticInfoRow("Roon bridge", model.roonBridgeSnapshot.statusText))
+            rows.append(DiagnosticInfoRow("Roon endpoint", model.roonBridgeSnapshot.audioPathText))
+        }
+
+        if model.sourceMode == .spotify {
+            rows.append(DiagnosticInfoRow("Spotify receiver", model.spotifyReceiverStatus.message))
+        }
+
+        if let errorText = sourceHealthErrorText {
+            rows.append(DiagnosticInfoRow("Error", errorText))
+        }
+
+        return rows.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private var streamFormatText: String? {
+        guard let metadata = model.sourceMetadata else {
+            return nil
+        }
+
+        return "\(metadata.layoutName) • \(metadata.codecName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
+    }
+
+    private var liveCaptureFormatText: String {
+        guard model.sourceMode.isLiveInput else {
+            return "No live capture."
+        }
+
+        return "\(model.inputRoute.displayName) • \(model.activeLiveChannelCount) active of \(model.inputRoute.inputChannelCount) ch • \(formatSampleRate(model.inputRoute.nominalSampleRate))"
+    }
+
+    private var sourceHealthErrorText: String? {
+        if let playbackError = liveInputPlaybackErrorText {
+            return playbackError
+        }
+
+        if model.sourceMode == .spotify {
+            switch model.spotifyReceiverStatus.state {
+            case .failed, .embeddedModuleUnavailable:
+                return model.spotifyReceiverStatus.message.trimmedNilIfBlank
+            case .notStarted, .waitingForConnection, .running, .restarting:
+                break
+            }
+        }
+
+        return model.lastError?.trimmedNilIfBlank
+    }
+
+    private func sourceHealthDiagnosticRow(_ row: DiagnosticInfoRow) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(row.title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 170, alignment: .leading)
+
+            Text(row.value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(LabTheme.text)
+                .textSelection(.enabled)
+                .lineLimit(3)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .topLeading)
+        }
     }
 
     private var diagnosticSpeakerTonePanel: some View {
@@ -3737,22 +3821,6 @@ struct ContentView: View {
                 )
                 .shadow(color: Color.black.opacity(0.36), radius: 18, x: 0, y: 10)
         )
-    }
-
-    private func transportRow(title: String, value: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(LabTheme.textSoft)
-                .lineLimit(1)
-                .frame(width: 112, alignment: .leading)
-            Text(value)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(LabTheme.text)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .frame(minHeight: 32, alignment: .topLeading)
-        }
     }
 
     private func tuningSlider(title: String, value: Binding<Double>, range: ClosedRange<Double>, format: String) -> some View {

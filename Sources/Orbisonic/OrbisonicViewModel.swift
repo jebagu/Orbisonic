@@ -56,6 +56,27 @@ enum RendererMeterDisplayModel {
     }
 }
 
+enum MonitorMeterDisplayModel {
+    private static let activityFloor: Float = 0.005
+
+    static func levels(tappedLevels: [Float], sourceLevels: [Float], channelCount: Int) -> [Float] {
+        let tapped = padded(tappedLevels, count: channelCount)
+        let source = padded(sourceLevels, count: channelCount)
+
+        let hasTappedActivity = tapped.contains { $0 >= activityFloor }
+        let hasSourceActivity = source.contains { $0 >= activityFloor }
+
+        return hasTappedActivity || !hasSourceActivity ? tapped : source
+    }
+
+    private static func padded(_ levels: [Float], count: Int) -> [Float] {
+        guard count > 0 else { return [] }
+        if levels.count == count { return levels }
+        if levels.count > count { return Array(levels.prefix(count)) }
+        return levels + Array(repeating: 0, count: count - levels.count)
+    }
+}
+
 private struct LocalFileQueueCommit {
     let index: Int
     let trackID: String
@@ -273,6 +294,7 @@ final class OrbisonicViewModel: ObservableObject {
     private static let spotifyNowPlayingRefreshInterval: TimeInterval = 0.5
     private static let spotifyPlaybackStatusDebounceNanoseconds: UInt64 = 300_000_000
     private static let spotifyConnectRestartDebounce: TimeInterval = 8.0
+    private static let roonArtworkRetryCooldown: TimeInterval = 15.0
     private static let localTransportDebounceNanoseconds: UInt64 = 120_000_000
     private static let localLoadSubtleStatusNanoseconds: UInt64 = 150_000_000
     private static let localLoadClearStatusNanoseconds: UInt64 = 700_000_000
@@ -289,6 +311,10 @@ final class OrbisonicViewModel: ObservableObject {
     private static let sourcePrimeDuration: TimeInterval = 0.08
     private static let sourceRampUpDuration: TimeInterval = 0.08
     private static let localPlayNowSourceSwitchTimeout: TimeInterval = 2.0
+    private static let liveSignalThreshold: Float = 0.005
+    private static let liveSignalStartupGraceSeconds = 3
+    private static let liveSignalBriefSilenceSeconds = 2
+    private static let liveSignalNoSignalSeconds = 15
     private static var isRunningUnitTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
             NSClassFromString("XCTest.XCTestCase") != nil
@@ -386,6 +412,8 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var availableInputRoutes: [InputRouteInfo] = []
     @Published var sourceMode: SourceMode = .filePlayback
     @Published private(set) var liveMonitorState: LiveMonitorState = .stopped
+    @Published private(set) var liveAudioSignalState: LiveAudioSignalState = .unknown
+    @Published private(set) var liveAudioSignalSilenceDuration: Int?
     @Published var activeLiveChannelCount = 2
     @Published var liveSignalStatus = "No live input."
     @Published var liveBufferStatus = "No live buffer."
@@ -466,6 +494,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var lastLiveBufferLogSecond: Int = -1
     private var lastLiveSilenceWarningSecond: Int = -1
     private var lastLiveSignalPresent: Bool?
+    private var lastLiveSignalDetectedSecond: Int?
     private var testToneStopTask: Task<Void, Never>?
     private var diagnosticSequenceTask: Task<Void, Never>?
     private var sourceSwitchTask: Task<Void, Never>?
@@ -502,8 +531,11 @@ final class OrbisonicViewModel: ObservableObject {
     private var roonArtworkFetchTask: Task<Void, Never>?
     private var roonArtworkRequestedKey: String?
     private var roonArtworkFailedKeys: Set<String> = []
+    private var roonArtworkRetryAfter: [String: Date] = [:]
     private var lastLoggedRoonArtworkMissingSignature: String?
+    private var lastLoggedRoonArtworkCapabilitySignature: String?
     private var lastLoggedSpotifyStatusSignature: String?
+    var lastLoggedInputSourceStatusSignature: String?
     private var selectedInputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedInputDeviceUIDKey)
     private var monitorOutputSelection = OrbisonicViewModel.loadMonitorOutputSelection()
     private var rendererOutputSelection = OrbisonicViewModel.loadRendererOutputSelection()
@@ -1282,6 +1314,7 @@ final class OrbisonicViewModel: ObservableObject {
             sourceSwitchTargetMode = nil
             transitionOutputGain = 1
             applyEffectiveOutputVolume(log: false)
+            logInputSourceStatusIfNeeded(reason: "source switch UI settled", force: true)
         }
 
         while !Task.isCancelled, let requestedMode = sourceSwitchRequests.takeNext() {
@@ -1511,6 +1544,10 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func applySourceModeState(_ mode: SourceMode) {
         sourceMode = mode
+        lastLiveSignalPresent = nil
+        lastLiveSignalDetectedSecond = nil
+        liveAudioSignalState = .unknown
+        liveAudioSignalSilenceDuration = nil
 
         switch mode {
         case .off:
@@ -1538,7 +1575,7 @@ final class OrbisonicViewModel: ObservableObject {
             refreshRoonBridgeIfNeeded(force: true)
             if selectExpectedLoopbackInputIfAvailable(for: .roon) {
                 liveMonitorState = .stopped
-                statusMessage = "Roon is selected. Use Roon to send audio to Orbisonic."
+                statusMessage = "Roon is selected. Open the Roon app, select the Orbisonic audio Zone, then start playback."
             } else {
                 let message = missingLoopbackMessage(for: .roon)
                 liveMonitorState = .unavailable(message)
@@ -1555,7 +1592,7 @@ final class OrbisonicViewModel: ObservableObject {
             refreshSpotifyNowPlayingIfNeeded(force: true, reason: "source selected")
             if selectExpectedLoopbackInputIfAvailable(for: .spotify) {
                 liveMonitorState = .stopped
-                statusMessage = "Spotify is selected. Use the Spotify app to connect to Orbisonic Spotify."
+                statusMessage = "Spotify is selected. Open Spotify, choose Orbisonic from Devices / Spotify Connect, then control playback from Spotify."
             } else {
                 let message = missingLoopbackMessage(for: .spotify)
                 liveMonitorState = .unavailable(message)
@@ -1578,7 +1615,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonNowPlaying = nil
             if selectExpectedLoopbackInputIfAvailable(for: .aux) {
                 liveMonitorState = .stopped
-                statusMessage = "Aux Cable is selected. Connect an audio source to the selected input."
+                statusMessage = "Aux Cable is selected. Select Orbisonic Aux Cable as the output device in the source app."
             } else {
                 let message = missingLoopbackMessage(for: .aux)
                 liveMonitorState = .unavailable(message)
@@ -1587,6 +1624,7 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         resetRendererRequestToAutomatic(reason: "source changed to \(mode.rawValue)")
+        logInputSourceStatusIfNeeded(reason: "source changed to \(mode.rawValue)", force: true)
     }
 
     func selectInputRoute(_ route: InputRouteInfo) {
@@ -1620,6 +1658,7 @@ final class OrbisonicViewModel: ObservableObject {
             startLiveInputForCurrentRoute(reason: "selected input changed")
         } else if sourceMode.isLiveInput {
             statusMessage = "Orbisonic input set to \(route.deviceName). macOS system input is still \(systemInputRoute.displayName)."
+            logInputSourceStatusIfNeeded(reason: "selected input changed", force: true)
         }
     }
 
@@ -2516,6 +2555,32 @@ final class OrbisonicViewModel: ObservableObject {
         updateSpotifyNowPlaying(nowPlaying, reason: "test", forceVisible: true)
     }
 
+    func setSpotifyReceiverStatusForTesting(_ status: SpotifyReceiverStatus) {
+        spotifyReceiverStatus = status
+    }
+
+    func setLiveMonitorStateForTesting(_ state: LiveMonitorState) {
+        liveMonitorState = state
+    }
+
+    func setLiveAudioSignalStateForTesting(_ state: LiveAudioSignalState, silenceDuration: Int? = nil) {
+        liveAudioSignalState = state
+        liveAudioSignalSilenceDuration = silenceDuration
+        lastLiveSignalDetectedSecond = state == .receiving ? 0 : nil
+        lastLiveSignalPresent = state == .receiving
+    }
+
+    func setRoonBridgeSnapshotForTesting(_ snapshot: RoonBridgeSnapshot) {
+        roonBridgeSnapshot = snapshot
+    }
+
+    func setInputRouteForTesting(_ route: InputRouteInfo, availableRoutes: [InputRouteInfo]? = nil) {
+        inputRoute = route
+        if let availableRoutes {
+            self.availableInputRoutes = availableRoutes
+        }
+    }
+
     func applySpotifyNowPlayingForTesting(_ nowPlaying: SpotifyNowPlaying?) {
         updateSpotifyNowPlaying(nowPlaying, reason: "test")
     }
@@ -3082,6 +3147,9 @@ final class OrbisonicViewModel: ObservableObject {
         lastLiveBufferLogSecond = -1
         lastLiveSilenceWarningSecond = -1
         lastLiveSignalPresent = nil
+        lastLiveSignalDetectedSecond = nil
+        liveAudioSignalState = .unknown
+        liveAudioSignalSilenceDuration = nil
         liveSignalStatus = "File playback source loaded."
         liveBufferStatus = "No live buffer."
         roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
@@ -3474,6 +3542,7 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = message
             lastError = message
             liveMonitorState = .unavailable(message)
+            logInputSourceStatusIfNeeded(reason: "manual Roon input unavailable", force: true)
             return
         }
 
@@ -3502,6 +3571,7 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = message
             lastError = message
             liveMonitorState = .unavailable(message)
+            logInputSourceStatusIfNeeded(reason: "manual Spotify input unavailable", force: true)
             return
         }
 
@@ -3527,6 +3597,7 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = message
             lastError = message
             liveMonitorState = .unavailable(message)
+            logInputSourceStatusIfNeeded(reason: "manual Aux Cable input unavailable", force: true)
             return
         }
 
@@ -3586,6 +3657,9 @@ final class OrbisonicViewModel: ObservableObject {
             lastLiveBufferLogSecond = -1
             lastLiveSilenceWarningSecond = -1
             lastLiveSignalPresent = nil
+            lastLiveSignalDetectedSecond = nil
+            liveAudioSignalState = .unknown
+            liveAudioSignalSilenceDuration = nil
             liveSignalStatus = "Waiting for signal from \(liveInputSignalName)."
             liveBufferStatus = "Priming live buffer."
             if sourceMode == .roon {
@@ -3597,23 +3671,27 @@ final class OrbisonicViewModel: ObservableObject {
             }
 
             if sourceMode == .roon, inputRoute.isRoonLoopback {
-                statusMessage = "Use Roon to send audio to Orbisonic."
+                statusMessage = "Open the Roon app, select the Orbisonic audio Zone, then start playback."
             } else if sourceMode == .spotify, inputRoute.isSpotifyLoopback {
                 statusMessage = spotifyVisibleNowPlaying == nil
-                    ? "Use the Spotify app to connect to \"Orbisonic Spotify\" and press play there."
-                    : "Spotify is connected. Press play in Spotify to hear it through Orbisonic."
+                    ? "Open Spotify, choose Orbisonic from Devices / Spotify Connect, then control playback from Spotify."
+                    : "Spotify Connect session detected. Control playback from Spotify."
             } else {
-                statusMessage = "Connect an audio source to the selected input."
+                statusMessage = sourceMode == .aux
+                    ? "Select Orbisonic Aux Cable as the output device in Ableton Live, QLab, SPAT Revolution, GarageBand, or another app."
+                    : "Connect an audio source to the selected input."
             }
 
             AppLogger.shared.notice(
                 category: "live-input",
                 "Live input active source=\(sourceMode.rawValue) reason=\(reason) input=\(inputRoute.deviceName) uid=\(inputRoute.uid) activeChannels=\(requestedChannelCount)"
             )
+            logInputSourceStatusIfNeeded(reason: "live input started: \(reason)", force: true)
         } catch {
             liveMonitorState = .error(error.localizedDescription)
             AppLogger.shared.error(category: "ui", "Live input failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
+            logInputSourceStatusIfNeeded(reason: "live input failed: \(reason)", force: true)
         }
     }
 
@@ -3943,6 +4021,9 @@ final class OrbisonicViewModel: ObservableObject {
         lastLiveBufferLogSecond = -1
         lastLiveSilenceWarningSecond = -1
         lastLiveSignalPresent = nil
+        lastLiveSignalDetectedSecond = nil
+        liveAudioSignalState = .unknown
+        liveAudioSignalSilenceDuration = nil
         liveSignalStatus = "\(sourceName) input stopped."
         liveBufferStatus = "No live buffer."
         statusMessage = "\(sourceName) input stopped."
@@ -3986,6 +4067,9 @@ final class OrbisonicViewModel: ObservableObject {
         lastLiveBufferLogSecond = -1
         lastLiveSilenceWarningSecond = -1
         lastLiveSignalPresent = nil
+        lastLiveSignalDetectedSecond = nil
+        liveAudioSignalState = .unknown
+        liveAudioSignalSilenceDuration = nil
         liveSignalStatus = "No live input."
         liveBufferStatus = "No live buffer."
         testToneStatus = ""
@@ -4720,7 +4804,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         if sourceMode == .spotify {
             let routeText = inputRoute.isAvailable ? inputRoute.detail : missingLoopbackMessage(for: .spotify)
-            let serverText = spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect Server" })?.value ?? spotifyReceiverStatus.message
+            let serverText = spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect receiver" })?.value ?? spotifyReceiverStatus.message
             return "\(routeText) • \(serverText) • \(liveSignalStatus)"
         }
 
@@ -4839,6 +4923,11 @@ final class OrbisonicViewModel: ObservableObject {
 
     var liveInputReadinessText: String {
         if let expectedLoopback = sourceMode.expectedLoopback {
+            if sourceMode == .roon {
+                return inputRoute.uid == expectedLoopback.deviceUID
+                    ? "\(expectedLoopback.displayName) available."
+                    : missingLoopbackMessage(for: sourceMode)
+            }
             return inputRoute.isAvailable
                 ? "\(expectedLoopback.displayName) ready."
                 : missingLoopbackMessage(for: sourceMode)
@@ -4859,14 +4948,22 @@ final class OrbisonicViewModel: ObservableObject {
         return missingLoopbackMessage(for: sourceMode)
     }
 
+    var liveSourceSampleRateMismatchText: String? {
+        guard sourceMode == .roon else {
+            return nil
+        }
+
+        return roonLoopbackSampleRateMismatchText
+    }
+
     var spotifySourceHealthLines: [SpotifySourceHealthLine] {
         guard sourceMode == .spotify else { return [] }
 
         let deviceStatus: String
         if inputRoute.isSpotifyLoopback {
-            deviceStatus = "Selected: \(inputRoute.deviceName)"
+            deviceStatus = "Selected input: \(inputRoute.deviceName)"
         } else if let route = availableInputRoutes.first(where: \.isSpotifyLoopback) {
-            deviceStatus = "Available: \(route.deviceName)"
+            deviceStatus = "Available input: \(route.deviceName)"
         } else {
             deviceStatus = "Orbisonic Spotify Input unavailable"
         }
@@ -4874,39 +4971,51 @@ final class OrbisonicViewModel: ObservableObject {
         let serverStatus: String
         switch spotifyReceiverStatus.state {
         case .notStarted:
-            serverStatus = "Unavailable"
+            serverStatus = "Stopped"
         case .embeddedModuleUnavailable:
-            serverStatus = "Unavailable"
+            serverStatus = "Error"
         case .waitingForConnection:
             if let clientName = (spotifyVisibleNowPlaying ?? spotifyNowPlaying)?.clientName?.trimmedNilIfBlank {
-                serverStatus = "Connected to \(clientName)"
+                serverStatus = "Session from \(clientName)"
             } else {
                 serverStatus = "Advertising as \(spotifyReceiverClient.configuration.receiverName)"
             }
         case .running:
-            serverStatus = "Connected"
+            serverStatus = "Running"
         case .restarting:
-            serverStatus = "Restarting"
+            serverStatus = "Starting"
         case .failed:
-            serverStatus = "Failed"
+            serverStatus = "Error"
         }
 
         let streamRead: String
         if let metadata = sourceMetadata, inputRoute.isSpotifyLoopback {
-            streamRead = "Connected: \(metadata.channelCount) channels, \(metadata.sampleRateText) \(metadata.layoutName.lowercased())"
+            streamRead = "Receiving format: \(metadata.channelCount) channels, \(metadata.sampleRateText) \(metadata.layoutName.lowercased())"
         } else if inputRoute.isSpotifyLoopback, liveMonitorState.isCapturing || liveMonitorState.isMuted {
-            streamRead = "Connected: \(activeLiveChannelCount) channels, \(formatSampleRate(inputRoute.nominalSampleRate)) stereo"
+            streamRead = "Monitoring format: \(activeLiveChannelCount) channels, \(formatSampleRate(inputRoute.nominalSampleRate)) stereo"
         } else {
             streamRead = "Waiting for stream"
         }
 
-        let signal = lastLiveSignalPresent == true ? "Music detected" : "Silent"
+        let signal: String
+        switch liveAudioSignalState {
+        case .receiving:
+            signal = "Receiving"
+        case .briefSilence:
+            signal = "Brief silence"
+        case .silentPassage:
+            signal = "Paused or silent"
+        case .noSignal:
+            signal = "No signal"
+        case .unknown:
+            signal = lastLiveSignalPresent == true ? "Receiving" : "Unknown"
+        }
 
         return [
-            SpotifySourceHealthLine(title: "Device Status", value: deviceStatus),
-            SpotifySourceHealthLine(title: "Spotify Connect Server", value: serverStatus),
-            SpotifySourceHealthLine(title: "Stream Read", value: streamRead),
-            SpotifySourceHealthLine(title: "Signal", value: signal)
+            SpotifySourceHealthLine(title: "Spotify audio device", value: deviceStatus),
+            SpotifySourceHealthLine(title: "Spotify Connect receiver", value: serverStatus),
+            SpotifySourceHealthLine(title: "Spotify input stream", value: streamRead),
+            SpotifySourceHealthLine(title: "Audio signal", value: signal)
         ]
     }
 
@@ -5977,6 +6086,10 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = message
             lastError = message
         }
+
+        if sourceMode.isLiveInput {
+            logInputSourceStatusIfNeeded(reason: "route refresh")
+        }
     }
 
     private func publishTuning() {
@@ -6172,10 +6285,13 @@ final class OrbisonicViewModel: ObservableObject {
         monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
     }
 
-    private func updateMonitorMeters(from _: [Float]) {
-        let levels = engine.monitorMeterLevels()
+    private func updateMonitorMeters(from sourceLevels: [Float]) {
         let channelCount = monitorChannelWalkCount
-        let paddedLevels = padded(levels, count: channelCount)
+        let paddedLevels = MonitorMeterDisplayModel.levels(
+            tappedLevels: engine.monitorMeterLevels(),
+            sourceLevels: sourceLevels,
+            channelCount: channelCount
+        )
         monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: channelCount).channels)
         monitorMeterStore.update(with: paddedLevels)
     }
@@ -6256,9 +6372,16 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func updateLiveSignalStatus(peak: Float, elapsedSecond: Int) {
-        let signalPresent = peak >= 0.005
+        let signalPresent = peak >= Self.liveSignalThreshold
 
         if signalPresent {
+            lastLiveSignalDetectedSecond = elapsedSecond
+            setLiveAudioSignalState(
+                .receiving,
+                silenceDuration: 0,
+                reason: "audio signal receiving",
+                peak: peak
+            )
             liveSignalStatus = "Signal present from \(liveInputSignalName)."
             if !liveMonitorState.isMuted {
                 liveMonitorState = .monitoring
@@ -6274,39 +6397,121 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
-        if elapsedSecond < 3 {
+        if elapsedSecond < Self.liveSignalStartupGraceSeconds {
+            setLiveAudioSignalState(
+                .unknown,
+                silenceDuration: nil,
+                reason: "audio signal startup grace",
+                peak: peak
+            )
             liveSignalStatus = "Waiting for signal from \(liveInputSignalName)."
             return
         }
 
-        if sourceMode == .roon, let mismatchText = roonLoopbackSampleRateMismatchText {
-            liveSignalStatus = "\(liveInputSignalName) is silent. \(mismatchText)"
-        } else if sourceMode == .roon, roonNowPlaying?.state.caseInsensitiveCompare("PAUSED") == .orderedSame {
-            liveSignalStatus = "\(liveInputSignalName) is silent because Roon is paused."
-        } else if sourceMode == .roon {
-            liveSignalStatus = "\(liveInputSignalName) is silent. Select Orbisonic Roon Input in Roon and start playback."
-        } else if sourceMode == .spotify {
-            liveSignalStatus = "\(liveInputSignalName) is silent. Start Spotify playback and select Orbisonic Spotify in Spotify Connect."
+        let silenceDuration = lastLiveSignalDetectedSecond.map { max(0, elapsedSecond - $0) } ?? elapsedSecond
+        let nextSignalState: LiveAudioSignalState
+        if lastLiveSignalDetectedSecond == nil {
+            nextSignalState = .noSignal
+        } else if silenceDuration < Self.liveSignalBriefSilenceSeconds {
+            nextSignalState = .briefSilence
+        } else if silenceDuration < Self.liveSignalNoSignalSeconds {
+            nextSignalState = .silentPassage
         } else {
-            liveSignalStatus = "\(liveInputSignalName) is silent. Start the source or route it to Orbisonic Aux Cable."
+            nextSignalState = .noSignal
         }
+
+        setLiveAudioSignalState(
+            nextSignalState,
+            silenceDuration: silenceDuration,
+            reason: "audio signal \(nextSignalState.rawValue)",
+            peak: peak
+        )
+        liveSignalStatus = liveSignalStatusText(for: nextSignalState, silenceDuration: silenceDuration)
 
         if !liveMonitorState.isMuted {
-            liveMonitorState = .silent
+            liveMonitorState = nextSignalState == .noSignal ? .silent : .monitoring
         }
 
-        if lastLiveSignalPresent != false {
+        if nextSignalState == .noSignal, lastLiveSignalPresent != false {
             statusMessage = liveSignalStatus
             lastLiveSignalPresent = false
         }
 
-        if elapsedSecond != lastLiveSilenceWarningSecond, elapsedSecond % 5 == 0 {
+        if nextSignalState == .noSignal,
+           elapsedSecond != lastLiveSilenceWarningSecond,
+           elapsedSecond % 5 == 0 {
             lastLiveSilenceWarningSecond = elapsedSecond
             AppLogger.shared.warning(
                 category: "live-input",
                 "Selected input is silent elapsed=\(elapsedSecond)s peak=\(String(format: "%.2f", peak)) input=\(inputRoute.deviceName) inputRate=\(formatSampleRate(inputRoute.nominalSampleRate)) roonRate=\(roonNowPlaying?.outputSampleRate.map(formatSampleRate) ?? "unknown") output=\(outputRoute.deviceName)"
             )
         }
+    }
+
+    private func setLiveAudioSignalState(
+        _ state: LiveAudioSignalState,
+        silenceDuration: Int?,
+        reason: String,
+        peak: Float
+    ) {
+        let previousState = liveAudioSignalState
+        liveAudioSignalState = state
+        liveAudioSignalSilenceDuration = silenceDuration
+
+        guard previousState != state else { return }
+
+        AppLogger.shared.debug(
+            category: "live-input",
+            "Live signal state \(previousState.rawValue)->\(state.rawValue) silenceDuration=\(silenceDuration.map { "\($0)s" } ?? "unknown") peak=\(String(format: "%.4f", peak)) source=\(sourceMode.rawValue) input=\(inputRoute.deviceName)"
+        )
+        logInputSourceStatusIfNeeded(reason: reason)
+    }
+
+    private func liveSignalStatusText(for signalState: LiveAudioSignalState, silenceDuration: Int) -> String {
+        switch signalState {
+        case .receiving:
+            return "Signal present from \(liveInputSignalName)."
+        case .briefSilence:
+            return "\(liveInputSignalName) is briefly silent."
+        case .silentPassage:
+            return "\(liveInputSignalName) is in a silent passage (\(silenceDuration)s)."
+        case .noSignal:
+            if sourceMode == .roon, let mismatchText = roonLoopbackSampleRateMismatchText {
+                return "\(liveInputSignalName) has no signal. \(mismatchText)"
+            }
+            if sourceMode == .roon, roonPlaybackIsPausedForSignalStatus {
+                return "\(liveInputSignalName) has no signal because Roon is paused."
+            }
+            if sourceMode == .roon, roonPlaybackIsActiveForSignalStatus {
+                return "\(liveInputSignalName) has no signal while Roon is playing."
+            }
+            if sourceMode == .roon {
+                return "\(liveInputSignalName) has no signal. Open the Roon app, select the Orbisonic audio Zone, then start playback."
+            }
+            if sourceMode == .spotify {
+                return "\(liveInputSignalName) has no signal. Open Spotify, choose Orbisonic from Devices / Spotify Connect, then start playback."
+            }
+            return "\(liveInputSignalName) has no signal. Select Orbisonic Aux Cable as the output device in the source app, then start playback."
+        case .unknown:
+            return "Waiting for signal from \(liveInputSignalName)."
+        }
+    }
+
+    private var roonPlaybackIsActiveForSignalStatus: Bool {
+        if let state = roonBridgeSnapshot.selectedZone?.state.lowercased() {
+            return state == "playing" || state == "loading"
+        }
+        if let state = roonNowPlaying?.state.lowercased() {
+            return state == "playing" || state == "loading"
+        }
+        return false
+    }
+
+    private var roonPlaybackIsPausedForSignalStatus: Bool {
+        if roonBridgeSnapshot.selectedZone?.state.caseInsensitiveCompare("paused") == .orderedSame {
+            return true
+        }
+        return roonNowPlaying?.state.caseInsensitiveCompare("PAUSED") == .orderedSame
     }
 
     private func repairBlackHoleSampleRateIfNeeded(force: Bool = false) {
@@ -6370,9 +6575,14 @@ final class OrbisonicViewModel: ObservableObject {
     private func applyRoonLogSnapshot(_ snapshot: RoonLogSnapshot?) {
         guard let snapshot else {
             roonNowPlayingStatus = roonBridgeSnapshot.isReadyForTransport
-                ? "Roon connected. Signal-path log has not updated yet."
+                ? "Roon bridge paired. Signal-path log has not updated yet."
                 : "No Roon playback line found in RoonServer log yet."
+            logInputSourceStatusIfNeeded(reason: "roon metadata unavailable")
             return
+        }
+
+        defer {
+            logInputSourceStatusIfNeeded(reason: "roon metadata refreshed")
         }
 
         if let next = snapshot.nowPlaying {
@@ -6386,7 +6596,7 @@ final class OrbisonicViewModel: ObservableObject {
 
             roonNowPlayingStatus = next.updatedText
         } else if roonBridgeSnapshot.isReadyForTransport {
-            roonNowPlayingStatus = "Roon connected. Waiting for signal-path log details."
+            roonNowPlayingStatus = "Roon bridge paired. Waiting for signal-path log details."
         } else {
             roonNowPlayingStatus = "No Roon playback line found in RoonServer log yet."
         }
@@ -6461,6 +6671,7 @@ final class OrbisonicViewModel: ObservableObject {
                 debouncedState: spotifyVisibleNowPlaying,
                 reasonForUpdate: reason
             )
+            logInputSourceStatusIfNeeded(reason: "spotify visible state cleared: \(reason)")
         }
     }
 
@@ -6491,6 +6702,9 @@ final class OrbisonicViewModel: ObservableObject {
                 debouncedState: spotifyVisibleNowPlaying,
                 reasonForUpdate: forceImmediate ? "\(reason):immediate" : reason
             )
+            logInputSourceStatusIfNeeded(
+                reason: "spotify now playing \(forceImmediate ? "\(reason):immediate" : reason)"
+            )
             return
         }
 
@@ -6514,6 +6728,7 @@ final class OrbisonicViewModel: ObservableObject {
                     debouncedState: self.spotifyVisibleNowPlaying,
                     reasonForUpdate: "\(reason):debounced"
                 )
+                self.logInputSourceStatusIfNeeded(reason: "spotify now playing \(reason):debounced")
             }
         }
     }
@@ -6563,6 +6778,7 @@ final class OrbisonicViewModel: ObservableObject {
             category: "spotify-receiver",
             "Refreshed Spotify Connect server reason=\(reason) state=\(spotifyReceiverStatus.state.rawValue)"
         )
+        logInputSourceStatusIfNeeded(reason: "spotify receiver refreshed: \(reason)")
     }
 
     func toggleSpotifyTransport() {
@@ -6724,6 +6940,8 @@ final class OrbisonicViewModel: ObservableObject {
         } else {
             updateRoonArtwork(for: snapshot, reason: "bridge snapshot unchanged")
         }
+
+        logInputSourceStatusIfNeeded(reason: "roon bridge refreshed")
     }
 
     private func updateRoonArtwork(for snapshot: RoonBridgeSnapshot, reason: String) {
@@ -6749,6 +6967,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonArtworkFetchTask?.cancel()
             roonArtworkFetchTask = nil
             roonArtworkRequestedKey = request.stableKey
+            roonArtworkRetryAfter[request.stableKey] = nil
             if roonArtworkURL != cachedURL {
                 roonArtworkURL = cachedURL
                 AppLogger.shared.notice(
@@ -6759,12 +6978,34 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
+        if let retryAfter = roonArtworkRetryAfter[request.stableKey], retryAfter > Date() {
+            return
+        }
+
         if roonArtworkRequestedKey == request.stableKey, roonArtworkFetchTask != nil {
             return
         }
 
         if roonArtworkFailedKeys.contains(request.stableKey) {
             AppLogger.shared.debug(category: "roon-artwork", "Skipping previously failed Roon artwork key=\(request.stableKey)")
+            return
+        }
+
+        if snapshot.bridge.supportsImage == false || snapshot.bridge.imageServiceAvailable == false {
+            roonArtworkRetryAfter[request.stableKey] = Date().addingTimeInterval(Self.roonArtworkRetryCooldown)
+            let signature = [
+                request.stableKey,
+                snapshot.bridge.version ?? "unknown-version",
+                snapshot.bridge.supportsImage.map(String.init) ?? "unknown-support",
+                snapshot.bridge.imageServiceAvailable.map(String.init) ?? "unknown-service"
+            ].joined(separator: "|")
+            if signature != lastLoggedRoonArtworkCapabilitySignature {
+                lastLoggedRoonArtworkCapabilitySignature = signature
+                AppLogger.shared.warning(
+                    category: "roon-artwork",
+                    "Roon bridge cannot serve artwork title=\(request.title) key=\(request.stableKey) bridgeVersion=\(snapshot.bridge.version ?? "unknown") supportsImage=\(snapshot.bridge.supportsImage.map(String.init) ?? "unknown") imageServiceAvailable=\(snapshot.bridge.imageServiceAvailable.map(String.init) ?? "unknown")"
+                )
+            }
             return
         }
 
@@ -6780,6 +7021,7 @@ final class OrbisonicViewModel: ObservableObject {
                 roonArtworkURL = cachedURL
                 roonArtworkFetchTask = nil
                 roonArtworkFailedKeys.remove(request.stableKey)
+                roonArtworkRetryAfter[request.stableKey] = nil
                 AppLogger.shared.notice(
                     category: "roon-artwork",
                     "Fetched Roon artwork title=\(request.title) key=\(request.stableKey) bytes=\(data.count)"
@@ -6788,14 +7030,25 @@ final class OrbisonicViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 if roonArtworkRequestedKey == request.stableKey {
                     roonArtworkFetchTask = nil
-                    roonArtworkFailedKeys.insert(request.stableKey)
+                    if roonArtworkFetchFailureShouldRetry(error) {
+                        roonArtworkRetryAfter[request.stableKey] = Date().addingTimeInterval(Self.roonArtworkRetryCooldown)
+                    } else {
+                        roonArtworkFailedKeys.insert(request.stableKey)
+                    }
                 }
                 AppLogger.shared.warning(
                     category: "roon-artwork",
-                    "Roon artwork fetch failed title=\(request.title) key=\(request.stableKey) error=\(error.localizedDescription)"
+                    "Roon artwork fetch failed title=\(request.title) key=\(request.stableKey) retryable=\(roonArtworkFetchFailureShouldRetry(error)) error=\(error.localizedDescription)"
                 )
             }
         }
+    }
+
+    private func roonArtworkFetchFailureShouldRetry(_ error: Error) -> Bool {
+        if let bridgeError = error as? RoonBridgeClientError {
+            return bridgeError.isRetryableArtworkFetchFailure
+        }
+        return error is URLError
     }
 
     private func applyRoonBridgeError(_ error: Error) {
@@ -6826,6 +7079,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonBridgeSnapshot = snapshot
             AppLogger.shared.warning(category: "roon-bridge", error.localizedDescription)
         }
+        logInputSourceStatusIfNeeded(reason: "roon bridge error", force: true)
     }
 
     private func applyPreset(_ preset: SpatialPreset, pushToEngine: Bool = true) {

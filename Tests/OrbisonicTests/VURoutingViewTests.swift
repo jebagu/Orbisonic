@@ -64,6 +64,26 @@ final class VURoutingViewTests: XCTestCase {
         )
     }
 
+    func testMonitorMeterDisplayFallsBackToSourceWhenTapIsSilent() {
+        let levels = MonitorMeterDisplayModel.levels(
+            tappedLevels: [0, 0],
+            sourceLevels: [0.64, 0.58],
+            channelCount: 2
+        )
+
+        XCTAssertEqual(levels, [0.64, 0.58])
+    }
+
+    func testMonitorMeterDisplayPrefersActiveTapLevels() {
+        let levels = MonitorMeterDisplayModel.levels(
+            tappedLevels: [0.21, 0.22],
+            sourceLevels: [0.64, 0.58],
+            channelCount: 2
+        )
+
+        XCTAssertEqual(levels, [0.21, 0.22])
+    }
+
     @MainActor
     func testDiagnosticSpeakerChannelSelectionClampsWithoutRecursion() {
         let model = OrbisonicViewModel()

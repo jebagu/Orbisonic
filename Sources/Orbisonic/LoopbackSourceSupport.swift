@@ -403,6 +403,23 @@ enum LiveMonitorState: Equatable {
     }
 }
 
+enum LiveAudioSignalState: String, Equatable {
+    case unknown
+    case receiving
+    case briefSilence
+    case silentPassage
+    case noSignal
+
+    var isRecentlyReceiving: Bool {
+        switch self {
+        case .receiving, .briefSilence, .silentPassage:
+            true
+        case .unknown, .noSignal:
+            false
+        }
+    }
+}
+
 enum DanteSafetyPolicy {
     static func requiresHighRateChannelWarning(outputChannelCount: Int, sampleRate: Double) -> Bool {
         guard outputChannelCount > 16 else { return false }

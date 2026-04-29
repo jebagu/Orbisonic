@@ -25,6 +25,131 @@ final class OrbisonicWebStateTests: XCTestCase {
     }
 
     @MainActor
+    func testPublicAndControlStatesExposeCurrentSpotifyArtwork() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.spotify)
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
+            title: "Artwork Track",
+            isPlaying: true,
+            coverURL: "https://example.com/artwork.jpg"
+        ))
+
+        let publicState = model.webStateForTesting(controlEnabled: false)
+        let controlState = model.webStateForTesting(controlEnabled: true)
+
+        XCTAssertEqual(publicState.player.artworkURL, controlState.player.artworkURL)
+        XCTAssertTrue(publicState.player.artworkURL?.hasPrefix("/Orbisonic/api/artwork/current?v=") == true)
+        XCTAssertFalse(publicState.player.artworkURL?.contains("token=") == true)
+    }
+
+    @MainActor
+    func testPublicStateExposesCurrentLocalArtwork() {
+        let model = OrbisonicViewModel()
+        let artworkPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("orbisonic-web-artwork-test.jpg", isDirectory: false)
+            .path
+        let track = Self.localTrack(title: "Local Artwork Track", artworkPath: artworkPath)
+
+        model.setSourceModeForTesting(.filePlayback)
+        model.replaceLocalMusicQueueForTesting(tracks: [track], currentIndex: 0, selectedIndex: nil)
+
+        let state = model.webStateForTesting(controlEnabled: false)
+
+        XCTAssertTrue(state.player.artworkURL?.hasPrefix("/Orbisonic/api/artwork/current?v=") == true)
+        XCTAssertFalse(state.player.artworkURL?.contains("token=") == true)
+    }
+
+    @MainActor
+    func testPublicPlayerSummaryUsesVisitorFacingFields() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.spotify)
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
+            title: "The Lady",
+            isPlaying: true
+        ))
+
+        let state = model.webStateForTesting(controlEnabled: false)
+
+        XCTAssertEqual(state.player.title, "The Lady")
+        XCTAssertEqual(state.player.artist, "Artist")
+        XCTAssertEqual(state.player.album, "Album")
+        XCTAssertEqual(state.player.sourceName, "Spotify")
+        XCTAssertEqual(state.player.outputChannels, "30.1 channels")
+        XCTAssertTrue(state.player.hasMedia)
+        XCTAssertEqual(state.player.details.map(\.title), [
+            "Source",
+            "Playback",
+            "Input",
+            "Sphere output",
+            "Renderer",
+            "Routing",
+            "Endpoint",
+            "Signal quality",
+            "System state"
+        ])
+    }
+
+    @MainActor
+    func testWebPlayerDetailsIncludeLocalFileFormat() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.filePlayback)
+        model.sourceMetadata = Self.localMetadata(
+            title: "Local FLAC",
+            fileExtension: "flac",
+            containerName: "FLAC",
+            codecName: "FLAC"
+        )
+
+        let state = model.webStateForTesting(controlEnabled: false)
+
+        XCTAssertEqual(state.player.outputChannels, "30.1 channels")
+        XCTAssertEqual(state.player.details.first { $0.title == "Format" }?.value, "FLAC")
+        XCTAssertTrue(state.player.details.contains { $0.title == "Renderer" })
+        XCTAssertTrue(state.player.details.contains { $0.title == "Routing" })
+        XCTAssertTrue(state.player.details.contains { $0.title == "Endpoint" })
+        XCTAssertTrue(state.player.details.contains { $0.title == "System state" })
+    }
+
+    @MainActor
+    func testWebPlayerDetailsIncludeRoonStreamFormat() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.roon)
+        model.setRoonNowPlayingForTesting(Self.roonNowPlaying(title: "Roon FLAC"))
+
+        let state = model.webStateForTesting(controlEnabled: false)
+
+        XCTAssertEqual(state.player.details.first { $0.title == "Format" }?.value, "FLAC")
+    }
+
+    func testPublicPlayerScriptHidesOutputChannelsAndTechnicalNerdRows() {
+        let script = OrbisonicWebServer.publicPageJSForTesting
+
+        XCTAssertFalse(script.contains("${source} · ${channels}"))
+        XCTAssertFalse(script.contains("outputChannels)||'30.1 channels'"))
+        XCTAssertTrue(script.contains("setText('sourceLine',media?source:"))
+        XCTAssertTrue(script.contains("hiddenNerdRows"))
+        XCTAssertTrue(script.contains("'Renderer'"))
+        XCTAssertTrue(script.contains("'Routing'"))
+        XCTAssertTrue(script.contains("'Endpoint'"))
+        XCTAssertTrue(script.contains("'System state'"))
+    }
+
+    @MainActor
+    func testPublicPlayerIdleStateUsesCalmCopy() {
+        let model = OrbisonicViewModel()
+
+        let state = model.webStateForTesting(controlEnabled: false)
+
+        XCTAssertFalse(state.player.hasMedia)
+        XCTAssertEqual(state.player.title, "Nothing playing right now")
+        XCTAssertEqual(state.player.subtitle, "Choose Roon, Spotify, Aux, or Local Files.")
+        XCTAssertEqual(state.player.sourceName, "Local Files")
+        XCTAssertEqual(state.player.outputChannels, "30.1 channels")
+        XCTAssertFalse(state.player.title.localizedCaseInsensitiveContains("no source"))
+        XCTAssertFalse(state.player.subtitle.localizedCaseInsensitiveContains("no local file"))
+    }
+
+    @MainActor
     func testVolumeStateUsesPlainZeroToOneHundredValues() {
         let model = OrbisonicViewModel()
 
@@ -65,9 +190,18 @@ final class OrbisonicWebStateTests: XCTestCase {
         let spotifyState = model.webStateForTesting(controlEnabled: true)
 
         XCTAssertEqual(spotifyState.input.sourcePanel.title, "Spotify")
-        XCTAssertEqual(spotifyState.input.sourcePanel.headline, "Waiting for Spotify")
-        XCTAssertTrue(spotifyState.input.sourcePanel.body.contains("Use the Spotify app to connect"))
-        XCTAssertEqual(spotifyState.input.sourcePanel.rows.map(\.title), ["Receiver", "Input", "Signal"])
+        XCTAssertEqual(spotifyState.input.sourcePanel.headline, "Waiting for Spotify Connect")
+        XCTAssertTrue(spotifyState.input.sourcePanel.body.contains("Orbisonic Spotify Input is not available"))
+        XCTAssertEqual(
+            spotifyState.input.sourcePanel.rows.map(\.title),
+            [
+                "Spotify Connect receiver",
+                "Spotify Connect discovery",
+                "Spotify Connect session",
+                "Audio signal",
+                "Now playing"
+            ]
+        )
         XCTAssertEqual(spotifyState.player.controls, ["previous", "play", "pause", "stop", "next"])
         XCTAssertTrue(spotifyState.player.enabledControls.isEmpty)
 
@@ -75,9 +209,23 @@ final class OrbisonicWebStateTests: XCTestCase {
         let roonState = model.webStateForTesting(controlEnabled: true)
 
         XCTAssertEqual(roonState.input.sourcePanel.title, "Roon")
-        XCTAssertEqual(roonState.input.sourcePanel.headline, "Roon unavailable")
-        XCTAssertEqual(roonState.input.sourcePanel.body, "Orbisonic could not connect to the Roon service.")
-        XCTAssertEqual(roonState.input.sourcePanel.rows.map(\.title), ["Roon", "Input", "Signal"])
+        XCTAssertEqual(roonState.input.sourcePanel.headline, "Orbisonic Roon endpoint stopped")
+        XCTAssertTrue(roonState.input.sourcePanel.body.contains("Orbisonic Roon Input is not available"))
+        XCTAssertEqual(
+            roonState.input.sourcePanel.rows.map(\.title),
+            ["Orbisonic Roon endpoint", "Roon connection", "Roon Zone", "Playback", "Audio signal", "Now playing"]
+        )
+
+        model.sourceMode = .aux
+        let auxState = model.webStateForTesting(controlEnabled: true)
+
+        XCTAssertEqual(auxState.input.sourcePanel.title, "Aux Cable")
+        XCTAssertEqual(auxState.input.sourcePanel.headline, "Aux Cable unavailable")
+        XCTAssertTrue(auxState.input.sourcePanel.body.contains("Orbisonic Aux Cable is not available"))
+        XCTAssertEqual(
+            auxState.input.sourcePanel.rows.map(\.title),
+            ["Virtual sound card", "Input format", "Audio signal"]
+        )
     }
 
     @MainActor
@@ -98,12 +246,20 @@ final class OrbisonicWebStateTests: XCTestCase {
     func testSpotifyStatusUsesDebouncedBackendStateWithDisabledControls() async throws {
         let model = OrbisonicViewModel()
         model.setSourceModeForTesting(.spotify)
+        model.setSpotifyReceiverStatusForTesting(SpotifyReceiverStatus(
+            state: .waitingForConnection,
+            message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
+        ))
         model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Stable Track", isPlaying: true))
 
         var state = model.webStateForTesting(controlEnabled: true)
         XCTAssertEqual(state.player.status, "Spotify playing")
         XCTAssertTrue(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Spotify Connect session" }?.value,
+            "Selected in Spotify"
+        )
 
         model.applySpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Stable Track", isPlaying: false))
 
@@ -118,6 +274,106 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertEqual(state.player.status, "Spotify playback paused")
         XCTAssertFalse(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
+    }
+
+    @MainActor
+    func testSpotifyReceivingAudioOverridesStalePausedMetadata() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.spotify)
+        model.setSpotifyReceiverStatusForTesting(SpotifyReceiverStatus(
+            state: .waitingForConnection,
+            message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
+        ))
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Audible Track", isPlaying: false))
+        model.setLiveMonitorStateForTesting(.monitoring)
+        model.setLiveAudioSignalStateForTesting(.receiving)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.status, "Spotify playing")
+        XCTAssertTrue(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.headline, "Receiving Spotify audio")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Spotify Connect session" }?.value,
+            "Selected in Spotify"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
+            "Receiving"
+        )
+    }
+
+    @MainActor
+    func testRoonPlaybackActiveSurvivesBriefSilence() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.roon)
+        model.setInputRouteForTesting(Self.inputRoute(for: .roonInput), availableRoutes: [Self.inputRoute(for: .roonInput)])
+        model.setRoonBridgeSnapshotForTesting(Self.roonBridgeSnapshot(state: "playing"))
+        model.setLiveMonitorStateForTesting(.monitoring)
+        model.setLiveAudioSignalStateForTesting(.briefSilence, silenceDuration: 1)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.status, "Roon playing")
+        XCTAssertTrue(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.headline, "Receiving Roon audio")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
+            "Active"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
+            "Brief silence"
+        )
+    }
+
+    @MainActor
+    func testRoonPlaybackActiveSurvivesLongSilenceWithoutWaitingLabel() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.roon)
+        model.setInputRouteForTesting(Self.inputRoute(for: .roonInput), availableRoutes: [Self.inputRoute(for: .roonInput)])
+        model.setRoonBridgeSnapshotForTesting(Self.roonBridgeSnapshot(state: "playing"))
+        model.setLiveMonitorStateForTesting(.silent)
+        model.setLiveAudioSignalStateForTesting(.noSignal, silenceDuration: 16)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.status, "Roon playing")
+        XCTAssertTrue(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.headline, "Receiving Roon audio")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
+            "Active"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
+            "No signal while Roon is playing"
+        )
+        XCTAssertFalse(state.input.sourcePanel.headline.contains("Waiting for Roon"))
+        XCTAssertNotEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
+            "Waiting"
+        )
+    }
+
+    @MainActor
+    func testRoonPausedKeepsPlaybackAndSignalSeparate() {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.roon)
+        model.setInputRouteForTesting(Self.inputRoute(for: .roonInput), availableRoutes: [Self.inputRoute(for: .roonInput)])
+        model.setRoonBridgeSnapshotForTesting(Self.roonBridgeSnapshot(state: "paused"))
+        model.setLiveMonitorStateForTesting(.silent)
+        model.setLiveAudioSignalStateForTesting(.noSignal, silenceDuration: 16)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.status, "Roon playback paused")
+        XCTAssertFalse(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.headline, "Roon selected")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
+            "Paused"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
+            "No signal"
+        )
     }
 
     @MainActor
@@ -194,11 +450,16 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertFalse(state.player.isPlaying)
     }
 
-    private static func localMetadata(title: String) -> AudioSourceMetadata {
+    private static func localMetadata(
+        title: String,
+        fileExtension: String = "wav",
+        containerName: String = "WAV",
+        codecName: String = "PCM"
+    ) -> AudioSourceMetadata {
         AudioSourceMetadata(
-            fileName: "\(title).wav",
-            containerName: "WAV",
-            codecName: "PCM",
+            fileName: "\(title).\(fileExtension)",
+            containerName: containerName,
+            codecName: codecName,
             layoutName: "Stereo",
             channelSummary: "FL, FR",
             channelCount: 2,
@@ -226,7 +487,82 @@ final class OrbisonicWebStateTests: XCTestCase {
         )
     }
 
-    private static func spotifyNowPlaying(title: String, isPlaying: Bool) -> SpotifyNowPlaying {
+    private static func roonBridgeSnapshot(state: String) -> RoonBridgeSnapshot {
+        let zone = RoonBridgeZone(
+            zoneId: "zone-orbisonic",
+            displayName: "Orbisonic",
+            state: state,
+            isPlayAllowed: state != "playing",
+            isPauseAllowed: state == "playing" || state == "loading",
+            isPreviousAllowed: true,
+            isNextAllowed: true,
+            isSeekAllowed: true,
+            outputs: [
+                RoonBridgeOutput(
+                    outputId: "output-orbisonic",
+                    displayName: "Orbisonic Roon Input",
+                    state: nil
+                )
+            ],
+            nowPlaying: nil,
+            controls: nil
+        )
+
+        return RoonBridgeSnapshot(
+            ok: true,
+            updatedAt: "test",
+            bridge: RoonBridgeInfo(
+                state: "paired",
+                message: "Connected to Roon Server.",
+                zoneHint: "Orbisonic Roon Input"
+            ),
+            core: RoonBridgeCore(
+                coreId: "core",
+                displayName: "Roon Server",
+                displayVersion: nil
+            ),
+            selectedZoneId: zone.zoneId,
+            selectedZone: zone,
+            zones: [zone]
+        )
+    }
+
+    private static func inputRoute(for device: OrbisonicLoopbackDevice) -> InputRouteInfo {
+        InputRouteInfo(
+            deviceID: 101,
+            uid: device.deviceUID,
+            deviceName: device.displayName,
+            manufacturer: "Orbisonic",
+            transportName: "Virtual",
+            inputChannelCount: device == .auxCable ? 64 : 2,
+            nominalSampleRate: 44_100
+        )
+    }
+
+    private static func localTrack(title: String, artworkPath: String?) -> LocalMusicTrack {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(title.replacingOccurrences(of: " ", with: "-")).flac", isDirectory: false)
+        return LocalMusicTrack(
+            path: url.path,
+            rootPath: url.deletingLastPathComponent().path,
+            fileName: url.lastPathComponent,
+            title: title,
+            artist: "Local Artist",
+            album: "Local Album",
+            channelCount: 2,
+            channelSummary: "FL, FR",
+            layoutName: "Stereo",
+            sampleRate: 48_000,
+            duration: 180,
+            artworkPath: artworkPath
+        )
+    }
+
+    private static func spotifyNowPlaying(
+        title: String,
+        isPlaying: Bool,
+        coverURL: String? = nil
+    ) -> SpotifyNowPlaying {
         SpotifyNowPlaying(
             title: title,
             album: "Album",
@@ -240,7 +576,7 @@ final class OrbisonicWebStateTests: XCTestCase {
             popularity: nil,
             trackNumber: nil,
             discNumber: nil,
-            coverURL: nil,
+            coverURL: coverURL,
             volume: nil,
             shuffle: nil,
             repeatContext: nil,

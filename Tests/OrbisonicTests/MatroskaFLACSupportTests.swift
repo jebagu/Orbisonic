@@ -167,6 +167,26 @@ final class MatroskaFLACSupportTests: XCTestCase {
         XCTAssertEqual(rows[3].value, "02:05")
     }
 
+    func testLocalPlayerRowsUseConciseUsefulFormatNote() {
+        let metadata = AudioSourceMetadata(
+            fileName: "atmos-bed.mka",
+            containerName: "Matroska",
+            codecName: "E-AC-3 5.1 bed",
+            layoutName: "5.1 Surround",
+            channelSummary: "FL, FR, C, LFE, SL, SR",
+            channelCount: 6,
+            sampleRate: 48_000,
+            bitDepth: 24,
+            duration: 180,
+            formatNote: "Dolby Atmos metadata present; Orbisonic is using the decoded channel bed, not object rendering."
+        )
+
+        let rows = LocalFilePlayerRowsModel.rows(metadata: metadata)
+
+        XCTAssertEqual(rows.map(\.title), ["Format", "Note", "Channels", "Layout", "Length"])
+        XCTAssertEqual(rows[1].value, "Atmos bed decoded; object metadata not rendered")
+    }
+
     func testCompressedAudioProbeRecognizesEAC3AtmosBedMetadata() {
         let info = CompressedAudioStreamInfo(
             codecName: "eac3",
