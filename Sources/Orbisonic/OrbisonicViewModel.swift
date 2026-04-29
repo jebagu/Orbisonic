@@ -4905,6 +4905,60 @@ final class OrbisonicViewModel: ObservableObject {
         )
     }
 
+    var monitorOutputDevicePickerText: String {
+        outputDevicePickerText(
+            selection: monitorOutputSelection,
+            resolvedRoute: monitorOutputRoute,
+            systemLabel: "System Default"
+        )
+    }
+
+    var rendererOutputDevicePickerText: String {
+        outputDevicePickerText(
+            selection: rendererOutputSelection,
+            resolvedRoute: rendererOutputRoute,
+            systemLabel: "System Default"
+        )
+    }
+
+    var monitorOutputWarningText: String? {
+        outputWarningText(selection: monitorOutputSelection)
+    }
+
+    var rendererOutputWarningText: String? {
+        if let warning = outputWarningText(selection: rendererOutputSelection) {
+            return warning
+        }
+
+        guard rendererOutputSelection != .none else {
+            return nil
+        }
+
+        if DanteSafetyPolicy.requiresHighRateChannelWarning(
+            outputChannelCount: rendererScene.outputSpeakers.count,
+            sampleRate: rendererOutputRoute.nominalSampleRate
+        ) {
+            return "This device cannot be used for this output."
+        }
+
+        return nil
+    }
+
+    var outputDiagnosticsRows: [InputSourceStatusRow] {
+        makeOutputDiagnosticsRows(
+            title: "Output 1 Monitor",
+            selection: monitorOutputSelection,
+            resolvedRoute: monitorOutputRoute,
+            includesRendererLimit: false
+        )
+        + makeOutputDiagnosticsRows(
+            title: "Output 2 Renderer",
+            selection: rendererOutputSelection,
+            resolvedRoute: rendererOutputRoute,
+            includesRendererLimit: true
+        )
+    }
+
     var systemOutputNowText: String {
         systemOutputRoute.isAvailable ? "\(systemOutputRoute.deviceName) • \(systemOutputRoute.routeDetail)" : "No verified system output"
     }
@@ -5188,6 +5242,25 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func outputDevicePickerText(
+        selection: OutputSelectionMode,
+        resolvedRoute: OutputRouteInfo,
+        systemLabel: String
+    ) -> String {
+        switch selection {
+        case .none:
+            return "not set"
+        case .systemDefault:
+            let route = selectedOutputCandidate(for: selection) ?? resolvedRoute
+            return route.isAvailable ? "\(systemLabel): \(route.deviceName)" : systemLabel
+        case .device:
+            if let route = selectedOutputCandidate(for: selection), route.isAvailable {
+                return route.deviceName
+            }
+            return resolvedRoute.isAvailable ? resolvedRoute.deviceName : "Unavailable Device"
+        }
+    }
+
     private func outputStatusText(
         for route: OutputRouteInfo,
         selection: OutputSelectionMode,
@@ -5211,6 +5284,150 @@ final class OrbisonicViewModel: ObservableObject {
             return "Warning • verify \(name) is the intended target"
         case .unavailable:
             return "Unavailable • no verified route"
+        }
+    }
+
+    private func outputWarningText(selection: OutputSelectionMode) -> String? {
+        guard selection != .none else {
+            return nil
+        }
+
+        guard let selectedRoute = selectedOutputCandidate(for: selection),
+              selectedRoute.isAvailable
+        else {
+            return "This device is unavailable. Choose another output."
+        }
+
+        if selectedRoute.routeRisk.blocksLiveMonitoring {
+            return "This output may create a feedback loop. Choose a different device."
+        }
+
+        if !selectedRoute.isSelectableOutputTarget {
+            return "This device cannot be used for this output."
+        }
+
+        return nil
+    }
+
+    private func selectedOutputCandidate(for selection: OutputSelectionMode) -> OutputRouteInfo? {
+        switch selection {
+        case .none:
+            return nil
+        case .systemDefault:
+            return systemOutputRoute
+        case .device(let uid):
+            return availableOutputRoutes.first { $0.uid == uid }
+        }
+    }
+
+    private func makeOutputDiagnosticsRows(
+        title: String,
+        selection: OutputSelectionMode,
+        resolvedRoute: OutputRouteInfo,
+        includesRendererLimit: Bool
+    ) -> [InputSourceStatusRow] {
+        let selectedRoute = selectedOutputCandidate(for: selection)
+        let diagnosticRoute = selectedRoute ?? (resolvedRoute.isAvailable ? resolvedRoute : nil)
+        var rows: [InputSourceStatusRow] = [
+            InputSourceStatusRow(title: "\(title) selected device", value: outputDiagnosticSelectionText(selection: selection, selectedRoute: selectedRoute)),
+            InputSourceStatusRow(title: "\(title) effective/resolved device", value: outputDiagnosticRouteText(resolvedRoute)),
+            InputSourceStatusRow(title: "\(title) Core Audio UID", value: diagnosticRoute?.uid.trimmedNilIfBlank ?? outputSelectedDeviceUID(selection) ?? "none"),
+            InputSourceStatusRow(title: "\(title) effective Core Audio UID", value: resolvedRoute.uid.trimmedNilIfBlank ?? "none"),
+            InputSourceStatusRow(title: "\(title) transport type", value: diagnosticRoute?.transportName ?? "none"),
+            InputSourceStatusRow(title: "\(title) channel count", value: diagnosticRoute.map { "\($0.outputChannelCount)" } ?? "none"),
+            InputSourceStatusRow(title: "\(title) sample rate", value: outputDiagnosticSampleRateText(diagnosticRoute)),
+            InputSourceStatusRow(title: "\(title) route detail", value: diagnosticRoute?.routeDetail ?? "not selected"),
+            InputSourceStatusRow(title: "\(title) safety classification", value: outputSafetyClassification(for: diagnosticRoute)),
+            InputSourceStatusRow(title: "\(title) feedback-loop classification", value: outputFeedbackClassification(for: diagnosticRoute))
+        ]
+
+        if case .device(let uid) = selection, selectedRoute == nil {
+            rows.append(InputSourceStatusRow(title: "\(title) unavailable remembered device", value: uid))
+        }
+
+        if let selectedRoute, case .virtualOutput(let name) = selectedRoute.routeRisk {
+            rows.append(InputSourceStatusRow(title: "\(title) virtual-device warning", value: "Verify \(name) is the intended output target."))
+        }
+
+        if includesRendererLimit,
+           rendererOutputSelection != .none,
+           DanteSafetyPolicy.requiresHighRateChannelWarning(
+               outputChannelCount: rendererScene.outputSpeakers.count,
+               sampleRate: rendererOutputRoute.nominalSampleRate
+           ) {
+            rows.append(InputSourceStatusRow(title: "\(title) high-rate channel warning", value: "Dante Virtual Soundcard Pro supports only 16x16 channels at 176.4/192 kHz."))
+        }
+
+        return rows
+    }
+
+    private func outputDiagnosticSelectionText(
+        selection: OutputSelectionMode,
+        selectedRoute: OutputRouteInfo?
+    ) -> String {
+        switch selection {
+        case .none:
+            return "not set"
+        case .systemDefault:
+            if let selectedRoute, selectedRoute.isAvailable {
+                return "System Default: \(selectedRoute.deviceName) • \(selectedRoute.routeDetail)"
+            }
+            return "System Default unavailable"
+        case .device(let uid):
+            if let selectedRoute, selectedRoute.isAvailable {
+                return "\(selectedRoute.deviceName) • \(selectedRoute.routeDetail)"
+            }
+            return "Remembered device UID \(uid)"
+        }
+    }
+
+    private func outputDiagnosticRouteText(_ route: OutputRouteInfo) -> String {
+        route.isAvailable ? "\(route.deviceName) • \(route.routeDetail)" : "none"
+    }
+
+    private func outputSelectedDeviceUID(_ selection: OutputSelectionMode) -> String? {
+        if case .device(let uid) = selection {
+            return uid
+        }
+        return nil
+    }
+
+    private func outputDiagnosticSampleRateText(_ route: OutputRouteInfo?) -> String {
+        guard let route, route.nominalSampleRate > 0 else {
+            return "unknown"
+        }
+        return formatSampleRate(route.nominalSampleRate)
+    }
+
+    private func outputSafetyClassification(for route: OutputRouteInfo?) -> String {
+        guard let route else {
+            return "not selected"
+        }
+
+        switch route.routeRisk {
+        case .safe:
+            return "safe"
+        case .feedbackLoop(let name):
+            return "feedback loop blocked: \(name)"
+        case .virtualOutput(let name):
+            return "virtual output warning: \(name)"
+        case .unavailable:
+            return "unavailable"
+        }
+    }
+
+    private func outputFeedbackClassification(for route: OutputRouteInfo?) -> String {
+        guard let route else {
+            return "not selected"
+        }
+
+        switch route.routeRisk {
+        case .feedbackLoop(let name):
+            return "blocked: \(name)"
+        case .safe, .virtualOutput:
+            return "clear"
+        case .unavailable:
+            return "unavailable"
         }
     }
 

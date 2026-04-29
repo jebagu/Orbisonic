@@ -533,7 +533,7 @@ struct ContentView: View {
     @State private var analyzerVUSettingsExpanded = false
     @State private var showsSaveQueuePlaylistDialog = false
     @State private var saveQueuePlaylistName = ""
-    private let outputLanePanelMinHeight: CGFloat = 216
+    private let outputLanePanelMinHeight: CGFloat = 118
     private let outputLaneLabelColumnWidth: CGFloat = 112
     private let outputLaneColumnSpacing: CGFloat = 12
     private let localMusicSettingsPanelMinHeight: CGFloat = 300
@@ -1279,30 +1279,29 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
                 outputDestinationCard(
-                    title: "Output 1: Listen locally",
-                    subtitle: "For headphones, speakers, or stereo preview."
+                    title: "Listen locally"
                 ) {
                     VStack(alignment: .leading, spacing: 10) {
                         outputLaneControlRow(label: "Device") {
                             monitorOutputMenu
                         }
-                        outputLaneTextRow(label: "Effective", value: model.monitorOutputNowText)
-                        outputLaneTextRow(label: "Status", value: monitorOutputDestinationStatusText, isStatus: true)
+                        if let warning = model.monitorOutputWarningText {
+                            outputLaneWarningText(warning)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
 
                 outputDestinationCard(
-                    title: "Output 2: Renderer output",
-                    subtitle: "For Sonic Sphere or multichannel playback."
+                    title: "Main output"
                 ) {
                     VStack(alignment: .leading, spacing: 10) {
                         outputLaneControlRow(label: "Device") {
                             rendererOutputMenu
                         }
-                        outputLaneTextRow(label: "Effective", value: model.rendererOutputNowText)
-                        outputLaneTextRow(label: "Matrix", value: model.rendererSceneOutputText)
-                        outputLaneTextRow(label: "Status", value: rendererOutputDestinationStatusText, isStatus: true)
+                        if let warning = model.rendererOutputWarningText {
+                            outputLaneWarningText(warning)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1324,18 +1323,18 @@ struct ContentView: View {
             Divider()
 
             ForEach(model.availableOutputRoutes) { route in
-                Button(outputMenuTitle(for: route)) {
+                Button(route.deviceName) {
                     model.selectMonitorOutputRoute(route)
                 }
                 .disabled(!route.isSelectableOutputTarget)
             }
         } label: {
-            outputLaneMenuValue(model.monitorOutputSelectionText)
+            outputLaneMenuValue(model.monitorOutputDevicePickerText)
         }
         .buttonStyle(LabButtonStyle(isActive: true))
         .frame(maxWidth: .infinity)
         .accessibilityLabel("Output 1 Monitor")
-        .accessibilityValue(model.monitorOutputSelectionText)
+        .accessibilityValue(model.monitorOutputDevicePickerText)
     }
 
     private var rendererOutputMenu: some View {
@@ -1347,36 +1346,18 @@ struct ContentView: View {
             Divider()
 
             ForEach(model.availableOutputRoutes) { route in
-                Button(outputMenuTitle(for: route)) {
+                Button(route.deviceName) {
                     model.selectRendererOutputRoute(route)
                 }
                 .disabled(!route.isSelectableOutputTarget)
             }
         } label: {
-            outputLaneMenuValue(model.rendererOutputSelectionText)
+            outputLaneMenuValue(model.rendererOutputDevicePickerText)
         }
         .buttonStyle(LabButtonStyle(isActive: true))
         .frame(maxWidth: .infinity)
         .accessibilityLabel("Output 2 Renderer")
-        .accessibilityValue(model.rendererOutputSelectionText)
-    }
-
-    private var monitorOutputDestinationStatusText: String {
-        model.monitorOutputStatusText
-            .replacingOccurrences(of: "Output 1 Monitor", with: "local listening")
-    }
-
-    private var rendererOutputDestinationStatusText: String {
-        model.rendererOutputStatusText
-            .replacingOccurrences(of: "Output 2 Renderer", with: "renderer output")
-    }
-
-    private func outputMenuTitle(for route: OutputRouteInfo) -> String {
-        if route.routeRisk.blocksLiveMonitoring {
-            return "\(route.deviceName) - blocked loopback"
-        }
-
-        return route.deviceName
+        .accessibilityValue(model.rendererOutputDevicePickerText)
     }
 
     private var vuMeterTab: some View {
@@ -3473,6 +3454,14 @@ struct ContentView: View {
                 }
             }
 
+            settingsPanel(title: "Output Diagnostics") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(outputDiagnosticRows.enumerated()), id: \.offset) { _, row in
+                        sourceHealthDiagnosticRow(row)
+                    }
+                }
+            }
+
             HStack(alignment: .top, spacing: 18) {
                 diagnosticWalkPanel(
                     title: "Output 1 Monitor Channel Walk",
@@ -3556,6 +3545,12 @@ struct ContentView: View {
         }
 
         return rows.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private var outputDiagnosticRows: [DiagnosticInfoRow] {
+        model.outputDiagnosticsRows.map {
+            DiagnosticInfoRow($0.title, $0.value)
+        }
     }
 
     private var streamFormatText: String? {
@@ -3918,7 +3913,7 @@ struct ContentView: View {
 
     private func outputDestinationCard<Content: View>(
         title: String,
-        subtitle: String,
+        subtitle: String? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -3927,10 +3922,12 @@ struct ContentView: View {
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(LabTheme.text)
 
-                Text(subtitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(LabTheme.textSoft)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             content()
@@ -3970,6 +3967,22 @@ struct ContentView: View {
                 .truncationMode(isStatus ? .tail : .middle)
                 .frame(maxWidth: .infinity, minHeight: 26, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func outputLaneWarningText(_ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(LabTheme.amber)
+
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(LabTheme.amber)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.leading, outputLaneLabelColumnWidth + outputLaneColumnSpacing)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
