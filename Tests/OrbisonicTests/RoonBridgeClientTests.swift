@@ -10,7 +10,10 @@ final class RoonBridgeClientTests: XCTestCase {
           "bridge": {
             "state": "paired",
             "message": "Ready to control Orbisonic Roon Input.",
-            "zone_hint": "Orbisonic Roon Input"
+            "zone_hint": "Orbisonic Roon Input",
+            "version": "0.2.0",
+            "supports_image": true,
+            "image_service_available": true
           },
           "core": {
             "core_id": "core-1",
@@ -77,6 +80,10 @@ final class RoonBridgeClientTests: XCTestCase {
         XCTAssertEqual(snapshot.selectedZone?.allows(.play), false)
         XCTAssertEqual(snapshot.selectedZone?.allows(.stop), true)
         XCTAssertEqual(snapshot.core?.displayName, "Roon Server")
+        XCTAssertEqual(snapshot.bridge.version, "0.2.0")
+        XCTAssertEqual(snapshot.bridge.supportsImage, true)
+        XCTAssertEqual(snapshot.bridge.imageServiceAvailable, true)
+        XCTAssertTrue(snapshot.bridge.hasImageCapability)
     }
 
     func testReportsAuthorizationStateAsEnableInRoon() {
@@ -113,4 +120,67 @@ final class RoonBridgeClientTests: XCTestCase {
         XCTAssertNil(cache.cachedURL(for: "image:missing"))
         XCTAssertEqual(try Data(contentsOf: storedURL), data)
     }
+
+    func testFetchImageDataReportsBridgeHTTPFailuresAsRetryableArtworkFailures() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RoonBridgeMockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = RoonBridgeClient(port: 12_345, session: session)
+        RoonBridgeMockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/image/roon-image-1")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 404,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let data = Data(#"{"ok":false,"error":"Not found."}"#.utf8)
+            return (response, data)
+        }
+        defer { RoonBridgeMockURLProtocol.handler = nil }
+
+        do {
+            _ = try await client.fetchImageData(for: "roon-image-1")
+            XCTFail("Expected the image fetch to fail.")
+        } catch let error as RoonBridgeClientError {
+            guard case .httpFailure(let statusCode, let message) = error else {
+                return XCTFail("Expected httpFailure, got \(error).")
+            }
+            XCTAssertEqual(statusCode, 404)
+            XCTAssertEqual(message, "Not found.")
+            XCTAssertTrue(error.isRetryableArtworkFetchFailure)
+        }
+    }
+}
+
+private final class RoonBridgeMockURLProtocol: URLProtocol {
+    typealias Handler = (URLRequest) throws -> (HTTPURLResponse, Data)
+
+    static var handler: Handler?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }

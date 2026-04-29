@@ -26,6 +26,7 @@ try {
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.ORBISONIC_ROON_BRIDGE_PORT || "37942");
+const BRIDGE_VERSION = "0.2.0";
 const DEFAULT_ZONE_HINT = "Orbisonic Roon Input";
 const zoneHint = String(process.env.ORBISONIC_ROON_ZONE_NAME || DEFAULT_ZONE_HINT).trim();
 const selectedZoneFile = path.join(process.cwd(), "selected-zone.json");
@@ -99,6 +100,9 @@ function chooseZone() {
   });
   if (orbisonicHint) return orbisonicHint;
 
+  const orbisonicZone = zones.find((zone) => normalize(zone.display_name) === "orbisonic");
+  if (orbisonicZone) return orbisonicZone;
+
   const legacyVirtualHint = zones.find((zone) => zoneHaystack(zone).includes("blackhole"));
   if (legacyVirtualHint) return legacyVirtualHint;
 
@@ -167,7 +171,10 @@ function snapshot() {
     bridge: {
       state,
       message,
-      zone_hint: zoneHint
+      zone_hint: zoneHint,
+      version: BRIDGE_VERSION,
+      supports_image: Boolean(RoonApiImage),
+      image_service_available: Boolean(imageService)
     },
     core: coreInfo,
     selected_zone_id: selected ? selected.zone_id : null,
@@ -192,7 +199,7 @@ function respondImage(imageKey, response) {
     return;
   }
 
-  imageService.get_image(imageKey, { scale: "fit", width: 600, height: 600, format: "jpg" }, (error, contentType, body) => {
+  imageService.get_image(imageKey, { scale: "fit", width: 600, height: 600, format: "image/jpeg" }, (error, contentType, body) => {
     if (error || !body) {
       respondJSON(response, 502, { ok: false, error: String(error || "No image returned.") });
       return;
@@ -329,7 +336,7 @@ server.listen(PORT, HOST, () => {
 const roon = new RoonApi({
   extension_id: "com.orbisonic.roon-bridge",
   display_name: "Orbisonic Roon Bridge",
-  display_version: "0.1.0",
+  display_version: BRIDGE_VERSION,
   publisher: "Orbisonic",
   email: "support@example.invalid",
   website: "https://example.invalid/orbisonic",

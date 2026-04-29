@@ -84,6 +84,13 @@ struct RoonBridgeInfo: Codable, Equatable {
     var state: String
     var message: String
     var zoneHint: String?
+    var version: String? = nil
+    var supportsImage: Bool? = nil
+    var imageServiceAvailable: Bool? = nil
+
+    var hasImageCapability: Bool {
+        supportsImage == true && imageServiceAvailable != false
+    }
 }
 
 struct RoonBridgeCore: Codable, Equatable {
@@ -253,6 +260,7 @@ enum RoonBridgeClientError: LocalizedError {
     case missingDependencies(String)
     case missingNodeRuntime
     case requestFailed(String)
+    case httpFailure(Int, String?)
     case commandRejected(String)
 
     var errorDescription: String? {
@@ -265,8 +273,24 @@ enum RoonBridgeClientError: LocalizedError {
             return "Node.js was not found. Install Node.js, or set ORBISONIC_NODE_PATH to the node executable path before launching Orbisonic."
         case .requestFailed(let message):
             return message
+        case .httpFailure(let statusCode, let message):
+            if let message, !message.isEmpty {
+                return "Roon bridge returned HTTP \(statusCode): \(message)"
+            }
+            return "Roon bridge returned HTTP \(statusCode)."
         case .commandRejected(let message):
             return message
+        }
+    }
+
+    var isRetryableArtworkFetchFailure: Bool {
+        switch self {
+        case .httpFailure(let statusCode, _):
+            return statusCode == 404 || statusCode == 502 || statusCode == 503
+        case .requestFailed, .missingDependencies, .missingNodeRuntime, .bridgeResourceMissing:
+            return true
+        case .commandRejected:
+            return false
         }
     }
 }
@@ -424,7 +448,7 @@ final class RoonBridgeClient {
         }
 
         let (data, response) = try await session.data(from: url)
-        try validate(response: response)
+        try validate(response: response, data: data)
         return data
     }
 
@@ -446,12 +470,28 @@ final class RoonBridgeClient {
     }
 
     private func validate(response: URLResponse) throws {
+        try validate(response: response, data: nil)
+    }
+
+    private func validate(response: URLResponse, data: Data?) throws {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw RoonBridgeClientError.requestFailed("Roon bridge returned an invalid response.")
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
-            throw RoonBridgeClientError.requestFailed("Roon bridge returned HTTP \(httpResponse.statusCode).")
+            throw RoonBridgeClientError.httpFailure(
+                httpResponse.statusCode,
+                data.flatMap(Self.bridgeErrorMessage(from:))
+            )
         }
+    }
+
+    private static func bridgeErrorMessage(from data: Data) -> String? {
+        guard !data.isEmpty,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return object["error"] as? String
     }
 
     private func shouldStartBridge(after error: Error) -> Bool {
@@ -510,7 +550,9 @@ final class RoonBridgeClient {
     private func dependenciesAreInstalled() -> Bool {
         let nodeModules = supportDirectoryURL.appendingPathComponent("node_modules", isDirectory: true)
         let apiModule = nodeModules.appendingPathComponent("node-roon-api", isDirectory: true)
-        return FileManager.default.fileExists(atPath: apiModule.path)
+        let imageModule = nodeModules.appendingPathComponent("node-roon-api-image", isDirectory: true)
+        return FileManager.default.fileExists(atPath: apiModule.path) &&
+            FileManager.default.fileExists(atPath: imageModule.path)
     }
 
     private func bundledBridgeURL() throws -> URL {
