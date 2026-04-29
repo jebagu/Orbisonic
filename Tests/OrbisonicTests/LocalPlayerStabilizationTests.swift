@@ -497,9 +497,8 @@ final class LocalPlayerStabilizationTests: XCTestCase {
 
         let state = model.webStateForTesting(controlEnabled: true)
 
-        XCTAssertEqual(state.player.controls, ["previous", "play", "pause", "stop", "next"])
+        XCTAssertEqual(state.player.controls, ["previous", "play", "pause", "next"])
         XCTAssertTrue(state.player.enabledControls.contains("pause"))
-        XCTAssertTrue(state.player.enabledControls.contains("stop"))
         XCTAssertTrue(state.player.enabledControls.contains("next"))
         XCTAssertFalse(state.player.enabledControls.contains("play"))
     }

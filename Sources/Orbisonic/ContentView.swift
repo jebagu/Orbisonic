@@ -30,6 +30,8 @@ private enum PlayerTransportKind: String, CaseIterable, Identifiable {
     case stop
     case forward
 
+    static let allCases: [PlayerTransportKind] = [.back, .play, .pause, .forward]
+
     var id: String { rawValue }
 
     var title: String {
@@ -221,7 +223,7 @@ enum LocalFilePlayerRowsModel {
 
     private static func localTrackFormatText(for track: LocalMusicTrack) -> String {
         let container = track.url.pathExtension.uppercased()
-        return container.isEmpty ? "Local file" : container
+        return container.isEmpty ? "Audio file" : container
     }
 
     private static func conciseFormatNote(_ note: String?) -> String? {
@@ -581,7 +583,7 @@ struct ContentView: View {
             }
             Button("Remind Me Later", role: .cancel) {}
         } message: {
-            Text("Install Orbisonic Inputs to use Roon, Spotify, and Aux Cable live capture. Roon and Spotify Connect are optional source helpers. Local Files works without live inputs.")
+            Text("Install Orbisonic Inputs to use Roon, Spotify, and Aux Cable live capture. Roon and Spotify Connect are optional source helpers. Local Music works without live inputs.")
         }
         .onAppear {
             migrateCenteredVUMeterDefaultsIfNeeded()
@@ -840,24 +842,30 @@ struct ContentView: View {
                 .accessibilityLabel("Source")
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text((model.sourceSwitchTargetMode ?? model.sourceMode).rawValue)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(LabTheme.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
                     Text(selectedSourceHeadline)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(LabTheme.text)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel((model.sourceSwitchTargetMode ?? model.sourceMode).displayName)
 
-                    Text(selectedSourceDetailText)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if let detailText = selectedSourceDetailText.trimmedNilIfBlank {
+                        Text(detailText)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(LabTheme.textSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
-                    VStack(alignment: .leading, spacing: 7) {
-                        ForEach(selectedSourceRows) { row in
-                            inputSourceStatusRow(title: row.title, value: row.value)
+                    if !selectedSourceSections.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(selectedSourceSections) { section in
+                                inputSourceStatusSection(section)
+                            }
+                        }
+                    } else if !selectedSourceRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(selectedSourceRows) { row in
+                                inputSourceStatusRow(title: row.title, value: row.value)
+                            }
                         }
                     }
                 }
@@ -879,13 +887,26 @@ struct ContentView: View {
         Button {
             model.selectSourceMode(mode)
         } label: {
-            Text(mode.rawValue)
+            Text(mode.displayName)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(LabTheme.text)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(LabButtonStyle(isActive: sourceButtonIsActive(mode), accent: sourceButtonAccent(for: mode)))
+    }
+
+    private func inputSourceStatusSection(_ section: InputSourceStatusSection) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(section.title.uppercased())
+                .font(.system(size: 10, weight: .heavy))
+                .foregroundStyle(LabTheme.cyan.opacity(0.86))
+                .lineLimit(1)
+
+            ForEach(section.rows) { row in
+                inputSourceStatusRow(title: row.title, value: row.value)
+            }
+        }
     }
 
     private func inputSourceStatusRow(title: String, value: String) -> some View {
@@ -936,12 +957,12 @@ struct ContentView: View {
             case .monitoring:
                 return LabTheme.green
             case .silent, .stopped, .muted:
-                return LabTheme.amber
+                return LabTheme.textSoft
             case .unavailable, .error:
                 return LabTheme.red
             }
         }
-        return model.isPlaying || model.isTestTonePlaying ? LabTheme.green : LabTheme.blue
+        return model.isPlaying || model.isTestTonePlaying ? LabTheme.green : LabTheme.textSoft
     }
 
     private var selectedSourceHeadline: String {
@@ -956,6 +977,10 @@ struct ContentView: View {
         model.inputSourceStatusPanel.rows.map { row in
             PlayerDetailRow(title: row.title, value: row.value)
         }
+    }
+
+    private var selectedSourceSections: [InputSourceStatusSection] {
+        model.inputSourceStatusPanel.sections
     }
 
     private func liveInputReadyValue(expected: OrbisonicLoopbackDevice) -> String {
@@ -974,9 +999,9 @@ struct ContentView: View {
 
     private var isSpotifyReceiverUnavailable: Bool {
         switch model.spotifyReceiverStatus.state {
-        case .failed, .embeddedModuleUnavailable:
+        case .notStarted, .failed, .embeddedModuleUnavailable:
             return true
-        case .notStarted, .waitingForConnection, .running, .restarting:
+        case .waitingForConnection, .running, .restarting:
             return false
         }
     }
@@ -1078,7 +1103,7 @@ struct ContentView: View {
             HStack(alignment: .center, spacing: 12) {
                 routingNodeCard(
                     step: "Source",
-                    title: model.sourceMode.rawValue,
+                    title: model.sourceMode.displayName,
                     detail: model.sourceFlowDetail,
                     icon: "dial.medium"
                 )
@@ -1775,7 +1800,7 @@ struct ContentView: View {
         if model.statusMessage.localizedCaseInsensitiveContains("paused") {
             return "Local paused"
         }
-        return "Local stopped"
+        return "Local ready"
     }
 
     private func condensedLocalLoadingStatus(_ status: String) -> String {
@@ -1805,7 +1830,7 @@ struct ContentView: View {
             return "Stopping"
         }
         if let targetMode = model.sourceSwitchTargetMode {
-            return "Switching to \(targetMode.rawValue)"
+            return "Switching to \(targetMode.displayName)"
         }
         if status.localizedCaseInsensitiveContains("switching") {
             return "Switching"
@@ -1819,21 +1844,34 @@ struct ContentView: View {
         guard let state else {
             return model.liveAudioSignalState.isRecentlyReceiving || model.liveMonitorState == .monitoring
                 ? "Roon playing"
-                : "Roon stopped"
+                : roonWaitingStatusText
         }
         switch state {
         case "playing", "loading":
-            return "Roon playing"
+            if model.liveAudioSignalState.isRecentlyReceiving || model.liveMonitorState == .monitoring {
+                return "Roon playing"
+            }
+            if model.liveAudioSignalState == .noSignal || model.liveMonitorState == .silent {
+                return "No Roon audio"
+            }
+            return "Waiting for Roon audio"
         case "paused":
             return "Roon paused"
         default:
-            return "Roon stopped"
+            return roonWaitingStatusText
         }
+    }
+
+    private var roonWaitingStatusText: String {
+        if model.liveAudioSignalState == .noSignal || model.liveMonitorState == .silent {
+            return "No Roon audio"
+        }
+        return "Waiting for Roon"
     }
 
     private var spotifyPlaybackStatusText: String {
         guard model.spotifyReceiverStatus.isRunning else {
-            return "Spotify stopped"
+            return isSpotifyReceiverUnavailable ? "Spotify unavailable" : "Waiting for Spotify"
         }
         if model.liveAudioSignalState.isRecentlyReceiving ||
             model.liveMonitorState == .monitoring ||
@@ -1841,6 +1879,31 @@ struct ContentView: View {
             return "Spotify playing"
         }
         return model.spotifyVisibleNowPlaying == nil ? "No Spotify track" : "Spotify paused"
+    }
+
+    private var statusChipForegroundColor: Color {
+        if statusChipIsActive {
+            return LabTheme.bg
+        }
+        return statusChipIsError ? LabTheme.red : LabTheme.textSoft
+    }
+
+    private var statusChipFillColor: Color {
+        statusChipIsActive ? LabTheme.green : LabTheme.panelSoft
+    }
+
+    private var statusChipStrokeColor: Color {
+        if statusChipIsActive {
+            return LabTheme.green.opacity(0.55)
+        }
+        return statusChipIsError ? LabTheme.red.opacity(0.68) : LabTheme.line
+    }
+
+    private var statusChipIsError: Bool {
+        if model.sourceMode.isLiveInput, isSelectedLiveSourceUnavailable {
+            return true
+        }
+        return model.sourceMode == .spotify && isSpotifyReceiverUnavailable
     }
 
     private var statusChipIsActive: Bool {
@@ -1851,8 +1914,7 @@ struct ContentView: View {
             return true
         }
         if model.sourceMode == .roon {
-            return model.roonBridgeSnapshot.selectedZone?.isPlaying == true ||
-                model.liveAudioSignalState.isRecentlyReceiving ||
+            return model.liveAudioSignalState.isRecentlyReceiving ||
                 model.liveMonitorState == .monitoring
         }
         if model.sourceMode == .spotify {
@@ -1956,7 +2018,7 @@ struct ContentView: View {
             if let metadata = model.sourceMetadata {
                 return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
             }
-            return "Choose Roon, Spotify, Aux Cable, or Local Files."
+            return "Choose Roon, Spotify, Aux Cable, or Local Music."
         }
     }
 
@@ -1983,16 +2045,16 @@ struct ContentView: View {
                     Spacer()
                     Text(statusChipText)
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(statusChipIsActive ? LabTheme.bg : LabTheme.textSoft)
+                        .foregroundStyle(statusChipForegroundColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                         .frame(width: 154, height: 22)
                         .background(
                             RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                .fill(statusChipIsActive ? LabTheme.green : LabTheme.panelSoft)
+                                .fill(statusChipFillColor)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                        .stroke(statusChipIsActive ? LabTheme.green.opacity(0.55) : LabTheme.line, lineWidth: 1)
+                                        .stroke(statusChipStrokeColor, lineWidth: 1)
                                 )
                         )
                 }
@@ -2616,7 +2678,7 @@ struct ContentView: View {
             }
         }
         if parts.isEmpty {
-            parts.append(model.spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect receiver" })?.value ?? "Spotify Connect")
+            parts.append(model.spotifySetupStatusForPrimaryUI)
         }
         return parts.joined(separator: " • ")
     }
@@ -3507,7 +3569,7 @@ struct ContentView: View {
             rows.append(DiagnosticInfoRow("Selected input device", model.selectedSourceDeviceStatusText))
         }
 
-        rows.append(contentsOf: model.inputSourceStatusPanel.rows.map {
+        rows.append(contentsOf: model.inputSourceDiagnosticsRows.map {
             DiagnosticInfoRow($0.title, $0.value)
         })
 

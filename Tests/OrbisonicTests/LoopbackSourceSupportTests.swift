@@ -6,6 +6,7 @@ final class LoopbackSourceSupportTests: XCTestCase {
     func testMusicInputsExposeExactlyOffRoonSpotifyAuxCableAndLocalFiles() {
         XCTAssertEqual(SourceMode.musicInputs, [.off, .roon, .spotify, .aux, .filePlayback])
         XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Off", "Roon", "Spotify", "Aux Cable", "Local Files"])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.displayName), ["Off", "Roon", "Spotify", "Aux Cable", "Local Music"])
         XCTAssertTrue(SourceMode.musicInputs.allSatisfy(\.isUserFacingMusicInput))
         XCTAssertFalse(SourceMode.musicInputs.contains(.testTone))
     }

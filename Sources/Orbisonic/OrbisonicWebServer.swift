@@ -673,8 +673,7 @@ extension OrbisonicViewModel {
                 liveMonitorState == .monitoring ||
                 spotifyVisibleNowPlaying?.isPlaying == true
         case .roon:
-            return roonBridgeSnapshot.selectedZone?.isPlaying == true ||
-                liveAudioSignalState.isRecentlyReceiving ||
+            return liveAudioSignalState.isRecentlyReceiving ||
                 liveMonitorState == .monitoring
         case .aux:
             return liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring
@@ -709,7 +708,7 @@ extension OrbisonicViewModel {
         case .aux:
             return "Aux"
         case .filePlayback:
-            return "Local Files"
+            return "Local Music"
         case .off:
             return "Sonic Sphere"
         case .roon:
@@ -779,7 +778,7 @@ extension OrbisonicViewModel {
             availableInputs: [],
             sourceButtons: [],
             sourcePanel: OrbisonicWebState.SourcePanel(
-                title: (sourceSwitchTargetMode ?? sourceMode).rawValue,
+                title: (sourceSwitchTargetMode ?? sourceMode).displayName,
                 status: webSelectedSourceStatusText,
                 headline: webSelectedSourceHeadline,
                 body: webSelectedSourceBody,
@@ -794,7 +793,7 @@ extension OrbisonicViewModel {
         SourceMode.musicInputs.map { mode in
             OrbisonicWebState.SourceButton(
                 value: mode.rawValue,
-                title: mode.rawValue,
+                title: mode.displayName,
                 subtitle: "",
                 isSelected: sourceSwitchTargetMode == mode || sourceMode == mode,
                 severity: webSourceButtonSeverity(for: mode)
@@ -804,7 +803,7 @@ extension OrbisonicViewModel {
 
     private var webSourcePanel: OrbisonicWebState.SourcePanel {
         OrbisonicWebState.SourcePanel(
-            title: (sourceSwitchTargetMode ?? sourceMode).rawValue,
+            title: (sourceSwitchTargetMode ?? sourceMode).displayName,
             status: webSelectedSourceStatusText,
             headline: webSelectedSourceHeadline,
             body: webSelectedSourceBody,
@@ -848,9 +847,9 @@ extension OrbisonicViewModel {
 
     private var webSpotifyReceiverUnavailable: Bool {
         switch spotifyReceiverStatus.state {
-        case .failed, .embeddedModuleUnavailable:
+        case .notStarted, .failed, .embeddedModuleUnavailable:
             return true
-        case .notStarted, .waitingForConnection, .running, .restarting:
+        case .waitingForConnection, .running, .restarting:
             return false
         }
     }
@@ -920,7 +919,7 @@ extension OrbisonicViewModel {
 
     private func makeWebPublicRoutingState() -> OrbisonicWebState.Routing {
         OrbisonicWebState.Routing(
-            source: sourceMode.rawValue,
+            source: sourceMode.displayName,
             incoming: webPublicSignalText,
             monitorOutput: "",
             monitorStatus: "",
@@ -1047,7 +1046,7 @@ extension OrbisonicViewModel {
                 let albumArtist = [metadata.album?.trimmedNilIfBlank, metadata.artist?.trimmedNilIfBlank].compactMap { $0 }.joined(separator: " - ")
                 return albumArtist.isEmpty ? "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)" : albumArtist
             }
-            return "Choose Roon, Spotify, Aux, or Local Files."
+            return "Choose Roon, Spotify, Aux, or Local Music."
         }
     }
 
@@ -1117,29 +1116,29 @@ extension OrbisonicViewModel {
             return webCondensedLocalLoadingStatus(statusMessage)
         }
         if isPlaying {
-            return "Local playback playing"
+            return "Local playing"
         }
         if statusMessage.localizedCaseInsensitiveContains("paused") {
-            return "Local playback paused"
+            return "Local paused"
         }
-        return "Local playback stopped"
+        return "Local ready"
     }
 
     private func webCondensedLocalLoadingStatus(_ status: String) -> String {
         if status.hasPrefix("Starting playback") {
-            return "Starting playback..."
+            return "Loading"
         }
         if status.hasPrefix("Loading selected track") {
-            return "Loading selected track..."
+            return "Loading"
         }
         if status.hasPrefix("Loading previous track") {
-            return "Loading previous track..."
+            return "Loading"
         }
         if status.hasPrefix("Loading large audio file") {
-            return "Loading large audio file..."
+            return "Loading"
         }
         if status.hasPrefix("Still loading") {
-            return "Still loading. You can press Stop to cancel."
+            return "Still loading."
         }
         return "Loading next track..."
     }
@@ -1148,28 +1147,49 @@ extension OrbisonicViewModel {
         guard let state = roonBridgeSnapshot.selectedZone?.state.lowercased() else {
             return liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring
                 ? "Roon playing"
-                : "Roon playback stopped"
+                : webRoonWaitingStatus
         }
         switch state {
         case "playing", "loading":
-            return "Roon playing"
+            if liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring {
+                return "Roon playing"
+            }
+            if liveAudioSignalState == .noSignal || liveMonitorState == .silent {
+                return "No Roon audio"
+            }
+            return "Waiting for Roon audio"
         case "paused":
-            return "Roon playback paused"
+            return "Roon paused"
         default:
-            return "Roon playback stopped"
+            return webRoonWaitingStatus
         }
+    }
+
+    private var webRoonWaitingStatus: String {
+        if liveAudioSignalState == .noSignal || liveMonitorState == .silent {
+            return "No Roon audio"
+        }
+        return "Waiting for Roon"
     }
 
     private var webSpotifyPlaybackStatus: String {
         guard spotifyReceiverStatus.isRunning else {
-            return "Spotify playback stopped"
+            switch spotifyReceiverStatus.state {
+            case .failed, .embeddedModuleUnavailable, .notStarted:
+                return "Spotify unavailable"
+            case .restarting:
+                return "Waiting for Spotify"
+            case .waitingForConnection, .running:
+                break
+            }
+            return "Waiting for Spotify"
         }
         if liveAudioSignalState.isRecentlyReceiving ||
             liveMonitorState == .monitoring ||
             spotifyVisibleNowPlaying?.isPlaying == true {
             return "Spotify playing"
         }
-        return spotifyVisibleNowPlaying == nil ? "No Spotify track selected" : "Spotify playback paused"
+        return spotifyVisibleNowPlaying == nil ? "No Spotify track" : "Spotify paused"
     }
 
     private var webPlayerCurrentTime: String {
@@ -1279,7 +1299,7 @@ extension OrbisonicViewModel {
     }
 
     private var webPlayerControls: [String] {
-        ["previous", "play", "pause", "stop", "next"]
+        ["previous", "play", "pause", "next"]
     }
 
     private var webEnabledPlayerControls: [String] {
@@ -1296,7 +1316,6 @@ extension OrbisonicViewModel {
             case "play": return canSendRoonTransport(.play)
             case "pause": return canSendRoonTransport(.pause)
             case "next": return canSendRoonTransport(.next)
-            case "stop": return canSendRoonTransport(.stop)
             default: return false
             }
         case .spotify:
@@ -1310,15 +1329,12 @@ extension OrbisonicViewModel {
                 return hasPlayableLocalSource && !isPlaying && !isLocalFileLoading
             case "pause":
                 return isPlaying || isLocalFileLoading
-            case "stop":
-                return hasPlayableLocalSource || isLocalFileLoading
             default:
                 return false
             }
         case .testTone:
             switch control {
             case "play": return !isTestTonePlaying
-            case "stop": return isTestTonePlaying
             default: return false
             }
         }
@@ -1338,7 +1354,7 @@ extension OrbisonicViewModel {
             webPlayerStatus.localizedCaseInsensitiveContains("starting") {
             return "Loading"
         }
-        return sourceMode == .off ? "Idle" : "Stopped"
+        return sourceMode == .off ? "Idle" : "Ready"
     }
 
     private var webTechnicalInputText: String {
@@ -1400,7 +1416,7 @@ extension OrbisonicViewModel {
         case .off:
             return ""
         case .roon:
-            let value = inputSourceStatusValue(title: "Orbisonic Roon endpoint") ?? roonBridgeSnapshot.compactStatusText
+            let value = inputSourceDiagnosticsValue(title: "Roon endpoint raw state") ?? roonBridgeSnapshot.compactStatusText
             return "Orbisonic Roon endpoint \(value.lowercased())"
         case .spotify:
             if spotifyReceiverStatus.isRunning {
@@ -1411,7 +1427,7 @@ extension OrbisonicViewModel {
             let ready = webLiveInputReadyValue(expected: .auxCable) == "Ready"
             return ready ? "Aux input ready" : "Aux input not connected"
         case .filePlayback:
-            return "Local file player"
+            return "Local Music player"
         case .testTone:
             return "Diagnostics tone generator"
         }
@@ -1442,9 +1458,9 @@ extension OrbisonicViewModel {
                 return parts.filter { !$0.isEmpty && $0 != "-" }.joined(separator: " / ")
             }
             if let track = currentQueueTrack ?? currentLocalMusicTrack {
-                return "\(track.url.pathExtension.uppercased().trimmedNilIfBlank ?? "Local file") / \(track.sampleRateText)"
+                return "\(track.url.pathExtension.uppercased().trimmedNilIfBlank ?? "Local music") / \(track.sampleRateText)"
             }
-            return "Waiting for local file"
+            return "Waiting for Local Music"
         case .testTone:
             return activeDiagnosticText.trimmedNilIfBlank ?? testToneStatus
         }
@@ -1463,8 +1479,8 @@ extension OrbisonicViewModel {
         }
     }
 
-    private func inputSourceStatusValue(title: String) -> String? {
-        inputSourceStatusPanel.rows.first { $0.title == title }?.value
+    private func inputSourceDiagnosticsValue(title: String) -> String? {
+        inputSourceDiagnosticsRows.first { $0.title == title }?.value
     }
 
     private var webPlayerFormatText: String {
@@ -1878,7 +1894,7 @@ private extension OrbisonicWebServer {
                 <h2 id="titleText">Nothing playing right now</h2>
                 <p id="artistText" class="artist-line" hidden></p>
                 <p id="albumText" class="album-line" hidden></p>
-                <p id="sourceLine" class="source-line">Roon · Spotify · Aux · Local Files</p>
+                <p id="sourceLine" class="source-line">Roon · Spotify · Aux · Local Music</p>
                 <p id="idleHint" class="idle-hint">Choose a source to start playback.</p>
               </div>
               <details class="nerd-panel" id="nerdPanel">
@@ -1909,7 +1925,7 @@ private extension OrbisonicWebServer {
     const $=id=>document.getElementById(id);
     function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
     function clean(v){const text=String(v??'').trim();return text==='-'?'':text}
-    function sourceName(player){return clean(player.sourceName)||({'Aux Cable':'Aux','Local Files':'Local Files','Roon':'Roon','Spotify':'Spotify'}[player.source]||clean(player.source)||'Sonic Sphere')}
+    function sourceName(player){return clean(player.sourceName)||({'Aux Cable':'Aux','Local Files':'Local Music','Roon':'Roon','Spotify':'Spotify'}[player.source]||clean(player.source)||'Sonic Sphere')}
     function hasMedia(player){return Boolean(player.hasMedia)}
     function setText(id,value){$(id).textContent=value}
     function setOptionalText(id,value){const el=$(id),text=clean(value);el.textContent=text;el.hidden=!text}
@@ -1936,7 +1952,7 @@ private extension OrbisonicWebServer {
         setText('titleText',media?clean(s.player.title)||'Untitled':'Nothing playing right now');
         setOptionalText('artistText',media?s.player.artist:'');
         setOptionalText('albumText',media?s.player.album:'');
-        setText('sourceLine',media?source:'Roon · Spotify · Aux · Local Files');
+        setText('sourceLine',media?source:'Roon · Spotify · Aux · Local Music');
         $('idleHint').hidden=media;
         renderNerdRows(s.player.details);
         $('connectionNote').hidden=true;
@@ -1945,7 +1961,7 @@ private extension OrbisonicWebServer {
         setText('titleText','Nothing playing right now');
         setOptionalText('artistText','');
         setOptionalText('albumText','');
-        setText('sourceLine','Roon · Spotify · Aux · Local Files');
+        setText('sourceLine','Roon · Spotify · Aux · Local Music');
         $('idleHint').hidden=false;
         $('connectionNote').textContent='Waiting for Orbisonic.';
         $('connectionNote').hidden=false;

@@ -7,17 +7,39 @@ struct InputSourceStatusRow: Identifiable, Equatable {
     var id: String { title }
 }
 
+struct InputSourceStatusSection: Identifiable, Equatable {
+    let title: String
+    let rows: [InputSourceStatusRow]
+
+    var id: String { title }
+}
+
 struct InputSourceStatusPanel: Equatable {
     let status: String
     let headline: String
     let body: String
     let rows: [InputSourceStatusRow]
+    let sections: [InputSourceStatusSection]
+
+    init(
+        status: String,
+        headline: String,
+        body: String,
+        rows: [InputSourceStatusRow] = [],
+        sections: [InputSourceStatusSection] = []
+    ) {
+        self.status = status
+        self.headline = headline
+        self.body = body
+        self.sections = sections
+        self.rows = rows.isEmpty ? sections.flatMap(\.rows) : rows
+    }
 }
 
 enum InputSourceStatusText {
-    static let roonInstruction = "Open the Roon app, select the Orbisonic audio Zone, then start playback. Roon Server will stream audio to Orbisonic."
+    static let roonInstruction = "Open Roon and make sure Orbisonic is authorized, then start playback."
     static let spotifyInstruction = "Open Spotify, use Spotify Connect to select Orbisonic, then control playback from Spotify."
-    static let auxInstruction = "Orbisonic Aux Cable is a local 64-channel virtual sound card. Select it as the output device in Ableton Live, QLab, SPAT Revolution, GarageBand, or any other app to send audio into Orbisonic."
+    static let auxInstruction = "Select Orbisonic Aux Cable as the output device in Ableton Live, QLab, SPAT Revolution, GarageBand, or another app."
 }
 
 private struct InputSourceStatusLogSnapshot {
@@ -62,11 +84,7 @@ extension OrbisonicViewModel {
             return InputSourceStatusPanel(
                 status: "Orbisonic is idle",
                 headline: "Orbisonic is idle",
-                body: "Select a source to begin listening or playback.",
-                rows: [
-                    InputSourceStatusRow(title: "Engine", value: "Idle"),
-                    InputSourceStatusRow(title: "Output", value: "Silent")
-                ]
+                body: "Select a source to begin listening or playback."
             )
         case .roon:
             return roonInputSourceStatusPanel()
@@ -76,13 +94,9 @@ extension OrbisonicViewModel {
             return auxInputSourceStatusPanel()
         case .filePlayback:
             return InputSourceStatusPanel(
-                status: "Ready",
-                headline: "Ready",
-                body: "Use the Player below to choose files and control playback.",
-                rows: [
-                    InputSourceStatusRow(title: "Library", value: "Ready"),
-                    InputSourceStatusRow(title: "Playback", value: "Controlled by Orbisonic")
-                ]
+                status: "Local Music",
+                headline: "Use the Local Music tab to play music.",
+                body: ""
             )
         case .testTone:
             return InputSourceStatusPanel(
@@ -102,6 +116,37 @@ extension OrbisonicViewModel {
 
         lastLoggedInputSourceStatusSignature = snapshot.signature
         AppLogger.shared.debug(category: "input-status", snapshot.message)
+    }
+
+    var inputSourceDiagnosticsRows: [InputSourceStatusRow] {
+        switch sourceMode {
+        case .roon:
+            return [
+                InputSourceStatusRow(title: "Roon endpoint raw state", value: roonEndpointStatusValue),
+                InputSourceStatusRow(title: "Roon connection raw state", value: roonConnectionStatusValue),
+                InputSourceStatusRow(title: "Roon zone", value: roonZoneStatusValue),
+                InputSourceStatusRow(title: "Roon playback raw state", value: roonStreamStatusValue),
+                InputSourceStatusRow(title: "Roon signal raw state", value: roonAudioSignalStatusValue),
+                InputSourceStatusRow(title: "Roon metadata", value: roonNowPlayingStatusValue)
+            ]
+        case .spotify:
+            return [
+                InputSourceStatusRow(title: "Spotify receiver raw state", value: spotifyReceiverStatusValue),
+                InputSourceStatusRow(title: "Spotify discovery raw state", value: spotifyConnectDiscoveryStatusValue),
+                InputSourceStatusRow(title: "Spotify session raw state", value: spotifyConnectSessionStatusValue),
+                InputSourceStatusRow(title: "Spotify signal raw state", value: spotifyAudioSignalStatusValue),
+                InputSourceStatusRow(title: "Spotify metadata", value: spotifyNowPlayingStatusValue)
+            ]
+        case .aux:
+            return [
+                InputSourceStatusRow(title: "Aux virtual sound card", value: auxVirtualSoundCardStatusValue),
+                InputSourceStatusRow(title: "Aux raw input format", value: auxInputFormatStatusValue),
+                InputSourceStatusRow(title: "Aux raw signal", value: auxAudioSignalStatusValue),
+                InputSourceStatusRow(title: "Aux active channels", value: auxActiveChannelsStatusValue ?? "Unknown")
+            ]
+        case .off, .filePlayback, .testTone:
+            return []
+        }
     }
 
     private func inputSourceStatusLogSnapshot(reasonForUpdate: String) -> InputSourceStatusLogSnapshot? {
@@ -164,21 +209,15 @@ extension OrbisonicViewModel {
     private func rowsForSelectedInputSource() -> [InputSourceStatusRow] {
         switch sourceMode {
         case .off:
-            return [
-                InputSourceStatusRow(title: "Engine", value: "Idle"),
-                InputSourceStatusRow(title: "Output", value: "Silent")
-            ]
+            return []
         case .roon:
-            return roonInputStatusRows()
+            return roonInputStatusSections().flatMap(\.rows)
         case .spotify:
-            return spotifyInputStatusRows()
+            return spotifyInputStatusSections().flatMap(\.rows)
         case .aux:
-            return auxInputStatusRows()
+            return auxInputStatusSections().flatMap(\.rows)
         case .filePlayback:
-            return [
-                InputSourceStatusRow(title: "Library", value: "Ready"),
-                InputSourceStatusRow(title: "Playback", value: "Controlled by Orbisonic")
-            ]
+            return []
         case .testTone:
             return [
                 InputSourceStatusRow(title: "Diagnostics", value: testToneStatus.isEmpty ? "Ready" : testToneStatus)
@@ -188,27 +227,31 @@ extension OrbisonicViewModel {
 
     private func roonInputSourceStatusPanel() -> InputSourceStatusPanel {
         let headline: String
-        if inputStatusSelectedLiveSourceUnavailable {
-            headline = "Orbisonic Roon endpoint error"
-        } else if roonEndpointStatusValue == "Stopped" {
-            headline = "Orbisonic Roon endpoint stopped"
-        } else if roonPlaybackIsActive {
+        if roonInputIsUnavailable {
+            headline = "Roon input is unavailable"
+        } else if roonNeedsServerOrAuthorization {
+            headline = "Waiting for Roon"
+        } else if roonHasReceivingAudio {
             headline = "Receiving Roon audio"
         } else if roonPlaybackIsPaused {
-            headline = "Roon selected"
+            headline = "Roon is paused"
+        } else if roonPlaybackIsActive {
+            headline = "Waiting for Roon audio"
         } else {
             headline = "Waiting for Roon"
         }
 
         let body: String
-        if inputStatusSelectedLiveSourceUnavailable {
-            body = "Orbisonic cannot monitor the Roon audio device right now."
-        } else if liveInputReadyValue(expected: .roonInput) == "Missing" {
-            body = selectedSourceDeviceStatusText
-        } else if roonPlaybackIsActive {
-            body = "Roon Server is streaming audio to Orbisonic."
+        if roonInputIsUnavailable {
+            body = "Open Diagnostics for setup details."
+        } else if roonNeedsServerOrAuthorization {
+            body = "Open Roon and make sure Orbisonic is authorized."
+        } else if roonHasReceivingAudio {
+            body = ""
         } else if roonPlaybackIsPaused {
-            body = "Use Roon or the Player controls to resume."
+            body = "Use Roon's player controls to resume."
+        } else if roonPlaybackIsActive {
+            body = "Make sure Roon is playing to Orbisonic."
         } else {
             body = InputSourceStatusText.roonInstruction
         }
@@ -217,59 +260,67 @@ extension OrbisonicViewModel {
             status: headline,
             headline: headline,
             body: body,
-            rows: roonInputStatusRows()
+            sections: roonInputStatusSections()
         )
     }
 
     private func spotifyInputSourceStatusPanel() -> InputSourceStatusPanel {
         let headline: String
-        if inputStatusSpotifyReceiverUnavailable {
-            headline = "Spotify Connect receiver error"
-        } else if spotifyReceiverStatusValue == "Stopped" {
-            headline = "Spotify Connect receiver stopped"
-        } else if liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring {
+        if spotifyHasReceivingAudio {
             headline = "Receiving Spotify audio"
+        } else if spotifySetupIsUnavailable {
+            headline = "Spotify Connect is unavailable"
+        } else if spotifyReceiverStatusValue == "Starting" {
+            headline = "Spotify Connect is starting"
+        } else if !spotifyIsSelectedInApp {
+            headline = "Open Spotify and choose Orbisonic"
+        } else if spotifyPlaybackStatusValue == "Paused" {
+            headline = "Spotify is paused"
         } else if spotifyNowPlayingForStatus != nil {
-            headline = "Waiting for Spotify audio"
+            headline = "Spotify is connected - waiting for audio"
         } else {
-            headline = "Waiting for Spotify Connect"
+            headline = "Open Spotify and choose Orbisonic"
         }
 
         let body: String
-        if inputStatusSpotifyReceiverUnavailable {
-            body = "Orbisonic could not start the Spotify Connect receiver."
-        } else if liveInputReadyValue(expected: .spotifyInput) == "Missing" {
-            body = selectedSourceDeviceStatusText
+        if spotifyHasReceivingAudio {
+            body = ""
+        } else if spotifySetupIsUnavailable {
+            body = "Open Diagnostics for setup details."
+        } else if spotifyReceiverStatusValue == "Starting" {
+            body = "Spotify Connect is starting. Try Spotify again in a moment."
+        } else if !spotifyIsSelectedInApp {
+            body = "In Spotify, select Orbisonic from the devices menu."
+        } else if spotifyPlaybackStatusValue == "Paused" {
+            body = "Resume playback in Spotify."
         } else {
-            body = liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring
-                ? "Spotify is streaming audio to Orbisonic."
-                : InputSourceStatusText.spotifyInstruction
+            body = "Start playback in Spotify."
         }
 
         return InputSourceStatusPanel(
             status: headline,
             headline: headline,
             body: body,
-            rows: spotifyInputStatusRows()
+            sections: spotifyInputStatusSections()
         )
     }
 
     private func auxInputSourceStatusPanel() -> InputSourceStatusPanel {
         let headline: String
         if inputStatusSelectedLiveSourceUnavailable || liveInputReadyValue(expected: .auxCable) == "Missing" {
-            headline = "Aux Cable unavailable"
+            headline = "Aux input unavailable"
         } else {
             headline = liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring
-                ? "Receiving Aux Cable audio"
-                : "Waiting for Aux Cable audio"
+                ? "Receiving Aux audio"
+                : "Waiting for Aux audio"
         }
 
         let body: String
         if inputStatusSelectedLiveSourceUnavailable || liveInputReadyValue(expected: .auxCable) == "Missing" {
-            body = selectedSourceDeviceStatusText
+            body = "Open Diagnostics for setup details."
         } else {
             body = liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring
-                ? "Orbisonic Aux Cable is receiving audio from another app."
+                ? ""
                 : InputSourceStatusText.auxInstruction
         }
 
@@ -277,41 +328,59 @@ extension OrbisonicViewModel {
             status: headline,
             headline: headline,
             body: body,
-            rows: auxInputStatusRows()
+            sections: auxInputStatusSections()
         )
     }
 
-    private func roonInputStatusRows() -> [InputSourceStatusRow] {
+    private func roonInputStatusSections() -> [InputSourceStatusSection] {
         [
-            InputSourceStatusRow(title: "Orbisonic Roon endpoint", value: roonEndpointStatusValue),
-            InputSourceStatusRow(title: "Roon connection", value: roonConnectionStatusValue),
-            InputSourceStatusRow(title: "Roon Zone", value: roonZoneStatusValue),
-            InputSourceStatusRow(title: "Playback", value: roonStreamStatusValue),
-            InputSourceStatusRow(title: "Audio signal", value: roonAudioSignalStatusValue),
-            InputSourceStatusRow(title: "Now playing", value: roonNowPlayingStatusValue)
+            InputSourceStatusSection(
+                title: "Orbisonic setup",
+                rows: [
+                    InputSourceStatusRow(title: "Roon input", value: roonInputUserStatusValue),
+                    InputSourceStatusRow(title: "Roon server", value: roonServerUserStatusValue)
+                ]
+            ),
+            InputSourceStatusSection(
+                title: "Roon app",
+                rows: [
+                    InputSourceStatusRow(title: "Playback", value: roonPlaybackUserStatusValue),
+                    InputSourceStatusRow(title: "Audio", value: roonAudioUserStatusValue),
+                    InputSourceStatusRow(title: "Now playing", value: roonNowPlayingUserStatusValue)
+                ]
+            )
         ]
     }
 
-    private func spotifyInputStatusRows() -> [InputSourceStatusRow] {
+    private func spotifyInputStatusSections() -> [InputSourceStatusSection] {
         [
-            InputSourceStatusRow(title: "Spotify Connect receiver", value: spotifyReceiverStatusValue),
-            InputSourceStatusRow(title: "Spotify Connect discovery", value: spotifyConnectDiscoveryStatusValue),
-            InputSourceStatusRow(title: "Spotify Connect session", value: spotifyConnectSessionStatusValue),
-            InputSourceStatusRow(title: "Audio signal", value: spotifyAudioSignalStatusValue),
-            InputSourceStatusRow(title: "Now playing", value: spotifyNowPlayingStatusValue)
+            InputSourceStatusSection(
+                title: "Orbisonic setup",
+                rows: [
+                    InputSourceStatusRow(title: "Spotify Connect", value: spotifySetupUserStatusValue)
+                ]
+            ),
+            InputSourceStatusSection(
+                title: "Spotify app",
+                rows: [
+                    InputSourceStatusRow(title: "Connection", value: spotifyConnectionUserStatusValue),
+                    InputSourceStatusRow(title: "Audio", value: spotifyAudioUserStatusValue),
+                    InputSourceStatusRow(title: "Now playing", value: spotifyNowPlayingUserStatusValue)
+                ]
+            )
         ]
     }
 
-    private func auxInputStatusRows() -> [InputSourceStatusRow] {
+    private func auxInputStatusSections() -> [InputSourceStatusSection] {
         var rows = [
-            InputSourceStatusRow(title: "Virtual sound card", value: auxVirtualSoundCardStatusValue),
-            InputSourceStatusRow(title: "Input format", value: auxInputFormatStatusValue),
-            InputSourceStatusRow(title: "Audio signal", value: auxAudioSignalStatusValue)
+            InputSourceStatusRow(title: "Aux Cable", value: auxCableUserStatusValue),
+            InputSourceStatusRow(title: "Input", value: auxInputFormatStatusValue),
+            InputSourceStatusRow(title: "Audio", value: auxAudioUserStatusValue)
         ]
         if let activeChannels = auxActiveChannelsStatusValue {
             rows.append(InputSourceStatusRow(title: "Active channels", value: activeChannels))
         }
-        return rows
+        return [InputSourceStatusSection(title: "Aux source", rows: rows)]
     }
 
     private var roonEndpointStatusValue: String {
@@ -360,6 +429,90 @@ extension OrbisonicViewModel {
             return "Waiting for Orbisonic audio Zone"
         }
         return "Unknown"
+    }
+
+    private var roonInputIsUnavailable: Bool {
+        inputStatusSelectedLiveSourceUnavailable || liveInputReadyValue(expected: .roonInput) == "Missing"
+    }
+
+    private var roonHasReceivingAudio: Bool {
+        liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring
+    }
+
+    private var roonNeedsServerOrAuthorization: Bool {
+        switch roonBridgeSnapshot.bridge.state {
+        case "waiting_for_authorization", "waiting_for_zone", "offline", "unpaired", "starting":
+            return !roonBridgeSnapshot.isReadyForTransport
+        default:
+            return !roonBridgeSnapshot.ok && !roonBridgeSnapshot.isReadyForTransport
+        }
+    }
+
+    private var roonInputUserStatusValue: String {
+        switch roonEndpointStatusValue {
+        case "Running":
+            return "Ready"
+        case "Starting":
+            return "Starting"
+        case "Stopped":
+            return "Unavailable"
+        case "Error":
+            return "Error"
+        default:
+            return "Unavailable"
+        }
+    }
+
+    private var roonServerUserStatusValue: String {
+        if roonBridgeSnapshot.ok, roonBridgeSnapshot.core != nil {
+            return "Connected"
+        }
+
+        switch roonBridgeSnapshot.bridge.state {
+        case "waiting_for_authorization":
+            return "Waiting for authorization"
+        case "starting":
+            return "Starting"
+        default:
+            return "Waiting for Roon Server"
+        }
+    }
+
+    private var roonPlaybackUserStatusValue: String {
+        if roonPlaybackIsActive {
+            return "Playing"
+        }
+        if roonPlaybackIsPaused {
+            return "Paused"
+        }
+        return "Waiting"
+    }
+
+    private var roonAudioUserStatusValue: String {
+        switch liveAudioSignalState {
+        case .receiving, .briefSilence, .silentPassage:
+            return roonPlaybackIsPaused ? "Waiting for audio" : "Receiving"
+        case .noSignal:
+            return roonPlaybackIsActive ? "No signal" : "Waiting for audio"
+        case .unknown:
+            break
+        }
+
+        switch liveMonitorState {
+        case .monitoring:
+            return "Receiving"
+        case .silent:
+            return roonPlaybackIsActive ? "No signal" : "Waiting for audio"
+        case .muted:
+            return "Waiting for audio"
+        case .stopped, .unavailable, .error:
+            return "Waiting for audio"
+        }
+    }
+
+    private var roonNowPlayingUserStatusValue: String {
+        let value = roonNowPlayingStatusValue
+        return value == "No metadata" ? "No metadata yet" : value
     }
 
     private var roonStreamStatusValue: String {
@@ -495,6 +648,67 @@ extension OrbisonicViewModel {
         }
     }
 
+    private var spotifySetupIsUnavailable: Bool {
+        inputStatusSpotifyReceiverUnavailable ||
+            spotifyReceiverStatus.state == .notStarted ||
+            liveInputReadyValue(expected: .spotifyInput) == "Missing"
+    }
+
+    private var spotifyIsSelectedInApp: Bool {
+        spotifyNowPlayingForStatus != nil || spotifyHasReceivingAudio
+    }
+
+    private var spotifySetupUserStatusValue: String {
+        switch spotifyReceiverStatus.state {
+        case .waitingForConnection, .running:
+            return liveInputReadyValue(expected: .spotifyInput) == "Missing" ? "Unavailable" : "Available as Orbisonic"
+        case .restarting:
+            return "Starting"
+        case .notStarted:
+            return "Unavailable"
+        case .failed, .embeddedModuleUnavailable:
+            return "Error"
+        }
+    }
+
+    private var spotifyConnectionUserStatusValue: String {
+        if spotifyIsSelectedInApp {
+            return "Connected to Orbisonic"
+        }
+        switch spotifyReceiverStatus.state {
+        case .waitingForConnection, .running:
+            return "Choose Orbisonic in Spotify"
+        case .restarting:
+            return "Waiting for Spotify"
+        case .notStarted, .failed, .embeddedModuleUnavailable:
+            return "Waiting for Spotify"
+        }
+    }
+
+    private var spotifyAudioUserStatusValue: String {
+        if spotifyHasReceivingAudio {
+            return "Receiving"
+        }
+        if spotifyPlaybackStatusValue == "Paused" {
+            return "Paused or silent"
+        }
+        switch liveAudioSignalState {
+        case .noSignal:
+            return spotifyIsSelectedInApp ? "No signal" : "Waiting for audio"
+        case .silentPassage:
+            return "Paused or silent"
+        case .receiving, .briefSilence:
+            return "Receiving"
+        case .unknown:
+            return spotifyIsSelectedInApp ? "Waiting for audio" : "Waiting for audio"
+        }
+    }
+
+    private var spotifyNowPlayingUserStatusValue: String {
+        let value = spotifyNowPlayingStatusValue
+        return value == "No metadata" ? "No track yet" : value
+    }
+
     private var spotifyAudioSignalStatusValue: String {
         switch liveAudioSignalState {
         case .receiving:
@@ -581,6 +795,19 @@ extension OrbisonicViewModel {
         return availableInputRoutes.contains(where: \.isAuxLoopback) ? "Unknown" : "Not installed"
     }
 
+    private var auxCableUserStatusValue: String {
+        switch auxVirtualSoundCardStatusValue {
+        case "Available":
+            return "Ready"
+        case "Starting":
+            return "Starting"
+        case "Error":
+            return "Error"
+        default:
+            return "Unavailable"
+        }
+    }
+
     private var auxInputFormatStatusValue: String {
         if inputRoute.isAuxLoopback, inputRoute.inputChannelCount > 0 {
             return "\(inputRoute.inputChannelCount) channels"
@@ -615,6 +842,30 @@ extension OrbisonicViewModel {
             return "No signal"
         case .stopped, .unavailable, .error:
             return "Unknown"
+        }
+    }
+
+    private var auxAudioUserStatusValue: String {
+        switch liveAudioSignalState {
+        case .receiving, .briefSilence:
+            return "Receiving"
+        case .silentPassage:
+            return "Paused or silent"
+        case .noSignal:
+            return "No signal"
+        case .unknown:
+            break
+        }
+
+        switch liveMonitorState {
+        case .monitoring:
+            return "Receiving"
+        case .muted:
+            return "Paused or silent"
+        case .silent:
+            return "No signal"
+        case .stopped, .unavailable, .error:
+            return "Waiting for audio"
         }
     }
 

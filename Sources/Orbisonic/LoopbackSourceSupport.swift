@@ -190,6 +190,15 @@ enum SourceMode: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var displayName: String {
+        switch self {
+        case .filePlayback:
+            "Local Music"
+        case .off, .roon, .spotify, .aux, .testTone:
+            rawValue
+        }
+    }
+
     var isLiveInput: Bool {
         self == .roon || self == .spotify || self == .aux
     }
@@ -246,7 +255,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
 
     func missingLoopbackMessage() -> String {
         guard let expectedLoopback else {
-            return "No live input route is required for \(rawValue)."
+            return "No live input route is required for \(displayName)."
         }
 
         switch self {
@@ -255,7 +264,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
         case .roon, .aux:
             return "\(expectedLoopback.displayName) is not available. Install Orbisonic Inputs, then restart Core Audio or reboot."
         case .off, .filePlayback, .testTone:
-            return "No live input route is required for \(rawValue)."
+            return "No live input route is required for \(displayName)."
         }
     }
 

@@ -130,7 +130,7 @@ private enum LocalFileLoadKind {
     }
 
     var stillLoadingStatus: String {
-        "Still loading. You can press Stop to cancel."
+        "Still loading."
     }
 }
 
@@ -1588,7 +1588,7 @@ final class OrbisonicViewModel: ObservableObject {
             refreshRoonBridgeIfNeeded(force: true)
             if selectExpectedLoopbackInputIfAvailable(for: .roon) {
                 liveMonitorState = .stopped
-                statusMessage = "Roon is selected. Open the Roon app, select the Orbisonic audio Zone, then start playback."
+                statusMessage = "Open Roon and make sure Orbisonic is authorized."
             } else {
                 let message = missingLoopbackMessage(for: .roon)
                 liveMonitorState = .unavailable(message)
@@ -1605,7 +1605,7 @@ final class OrbisonicViewModel: ObservableObject {
             refreshSpotifyNowPlayingIfNeeded(force: true, reason: "source selected")
             if selectExpectedLoopbackInputIfAvailable(for: .spotify) {
                 liveMonitorState = .stopped
-                statusMessage = "Spotify is selected. Open Spotify, choose Orbisonic from Devices / Spotify Connect, then control playback from Spotify."
+                statusMessage = "Open Spotify and choose Orbisonic from the devices menu."
             } else {
                 let message = missingLoopbackMessage(for: .spotify)
                 liveMonitorState = .unavailable(message)
@@ -1628,7 +1628,7 @@ final class OrbisonicViewModel: ObservableObject {
             roonNowPlaying = nil
             if selectExpectedLoopbackInputIfAvailable(for: .aux) {
                 liveMonitorState = .stopped
-                statusMessage = "Aux Cable is selected. Select Orbisonic Aux Cable as the output device in the source app."
+                statusMessage = "Select Orbisonic Aux Cable as the output device in the source app."
             } else {
                 let message = missingLoopbackMessage(for: .aux)
                 liveMonitorState = .unavailable(message)
@@ -2079,7 +2079,7 @@ final class OrbisonicViewModel: ObservableObject {
         logLocalTransportTiming(debugTiming, "stop cancellation finished")
         stop()
         if sourceMode == .filePlayback {
-            statusMessage = "Local playback stopped"
+            statusMessage = "Local ready"
         } else if !commandAllowed {
             commandError = "source is \(sourceMode.rawValue)"
         }
@@ -2118,7 +2118,7 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
-        statusMessage = "Switching to Local Files..."
+        statusMessage = "Switching to Local Music..."
         logLocalPlayNowDebug(
             "source switch started",
             selectedTrack: track,
@@ -2158,8 +2158,8 @@ final class OrbisonicViewModel: ObservableObject {
 
         guard didSwitch else {
             let message = sourceMode == .filePlayback
-                ? "Local Files did not finish activating for Play Now."
-                : "Could not switch to Local Files for Play Now. Current source is \(sourceMode.rawValue)."
+                ? "Local Music did not finish activating for Play Now."
+                : "Could not switch to Local Music for Play Now. Current source is \(sourceMode.displayName)."
             statusMessage = message
             lastError = message
             isLocalFileLoading = false
@@ -3704,11 +3704,11 @@ final class OrbisonicViewModel: ObservableObject {
             }
 
             if sourceMode == .roon, inputRoute.isRoonLoopback {
-                statusMessage = "Open the Roon app, select the Orbisonic audio Zone, then start playback."
+                statusMessage = "Make sure Roon is playing to Orbisonic."
             } else if sourceMode == .spotify, inputRoute.isSpotifyLoopback {
                 statusMessage = spotifyVisibleNowPlaying == nil
-                    ? "Open Spotify, choose Orbisonic from Devices / Spotify Connect, then control playback from Spotify."
-                    : "Spotify Connect session detected. Control playback from Spotify."
+                    ? "Open Spotify and choose Orbisonic from the devices menu."
+                    : "Spotify is connected. Control playback from Spotify."
             } else {
                 statusMessage = sourceMode == .aux
                     ? "Select Orbisonic Aux Cable as the output device in Ableton Live, QLab, SPAT Revolution, GarageBand, or another app."
@@ -4020,27 +4020,29 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
-        let sourceName = sourceMode.rawValue
-        markLiveMonitorStopped(sourceName: sourceName)
+        let stoppingSourceMode = sourceMode
+        let sourceName = stoppingSourceMode.rawValue
+        markLiveMonitorStopped(sourceMode: stoppingSourceMode)
         engine.stop()
-        markLiveMonitorStopped(sourceName: sourceName)
+        markLiveMonitorStopped(sourceMode: stoppingSourceMode)
         AppLogger.shared.notice(category: "live-input", "Stopped live monitor source=\(sourceName)")
     }
 
     private func stopLiveMonitorForSourceSwitch(to mode: SourceMode) {
         guard sourceMode.isLiveInput else { return }
 
-        let sourceName = sourceMode.rawValue
-        markLiveMonitorStopped(sourceName: sourceName)
+        let stoppingSourceMode = sourceMode
+        let sourceName = stoppingSourceMode.rawValue
+        markLiveMonitorStopped(sourceMode: stoppingSourceMode)
         engine.stop()
-        markLiveMonitorStopped(sourceName: sourceName)
+        markLiveMonitorStopped(sourceMode: stoppingSourceMode)
         AppLogger.shared.notice(
             category: "live-input",
             "Stopped live monitor source=\(sourceName) before selecting source=\(mode.rawValue)"
         )
     }
 
-    private func markLiveMonitorStopped(sourceName: String) {
+    private func markLiveMonitorStopped(sourceMode: SourceMode) {
         isPlaying = false
         liveMonitorState = .stopped
         clearLoadedSourceSnapshot()
@@ -4057,9 +4059,27 @@ final class OrbisonicViewModel: ObservableObject {
         lastLiveSignalDetectedSecond = nil
         liveAudioSignalState = .unknown
         liveAudioSignalSilenceDuration = nil
-        liveSignalStatus = "\(sourceName) input stopped."
         liveBufferStatus = "No live buffer."
-        statusMessage = "\(sourceName) input stopped."
+        let waitingText = stoppedLiveSourceStatusText(for: sourceMode)
+        liveSignalStatus = waitingText
+        statusMessage = waitingText
+    }
+
+    private func stoppedLiveSourceStatusText(for sourceMode: SourceMode) -> String {
+        switch sourceMode {
+        case .roon:
+            return "Waiting for Roon"
+        case .spotify:
+            return spotifyReceiverStatus.isRunning ? "Waiting for Spotify" : "Spotify unavailable"
+        case .aux:
+            return "Waiting for Aux audio"
+        case .off:
+            return "Orbisonic is idle"
+        case .filePlayback:
+            return "Local ready"
+        case .testTone:
+            return "Diagnostics ready"
+        }
     }
 
     private func clearLoadedSourceSnapshot() {
@@ -4115,11 +4135,11 @@ final class OrbisonicViewModel: ObservableObject {
         case .off:
             statusMessage = "Orbisonic is idle"
         case .filePlayback:
-            statusMessage = "Local playback stopped"
+            statusMessage = "Local ready"
         case .spotify:
-            statusMessage = "Spotify playback stopped"
+            statusMessage = "Waiting for Spotify"
         case .roon:
-            statusMessage = "Roon playback stopped"
+            statusMessage = "Waiting for Roon"
         case .aux:
             statusMessage = "Aux has no transport"
         case .testTone:
@@ -4817,7 +4837,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .testTone:
             return "Test Tone"
         case .filePlayback:
-            return sourceMetadata?.fileName ?? "Local Files"
+            return sourceMetadata?.fileName ?? "Local Music"
         case .aux:
             return "Aux Cable"
         }
@@ -4837,8 +4857,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         if sourceMode == .spotify {
             let routeText = inputRoute.isAvailable ? inputRoute.detail : missingLoopbackMessage(for: .spotify)
-            let serverText = spotifySourceHealthLines.first(where: { $0.title == "Spotify Connect receiver" })?.value ?? spotifyReceiverStatus.message
-            return "\(routeText) • \(serverText) • \(liveSignalStatus)"
+            return "\(routeText) • \(spotifySetupStatusForPrimaryUI) • \(liveSignalStatus)"
         }
 
         if sourceMode == .aux {
@@ -4851,7 +4870,7 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         guard let metadata = sourceMetadata else {
-            return "Open a local surround file to inspect the source format."
+            return "Use Local Music to choose a track."
         }
 
         return "\(metadata.layoutName) • \(metadata.codecName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
@@ -5104,6 +5123,19 @@ final class OrbisonicViewModel: ObservableObject {
             SpotifySourceHealthLine(title: "Spotify input stream", value: streamRead),
             SpotifySourceHealthLine(title: "Audio signal", value: signal)
         ]
+    }
+
+    var spotifySetupStatusForPrimaryUI: String {
+        switch spotifyReceiverStatus.state {
+        case .running:
+            return "Available as Orbisonic"
+        case .waitingForConnection, .restarting:
+            return "Starting"
+        case .notStarted:
+            return "Unavailable"
+        case .failed, .embeddedModuleUnavailable:
+            return "Error"
+        }
     }
 
     var outputSafetyText: String {
@@ -5479,7 +5511,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .aux:
             return "Aux Cable"
         case .filePlayback:
-            return "Local Files"
+            return "Local Music"
         case .testTone:
             return "Test Tone"
         }
@@ -6736,7 +6768,7 @@ final class OrbisonicViewModel: ObservableObject {
                 return "\(liveInputSignalName) has no signal while Roon is playing."
             }
             if sourceMode == .roon {
-                return "\(liveInputSignalName) has no signal. Open the Roon app, select the Orbisonic audio Zone, then start playback."
+                return "\(liveInputSignalName) has no signal. Make sure Roon is playing to Orbisonic."
             }
             if sourceMode == .spotify {
                 return "\(liveInputSignalName) has no signal. Open Spotify, choose Orbisonic from Devices / Spotify Connect, then start playback."

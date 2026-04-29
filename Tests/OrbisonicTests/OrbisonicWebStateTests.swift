@@ -142,8 +142,8 @@ final class OrbisonicWebStateTests: XCTestCase {
 
         XCTAssertFalse(state.player.hasMedia)
         XCTAssertEqual(state.player.title, "Nothing playing right now")
-        XCTAssertEqual(state.player.subtitle, "Choose Roon, Spotify, Aux, or Local Files.")
-        XCTAssertEqual(state.player.sourceName, "Local Files")
+        XCTAssertEqual(state.player.subtitle, "Choose Roon, Spotify, Aux, or Local Music.")
+        XCTAssertEqual(state.player.sourceName, "Local Music")
         XCTAssertEqual(state.player.outputChannels, "30.1 channels")
         XCTAssertFalse(state.player.title.localizedCaseInsensitiveContains("no source"))
         XCTAssertFalse(state.player.subtitle.localizedCaseInsensitiveContains("no local file"))
@@ -173,13 +173,13 @@ final class OrbisonicWebStateTests: XCTestCase {
 
         let state = model.webStateForTesting(controlEnabled: true)
 
-        XCTAssertEqual(state.input.sourceButtons.map(\.title), ["Off", "Roon", "Spotify", "Aux Cable", "Local Files"])
+        XCTAssertEqual(state.input.sourceButtons.map(\.title), ["Off", "Roon", "Spotify", "Aux Cable", "Local Music"])
         XCTAssertEqual(state.input.sourceButtons.map(\.value), ["Off", "Roon", "Spotify", "Aux Cable", "Local Files"])
         XCTAssertEqual(state.input.sourceButtons.map(\.subtitle), ["", "", "", "", ""])
         XCTAssertFalse(state.input.sourceButtons.map(\.title).contains("Test Tone"))
-        XCTAssertEqual(state.input.sourcePanel.title, "Local Files")
-        XCTAssertEqual(state.input.sourcePanel.headline, "Ready")
-        XCTAssertEqual(state.input.sourcePanel.rows.map(\.title), ["Library", "Playback"])
+        XCTAssertEqual(state.input.sourcePanel.title, "Local Music")
+        XCTAssertEqual(state.input.sourcePanel.headline, "Use the Local Music tab to play music.")
+        XCTAssertTrue(state.input.sourcePanel.rows.isEmpty)
     }
 
     @MainActor
@@ -190,41 +190,40 @@ final class OrbisonicWebStateTests: XCTestCase {
         let spotifyState = model.webStateForTesting(controlEnabled: true)
 
         XCTAssertEqual(spotifyState.input.sourcePanel.title, "Spotify")
-        XCTAssertEqual(spotifyState.input.sourcePanel.headline, "Waiting for Spotify Connect")
-        XCTAssertTrue(spotifyState.input.sourcePanel.body.contains("Orbisonic Spotify Input is not available"))
+        XCTAssertEqual(spotifyState.input.sourcePanel.headline, "Spotify Connect is unavailable")
+        XCTAssertEqual(spotifyState.input.sourcePanel.body, "Open Diagnostics for setup details.")
         XCTAssertEqual(
             spotifyState.input.sourcePanel.rows.map(\.title),
             [
-                "Spotify Connect receiver",
-                "Spotify Connect discovery",
-                "Spotify Connect session",
-                "Audio signal",
+                "Spotify Connect",
+                "Connection",
+                "Audio",
                 "Now playing"
             ]
         )
-        XCTAssertEqual(spotifyState.player.controls, ["previous", "play", "pause", "stop", "next"])
+        XCTAssertEqual(spotifyState.player.controls, ["previous", "play", "pause", "next"])
         XCTAssertTrue(spotifyState.player.enabledControls.isEmpty)
 
         model.sourceMode = .roon
         let roonState = model.webStateForTesting(controlEnabled: true)
 
         XCTAssertEqual(roonState.input.sourcePanel.title, "Roon")
-        XCTAssertEqual(roonState.input.sourcePanel.headline, "Orbisonic Roon endpoint stopped")
-        XCTAssertTrue(roonState.input.sourcePanel.body.contains("Orbisonic Roon Input is not available"))
+        XCTAssertEqual(roonState.input.sourcePanel.headline, "Roon input is unavailable")
+        XCTAssertEqual(roonState.input.sourcePanel.body, "Open Diagnostics for setup details.")
         XCTAssertEqual(
             roonState.input.sourcePanel.rows.map(\.title),
-            ["Orbisonic Roon endpoint", "Roon connection", "Roon Zone", "Playback", "Audio signal", "Now playing"]
+            ["Roon input", "Roon server", "Playback", "Audio", "Now playing"]
         )
 
         model.sourceMode = .aux
         let auxState = model.webStateForTesting(controlEnabled: true)
 
         XCTAssertEqual(auxState.input.sourcePanel.title, "Aux Cable")
-        XCTAssertEqual(auxState.input.sourcePanel.headline, "Aux Cable unavailable")
-        XCTAssertTrue(auxState.input.sourcePanel.body.contains("Orbisonic Aux Cable is not available"))
+        XCTAssertEqual(auxState.input.sourcePanel.headline, "Aux input unavailable")
+        XCTAssertEqual(auxState.input.sourcePanel.body, "Open Diagnostics for setup details.")
         XCTAssertEqual(
             auxState.input.sourcePanel.rows.map(\.title),
-            ["Virtual sound card", "Input format", "Audio signal"]
+            ["Aux Cable", "Input", "Audio"]
         )
     }
 
@@ -234,7 +233,7 @@ final class OrbisonicWebStateTests: XCTestCase {
 
         let state = model.webStateForTesting(controlEnabled: true)
 
-        XCTAssertEqual(state.player.controls, ["previous", "play", "pause", "stop", "next"])
+        XCTAssertEqual(state.player.controls, ["previous", "play", "pause", "next"])
         XCTAssertFalse(state.player.controls.contains("playAll"))
         XCTAssertFalse(state.player.controls.contains("shuffle"))
         XCTAssertFalse(state.player.controls.contains("seekBackward"))
@@ -257,8 +256,8 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertTrue(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
         XCTAssertEqual(
-            state.input.sourcePanel.rows.first { $0.title == "Spotify Connect session" }?.value,
-            "Selected in Spotify"
+            state.input.sourcePanel.rows.first { $0.title == "Connection" }?.value,
+            "Connected to Orbisonic"
         )
 
         model.applySpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Stable Track", isPlaying: false))
@@ -271,7 +270,7 @@ final class OrbisonicWebStateTests: XCTestCase {
         try await Task.sleep(nanoseconds: 350_000_000)
 
         state = model.webStateForTesting(controlEnabled: true)
-        XCTAssertEqual(state.player.status, "Spotify playback paused")
+        XCTAssertEqual(state.player.status, "Spotify paused")
         XCTAssertFalse(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
     }
@@ -293,11 +292,11 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertTrue(state.player.isPlaying)
         XCTAssertEqual(state.input.sourcePanel.headline, "Receiving Spotify audio")
         XCTAssertEqual(
-            state.input.sourcePanel.rows.first { $0.title == "Spotify Connect session" }?.value,
-            "Selected in Spotify"
+            state.input.sourcePanel.rows.first { $0.title == "Connection" }?.value,
+            "Connected to Orbisonic"
         )
         XCTAssertEqual(
-            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
             "Receiving"
         )
     }
@@ -317,16 +316,16 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertEqual(state.input.sourcePanel.headline, "Receiving Roon audio")
         XCTAssertEqual(
             state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
-            "Active"
+            "Playing"
         )
         XCTAssertEqual(
-            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
-            "Brief silence"
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
+            "Receiving"
         )
     }
 
     @MainActor
-    func testRoonPlaybackActiveSurvivesLongSilenceWithoutWaitingLabel() {
+    func testRoonPlaybackActiveWithNoSignalShowsAudioProblem() {
         let model = OrbisonicViewModel()
         model.setSourceModeForTesting(.roon)
         model.setInputRouteForTesting(Self.inputRoute(for: .roonInput), availableRoutes: [Self.inputRoute(for: .roonInput)])
@@ -335,18 +334,18 @@ final class OrbisonicWebStateTests: XCTestCase {
         model.setLiveAudioSignalStateForTesting(.noSignal, silenceDuration: 16)
 
         let state = model.webStateForTesting(controlEnabled: true)
-        XCTAssertEqual(state.player.status, "Roon playing")
-        XCTAssertTrue(state.player.isPlaying)
-        XCTAssertEqual(state.input.sourcePanel.headline, "Receiving Roon audio")
+        XCTAssertEqual(state.player.status, "No Roon audio")
+        XCTAssertFalse(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.headline, "Waiting for Roon audio")
         XCTAssertEqual(
             state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
-            "Active"
+            "Playing"
         )
         XCTAssertEqual(
-            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
-            "No signal while Roon is playing"
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
+            "No signal"
         )
-        XCTAssertFalse(state.input.sourcePanel.headline.contains("Waiting for Roon"))
+        XCTAssertTrue(state.input.sourcePanel.body.contains("playing to Orbisonic"))
         XCTAssertNotEqual(
             state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
             "Waiting"
@@ -363,16 +362,16 @@ final class OrbisonicWebStateTests: XCTestCase {
         model.setLiveAudioSignalStateForTesting(.noSignal, silenceDuration: 16)
 
         let state = model.webStateForTesting(controlEnabled: true)
-        XCTAssertEqual(state.player.status, "Roon playback paused")
+        XCTAssertEqual(state.player.status, "Roon paused")
         XCTAssertFalse(state.player.isPlaying)
-        XCTAssertEqual(state.input.sourcePanel.headline, "Roon selected")
+        XCTAssertEqual(state.input.sourcePanel.headline, "Roon is paused")
         XCTAssertEqual(
             state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
             "Paused"
         )
         XCTAssertEqual(
-            state.input.sourcePanel.rows.first { $0.title == "Audio signal" }?.value,
-            "No signal"
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
+            "Waiting for audio"
         )
     }
 
@@ -380,6 +379,10 @@ final class OrbisonicWebStateTests: XCTestCase {
     func testInactiveSpotifyStateDoesNotOverwriteLocalPlayerStatus() {
         let model = OrbisonicViewModel()
         model.setSourceModeForTesting(.spotify)
+        model.setSpotifyReceiverStatusForTesting(SpotifyReceiverStatus(
+            state: .waitingForConnection,
+            message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
+        ))
         model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Spotify Track", isPlaying: true))
         XCTAssertEqual(model.webStateForTesting(controlEnabled: true).player.status, "Spotify playing")
 
@@ -391,7 +394,7 @@ final class OrbisonicWebStateTests: XCTestCase {
         let state = model.webStateForTesting(controlEnabled: true)
         XCTAssertEqual(state.player.source, SourceMode.filePlayback.rawValue)
         XCTAssertEqual(state.player.title, "Local Track")
-        XCTAssertEqual(state.player.status, "Local playback paused")
+        XCTAssertEqual(state.player.status, "Local paused")
         XCTAssertFalse(state.player.isPlaying)
     }
 
@@ -404,12 +407,16 @@ final class OrbisonicWebStateTests: XCTestCase {
         model.isPlaying = true
 
         model.setSourceModeForTesting(.spotify)
+        model.setSpotifyReceiverStatusForTesting(SpotifyReceiverStatus(
+            state: .waitingForConnection,
+            message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
+        ))
         model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Spotify Track", isPlaying: false))
 
         let state = model.webStateForTesting(controlEnabled: true)
         XCTAssertEqual(state.player.source, SourceMode.spotify.rawValue)
         XCTAssertEqual(state.player.title, "Spotify Track")
-        XCTAssertEqual(state.player.status, "Spotify playback paused")
+        XCTAssertEqual(state.player.status, "Spotify paused")
         XCTAssertFalse(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
     }
@@ -429,7 +436,7 @@ final class OrbisonicWebStateTests: XCTestCase {
         let state = model.webStateForTesting(controlEnabled: true)
         XCTAssertEqual(state.player.source, SourceMode.filePlayback.rawValue)
         XCTAssertEqual(state.player.title, "Local Track")
-        XCTAssertEqual(state.player.status, "Local playback paused")
+        XCTAssertEqual(state.player.status, "Local paused")
         XCTAssertFalse(state.player.isPlaying)
     }
 
@@ -446,7 +453,7 @@ final class OrbisonicWebStateTests: XCTestCase {
         let state = model.webStateForTesting(controlEnabled: true)
         XCTAssertEqual(state.player.source, SourceMode.roon.rawValue)
         XCTAssertEqual(state.player.title, "Roon")
-        XCTAssertEqual(state.player.status, "Roon playback stopped")
+        XCTAssertEqual(state.player.status, "Waiting for Roon")
         XCTAssertFalse(state.player.isPlaying)
     }
 
