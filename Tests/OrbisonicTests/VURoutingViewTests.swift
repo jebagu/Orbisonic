@@ -97,4 +97,41 @@ final class VURoutingViewTests: XCTestCase {
         model.selectDiagnosticSpeakerChannel(12)
         XCTAssertEqual(model.selectedDiagnosticSpeakerChannel, 12)
     }
+
+    @MainActor
+    func testDiagnosticToneActivitySummaryIsIdleByDefault() {
+        let model = OrbisonicViewModel()
+
+        XCTAssertEqual(model.diagnosticToneActivitySummary, .idle)
+    }
+
+    @MainActor
+    func testDiagnosticToneActivitySummaryReportsActiveChannel() {
+        let model = OrbisonicViewModel()
+        model.isTestTonePlaying = true
+        model.activeDiagnosticWalkTitle = "Test Tone"
+        model.activeDiagnosticChannelIndex = 11
+        model.activeDiagnosticChannelCount = 31
+        model.testToneStatus = "Playing channel 12 on Output 2 Renderer."
+
+        let summary = model.diagnosticToneActivitySummary
+
+        XCTAssertTrue(summary.isActive)
+        XCTAssertEqual(summary.headline, "Test Tone 12 / 31")
+        XCTAssertEqual(summary.detail, "Playing channel 12 on Output 2 Renderer.")
+    }
+
+    @MainActor
+    func testDiagnosticToneActivitySummaryNamesSelectedPipelineTone() {
+        let model = OrbisonicViewModel()
+        model.isTestTonePlaying = true
+        model.selectedTestTonePoint = .rendererFrontLeft
+        model.testToneStatus = "Playing Renderer: Front Left for 3 seconds."
+
+        let summary = model.diagnosticToneActivitySummary
+
+        XCTAssertTrue(summary.isActive)
+        XCTAssertEqual(summary.headline, "Renderer: Front Left")
+        XCTAssertEqual(summary.detail, "Playing Renderer: Front Left for 3 seconds.")
+    }
 }

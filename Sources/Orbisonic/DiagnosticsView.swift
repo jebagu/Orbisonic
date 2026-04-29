@@ -124,6 +124,7 @@ struct DiagnosticsView: View {
                 diagnosticsRows(diagnosticToolRows)
                 channelWalkControls
                 singleSpeakerTestControls
+                diagnosticToneActivityPanel
             }
 
             diagnosticsDisclosure(
@@ -564,6 +565,59 @@ struct DiagnosticsView: View {
         }
     }
 
+    private var diagnosticToneActivityPanel: some View {
+        let summary = model.diagnosticToneActivitySummary
+
+        return diagnosticControlGroup(title: "Tone Activity") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(summary.isActive ? LabTheme.amber : LabTheme.textSoft.opacity(0.35))
+                        .frame(width: 9, height: 9)
+                        .padding(.top, 4)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(summary.headline)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(summary.isActive ? LabTheme.text : LabTheme.textSoft)
+                            .lineLimit(2)
+                        Text(summary.detail)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(LabTheme.textSoft)
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+
+                if summary.isActive {
+                    DiagnosticToneMeterStrip(
+                        title: "Tone Source",
+                        meterStore: model.meterStore,
+                        isActive: true,
+                        accent: LabTheme.cyan,
+                        hidesWhenSilent: true
+                    )
+                }
+
+                DiagnosticToneMeterStrip(
+                    title: "Output 1 Monitor",
+                    meterStore: model.monitorMeterStore,
+                    isActive: summary.isActive,
+                    accent: LabTheme.green
+                )
+
+                DiagnosticToneMeterStrip(
+                    title: "Output 2 Renderer",
+                    meterStore: model.rendererMeterStore,
+                    isActive: summary.isActive,
+                    accent: LabTheme.amber
+                )
+            }
+        }
+    }
+
     private var supportActions: some View {
         HStack(spacing: 10) {
             Button(action: model.saveDiagnosticBundle) {
@@ -941,4 +995,116 @@ struct DiagnosticsView: View {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter
     }()
+}
+
+private struct DiagnosticToneMeterStrip: View {
+    let title: String
+    @ObservedObject var meterStore: ChannelMeterStore
+    let isActive: Bool
+    let accent: Color
+    var hidesWhenSilent = false
+
+    private var sortedMeters: [ChannelMeter] {
+        meterStore.channelMeters.sorted { lhs, rhs in
+            if lhs.channel.role.displayOrder == rhs.channel.role.displayOrder {
+                return lhs.channel.index < rhs.channel.index
+            }
+            return lhs.channel.role.displayOrder < rhs.channel.role.displayOrder
+        }
+    }
+
+    private var activeCount: Int {
+        guard isActive else { return 0 }
+        return sortedMeters.filter { $0.level >= 0.005 }.count
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if hidesWhenSilent && activeCount == 0 {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title.uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(accent)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    Text(isActive ? "\(activeCount) ACTIVE" : "MUTED")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(isActive && activeCount > 0 ? LabTheme.text : LabTheme.textSoft)
+                }
+
+                if sortedMeters.isEmpty {
+                    Text("No meter channels configured")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                } else {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 32, maximum: 46), spacing: 6)],
+                        alignment: .leading,
+                        spacing: 6
+                    ) {
+                        ForEach(sortedMeters, id: \.id) { meter in
+                            DiagnosticToneMeterCell(
+                                meter: meter,
+                                isActive: isActive,
+                                accent: accent
+                            )
+                        }
+                    }
+                }
+            }
+            .padding(9)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                            .stroke(accent.opacity(isActive ? 0.34 : 0.16), lineWidth: 1)
+                    )
+            )
+        }
+    }
+}
+
+private struct DiagnosticToneMeterCell: View {
+    let meter: ChannelMeter
+    let isActive: Bool
+    let accent: Color
+
+    private var level: Float {
+        guard isActive else { return 0 }
+        return min(max(meter.level, 0), 1)
+    }
+
+    private var fillColor: Color {
+        level >= 0.72 ? LabTheme.amber : accent
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(Color.black.opacity(0.26))
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(fillColor.opacity(level > 0 ? 0.92 : 0.16))
+                    .frame(height: max(2, CGFloat(level) * 28))
+            }
+            .frame(height: 28)
+
+            Text(VUMeterChannelLabel.text(for: meter.channel))
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(level > 0 ? LabTheme.text : LabTheme.textSoft)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .frame(maxWidth: .infinity)
+        }
+        .frame(minWidth: 32, minHeight: 45)
+        .opacity(isActive ? 1 : 0.46)
+        .accessibilityLabel("\(VUMeterChannelLabel.text(for: meter.channel)) \(Int((level * 100).rounded())) percent")
+    }
 }

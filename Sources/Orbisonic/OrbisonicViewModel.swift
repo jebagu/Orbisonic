@@ -427,6 +427,18 @@ struct DiagnosticEvent: Equatable {
     let timestamp: Date
 }
 
+struct DiagnosticToneActivitySummary: Equatable {
+    let isActive: Bool
+    let headline: String
+    let detail: String
+
+    static let idle = DiagnosticToneActivitySummary(
+        isActive: false,
+        headline: "No diagnostic tone active",
+        detail: "Tone meters are muted until a diagnostic tone or channel walk starts."
+    )
+}
+
 @MainActor
 final class ChannelMeterStore: ObservableObject {
     @Published private(set) var channelMeters: [ChannelMeter] = []
@@ -5552,6 +5564,45 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         return isDiagnosticSequencePlaying ? "Starting diagnostics..." : "Ready."
+    }
+
+    var diagnosticToneActivitySummary: DiagnosticToneActivitySummary {
+        guard isTestTonePlaying || isDiagnosticSequencePlaying else {
+            return .idle
+        }
+
+        let headline: String
+        if let activeDiagnosticChannelIndex, activeDiagnosticChannelCount > 0 {
+            let title = activeDiagnosticWalkTitle.trimmedNilIfBlank ?? "Diagnostic Tone"
+            headline = "\(title) \(activeDiagnosticChannelIndex + 1) / \(activeDiagnosticChannelCount)"
+        } else if isTestTonePlaying, testToneStatus.trimmedNilIfBlank != nil {
+            headline = selectedTestTonePoint.rawValue
+        } else if let activeDiagnosticPoint {
+            headline = activeDiagnosticPoint.rawValue
+        } else if isDiagnosticSequencePlaying {
+            headline = "Starting diagnostics"
+        } else {
+            headline = "Diagnostic tone active"
+        }
+
+        var details: [String] = []
+        if let status = testToneStatus.trimmedNilIfBlank {
+            details.append(status)
+        } else if let status = diagnosticWalkStatus.trimmedNilIfBlank, status != "Ready." {
+            details.append(status)
+        }
+
+        if rendererDiagnosticsUsingMonitorPreview {
+            details.append("Output 2 is previewing through Output 1 Monitor.")
+        } else if rendererDiagnosticsMonitorDownmixAvailable {
+            details.append("Output 1 Monitor downmix is active.")
+        }
+
+        return DiagnosticToneActivitySummary(
+            isActive: true,
+            headline: headline,
+            detail: details.isEmpty ? "Tone command active in Orbisonic." : details.joined(separator: " ")
+        )
     }
 
     var monitorChannelWalkCount: Int {
