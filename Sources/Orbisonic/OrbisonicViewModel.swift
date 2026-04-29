@@ -147,6 +147,203 @@ private struct LocalFileLoadRequest {
     let isLocalPlayNow: Bool
 }
 
+private struct PreparedLocalFileKey: Equatable, Sendable {
+    let path: String
+    let fileSize: UInt64
+    let modificationTime: TimeInterval
+
+    static func make(for url: URL) -> PreparedLocalFileKey? {
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let fileSize = attributes[.size] as? NSNumber else { return nil }
+            let modificationDate = attributes[.modificationDate] as? Date ?? .distantPast
+            return PreparedLocalFileKey(
+                path: url.path,
+                fileSize: fileSize.uint64Value,
+                modificationTime: modificationDate.timeIntervalSinceReferenceDate
+            )
+        } catch {
+            return nil
+        }
+    }
+}
+
+private struct LocalPreparedFileCache {
+    private struct Entry {
+        let key: PreparedLocalFileKey
+        let loaded: LoadedAudioFile
+        let byteCount: Int
+        let order: UInt64
+    }
+
+    private let capacity: Int
+    private let maxBytes: Int
+    private var entries: [String: Entry] = [:]
+    private var order: UInt64 = 0
+    private var totalBytes = 0
+
+    init(capacity: Int, maxBytes: Int) {
+        self.capacity = max(0, capacity)
+        self.maxBytes = max(0, maxBytes)
+    }
+
+    mutating func takeValid(for url: URL) -> LoadedAudioFile? {
+        guard let entry = entries[url.path] else { return nil }
+        guard PreparedLocalFileKey.make(for: url) == entry.key else {
+            removeEntry(for: url.path)
+            return nil
+        }
+
+        removeEntry(for: url.path)
+        return entry.loaded
+    }
+
+    mutating func containsValid(for url: URL) -> Bool {
+        guard let entry = entries[url.path] else { return false }
+        guard PreparedLocalFileKey.make(for: url) == entry.key else {
+            removeEntry(for: url.path)
+            return false
+        }
+        return true
+    }
+
+    mutating func store(_ loaded: LoadedAudioFile, for url: URL, expectedKey: PreparedLocalFileKey) -> LocalPreparedFileCacheStoreResult {
+        let byteCount = loaded.preparedPCMByteCount
+        guard capacity > 0,
+              maxBytes > 0
+        else {
+            logStoreDecision(fileName: url.lastPathComponent, byteCount: byteCount, result: .skipped(reason: "prepared cache disabled"))
+            return .skipped(reason: "prepared cache disabled")
+        }
+
+        guard expectedKey.path == url.path,
+              PreparedLocalFileKey.make(for: url) == expectedKey
+        else {
+            logStoreDecision(fileName: url.lastPathComponent, byteCount: byteCount, result: .skipped(reason: "file changed"))
+            return .skipped(reason: "file changed")
+        }
+
+        guard byteCount > 0,
+              byteCount <= maxBytes
+        else {
+            logStoreDecision(fileName: url.lastPathComponent, byteCount: byteCount, result: .skipped(reason: "prepared PCM exceeds cache budget"))
+            return .skipped(reason: "prepared PCM exceeds cache budget")
+        }
+
+        order &+= 1
+        removeEntry(for: url.path)
+        entries[url.path] = Entry(key: expectedKey, loaded: loaded, byteCount: byteCount, order: order)
+        totalBytes += byteCount
+        evictIfNeeded()
+        let result = LocalPreparedFileCacheStoreResult.stored
+        logStoreDecision(fileName: url.lastPathComponent, byteCount: byteCount, result: result)
+        return result
+    }
+
+    mutating func removeAll() {
+        entries.removeAll()
+        totalBytes = 0
+    }
+
+    private mutating func removeEntry(for path: String) {
+        guard let removed = entries.removeValue(forKey: path) else { return }
+        totalBytes = max(totalBytes - removed.byteCount, 0)
+    }
+
+    private mutating func evictIfNeeded() {
+        while entries.count > capacity || totalBytes > maxBytes {
+            guard let evictedPath = entries.min(by: { $0.value.order < $1.value.order })?.key else { return }
+            removeEntry(for: evictedPath)
+        }
+    }
+
+    private func logStoreDecision(fileName: String, byteCount: Int, result: LocalPreparedFileCacheStoreResult) {
+        AppLogger.shared.info(
+            category: "local-music",
+            "Prepared cache \(result.stored ? "accepted" : "skipped") file=\(fileName) preparedBytes=\(byteCount) totalBytes=\(totalBytes) maxBytes=\(maxBytes) capacity=\(capacity) reason=\"\(result.reason)\""
+        )
+    }
+}
+
+private enum LocalPreparedFileCacheStoreResult {
+    case stored
+    case skipped(reason: String)
+
+    var stored: Bool {
+        if case .stored = self { return true }
+        return false
+    }
+
+    var reason: String {
+        switch self {
+        case .stored:
+            return "stored"
+        case .skipped(let reason):
+            return reason
+        }
+    }
+}
+
+private struct LocalAudioDescriptorCache {
+    private struct Entry {
+        let key: PreparedLocalFileKey
+        let descriptor: AudioAssetDescriptor
+        let order: UInt64
+    }
+
+    private let capacity: Int
+    private var entries: [String: Entry] = [:]
+    private var order: UInt64 = 0
+
+    init(capacity: Int) {
+        self.capacity = max(0, capacity)
+    }
+
+    mutating func descriptor(for url: URL) -> AudioAssetDescriptor? {
+        guard let entry = entries[url.path] else { return nil }
+        guard PreparedLocalFileKey.make(for: url) == entry.key else {
+            removeEntry(for: url.path)
+            return nil
+        }
+        return entry.descriptor
+    }
+
+    mutating func containsValid(for url: URL) -> Bool {
+        descriptor(for: url) != nil
+    }
+
+    mutating func store(
+        _ descriptor: AudioAssetDescriptor,
+        for url: URL,
+        expectedKey: PreparedLocalFileKey
+    ) -> LocalPreparedFileCacheStoreResult {
+        guard capacity > 0 else { return .skipped(reason: "descriptor cache disabled") }
+        guard expectedKey.path == url.path,
+              PreparedLocalFileKey.make(for: url) == expectedKey
+        else { return .skipped(reason: "file changed") }
+
+        order &+= 1
+        entries[url.path] = Entry(key: expectedKey, descriptor: descriptor, order: order)
+        evictIfNeeded()
+        return .stored
+    }
+
+    mutating func removeAll() {
+        entries.removeAll()
+    }
+
+    private mutating func removeEntry(for path: String) {
+        entries.removeValue(forKey: path)
+    }
+
+    private mutating func evictIfNeeded() {
+        while entries.count > capacity {
+            guard let evictedPath = entries.min(by: { $0.value.order < $1.value.order })?.key else { return }
+            removeEntry(for: evictedPath)
+        }
+    }
+}
+
 enum LiveChannelCountPolicy {
     static let roonSupportedCounts = [2, 4, 6, 8]
 
@@ -225,6 +422,11 @@ private enum DiagnosticChannelWalkKind {
     }
 }
 
+struct DiagnosticEvent: Equatable {
+    let message: String
+    let timestamp: Date
+}
+
 @MainActor
 final class ChannelMeterStore: ObservableObject {
     @Published private(set) var channelMeters: [ChannelMeter] = []
@@ -299,6 +501,17 @@ final class OrbisonicViewModel: ObservableObject {
     private static let localLoadSubtleStatusNanoseconds: UInt64 = 150_000_000
     private static let localLoadClearStatusNanoseconds: UInt64 = 700_000_000
     private static let localLoadStillLoadingNanoseconds: UInt64 = 5_000_000_000
+    private static let enableAdjacentLocalPCMPreload = false
+    private static let enableAdjacentLocalMetadataPreload = true
+    private static let enableStreamingLocalPlayback = StreamingLocalPlaybackPolicy.enableStreamingLocalPlayback
+    private static let maxAdjacentMetadataPreloadCount = 2
+    private static let maxAdjacentMetadataCacheEntries = 16
+    private static let maxFullPreparedPCMBytes = PreparedPCMPolicy.maxFullPreparedPCMBytes
+    private static let maxAdjacentFullPreloadPCMBytes = PreparedPCMPolicy.maxAdjacentFullPreloadPCMBytes
+    private static let maxPreparedCacheEntries = PreparedPCMPolicy.maxPreparedCacheEntries
+    private static let maxPreparedCacheBytes = PreparedPCMPolicy.maxPreparedCacheBytes
+    private static let diagnosticsLogTailMaxBytes = 256 * 1024
+    private static let diagnosticsLogMaxLines = 500
     private static let webControlTokenKey = "Orbisonic.webControlToken"
     private static let localMusicSortModeKey = "Orbisonic.localMusicSortMode"
     private static let rendererOptionsKey = "Orbisonic.rendererOptions"
@@ -321,6 +534,14 @@ final class OrbisonicViewModel: ObservableObject {
             Bundle.allBundles.contains { $0.bundlePath.hasSuffix(".xctest") } ||
             NSClassFromString("XCTest.XCTestCase") != nil ||
             NSClassFromString("XCTestCase") != nil
+    }
+
+    private static var preloadsAdjacentLocalMusicTracksByDefault: Bool {
+        enableAdjacentLocalPCMPreload && !isRunningUnitTests
+    }
+
+    private static var preloadsAdjacentLocalMetadataByDefault: Bool {
+        enableAdjacentLocalMetadataPreload && !isRunningUnitTests
     }
 
     @Published var preset: SpatialPreset = .defaultPreset {
@@ -393,6 +614,8 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var scrubProgress: Double = 0
     @Published var isScrubbing = false
     @Published var sourceMetadata: AudioSourceMetadata?
+    @Published private(set) var pendingLocalSourceMetadata: AudioSourceMetadata?
+    @Published private(set) var pendingLocalAssetDescriptor: AudioAssetDescriptor?
     @Published var loadedChannels: [SurroundChannel] = []
     @Published var statusMessage = "Load a surround file. The active macOS output route will appear below."
     @Published var loadedFileName = "No file loaded"
@@ -401,9 +624,12 @@ final class OrbisonicViewModel: ObservableObject {
         didSet {
             if let lastError {
                 controlLastError = lastError
+                lastErrorEvent = DiagnosticEvent(message: lastError, timestamp: Date())
             }
         }
     }
+    @Published private(set) var lastErrorEvent: DiagnosticEvent?
+    @Published private(set) var lastRecoveryEvent: DiagnosticEvent?
     @Published private(set) var controlLastError: String?
     @Published private(set) var outputRoute: OutputRouteInfo = .unavailable
     @Published private(set) var monitorOutputRoute: OutputRouteInfo = .unavailable
@@ -420,6 +646,8 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var activeLiveChannelCount = 2
     @Published var liveSignalStatus = "No live input."
     @Published var liveBufferStatus = "No live buffer."
+    @Published private(set) var livePipeStatus: LiveAudioPipeStatus?
+    @Published private(set) var lastLiveUnderflowAt: Date?
     @Published var selectedTestTonePoint: TestTonePipelinePoint = .directOutput
     @Published var isTestTonePlaying = false
     @Published var testToneStatus = ""
@@ -432,6 +660,7 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var activeDiagnosticWalkTitle = ""
     @Published var diagnosticSequencePosition = 0
     @Published var isDiagnosticSequencePlaying = false
+    @Published private(set) var lastDiagnosticFailure: DiagnosticEvent?
     @Published private(set) var roonNowPlaying: RoonNowPlaying?
     @Published private(set) var roonNowPlayingStatus = "Roon metadata not requested yet."
     @Published private(set) var roonSignalPath: RoonSignalPath?
@@ -460,6 +689,10 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var webServerStatus = "Web server starting."
     @Published private(set) var webPublicPageURL = ""
     @Published private(set) var webControlPageURL = ""
+    @Published private(set) var lastDiagnosticExportResult: String?
+    @Published private(set) var recentWarningAndErrorLogSnippets: [String] = []
+    @Published private(set) var isLoadingRecentLogSnippets = false
+    @Published private(set) var recentLogSnippetStatus = "Open Logs / Support to load recent warning and error lines."
     @Published var sphereOutputVolumePercent: Double = OrbisonicViewModel.loadDouble(
         key: OrbisonicViewModel.sphereOutputVolumeKey,
         defaultValue: 100
@@ -485,22 +718,29 @@ final class OrbisonicViewModel: ObservableObject {
     private let localAudioLoader: @Sendable (URL, DebugTimingContext?) throws -> LoadedAudioFile
     private let localMusicLibrary: LocalMusicLibrary
     private let preloadsFirstLocalMusicTrack: Bool
+    private let preloadsAdjacentLocalMusicTracks: Bool
+    private let preloadsAdjacentLocalMetadata: Bool
+    private let adjacentFullPreloadPCMByteLimit: Int
     private let rendererPresetStore = RendererPresetStore()
     private let roonNowPlayingReader = RoonNowPlayingReader()
     private let roonBridgeClient = RoonBridgeClient()
     private let roonArtworkCache = RoonArtworkCache()
     private let spotifyReceiverClient = SpotifyReceiverClient()
+    private let diagnosticsLogStore = DiagnosticsLogStore()
     private var webServer: OrbisonicWebServer?
     private var webControlToken = OrbisonicViewModel.loadOrCreateWebControlToken()
     private var refreshTimer: Timer?
     private var lastHeartbeatSecond: Int = -1
     private var lastLiveMeterLogSecond: Int = -1
     private var lastLiveBufferLogSecond: Int = -1
+    private var lastLiveUnderflowCount = 0
     private var lastLiveSilenceWarningSecond: Int = -1
     private var lastLiveSignalPresent: Bool?
     private var lastLiveSignalDetectedSecond: Int?
     private var testToneStopTask: Task<Void, Never>?
     private var diagnosticSequenceTask: Task<Void, Never>?
+    private var diagnosticsLogRefreshTask: Task<Void, Never>?
+    private var hasLoadedRecentLogSnippets = false
     private var sourceSwitchTask: Task<Void, Never>?
     private var sourceSwitchRequests = SourceSwitchRequestState()
     private var transitionOutputGain: Float = 1
@@ -511,11 +751,22 @@ final class OrbisonicViewModel: ObservableObject {
     private var localPlayNowTask: Task<Void, Never>?
     private var localPlayNowSequence: UInt64 = 0
     private var localFileLoadTask: Task<Void, Never>?
+    private var localFileDecodeTask: Task<LoadedAudioFile, Error>?
+    private var localFileDecodeRequestID: UInt64?
     private var localFileLoadDebounceTask: Task<Void, Never>?
     private var localFileLoadStatusTask: Task<Void, Never>?
+    private var localPreparedFilePreloadTask: Task<Void, Never>?
+    private var localPreparedFilePreloadDecodeTask: Task<LoadedAudioFile, Error>?
+    private var localMetadataPreloadTask: Task<Void, Never>?
+    private var localPreparedFilePreloadDecodeSequence: UInt64 = 0
+    private var localPreparedFilePreloadDecodeID: UInt64?
     private var spotifyPlaybackStatusDebounceTask: Task<Void, Never>?
+    private var localPreparedFileCache: LocalPreparedFileCache
+    private var localAudioDescriptorCache: LocalAudioDescriptorCache
+    private var didLogAdjacentLocalPCMPreloadDisabled = false
     private var localFileLoadSequence: UInt64 = 0
     private var currentLocalFileLoadGeneration: UInt64 = 0
+    private var pendingLocalPresentationGeneration: UInt64?
     private var activeLocalFileLoadRequest: LocalFileLoadRequest?
     private var queuedLocalFileLoadRequest: LocalFileLoadRequest?
     private var readyQueuedLocalFileLoadGeneration: UInt64?
@@ -552,19 +803,41 @@ final class OrbisonicViewModel: ObservableObject {
         }
         self.localMusicLibrary = LocalMusicLibrary()
         self.preloadsFirstLocalMusicTrack = !Self.isRunningUnitTests
+        self.preloadsAdjacentLocalMusicTracks = Self.preloadsAdjacentLocalMusicTracksByDefault
+        self.preloadsAdjacentLocalMetadata = Self.preloadsAdjacentLocalMetadataByDefault
+        self.adjacentFullPreloadPCMByteLimit = Self.maxAdjacentFullPreloadPCMBytes
+        self.localPreparedFileCache = LocalPreparedFileCache(
+            capacity: Self.maxPreparedCacheEntries,
+            maxBytes: Self.maxPreparedCacheBytes
+        )
+        self.localAudioDescriptorCache = LocalAudioDescriptorCache(capacity: Self.maxAdjacentMetadataCacheEntries)
         finishInitialization()
     }
 
     init(
         localAudioLoader: @escaping @Sendable (URL) throws -> LoadedAudioFile,
         localMusicLibrary: LocalMusicLibrary = LocalMusicLibrary(),
-        preloadFirstLocalMusicTrack: Bool? = nil
+        preloadFirstLocalMusicTrack: Bool? = nil,
+        preloadAdjacentLocalMusicTracks: Bool? = nil,
+        preloadAdjacentLocalMetadata: Bool? = nil,
+        adjacentFullPreloadPCMByteLimit: Int? = nil,
+        preparedCacheByteLimit: Int? = nil
     ) {
         self.localAudioLoader = { url, _ in
             try localAudioLoader(url)
         }
         self.localMusicLibrary = localMusicLibrary
         self.preloadsFirstLocalMusicTrack = preloadFirstLocalMusicTrack ?? !Self.isRunningUnitTests
+        self.preloadsAdjacentLocalMusicTracks = preloadAdjacentLocalMusicTracks ?? Self.preloadsAdjacentLocalMusicTracksByDefault
+        self.preloadsAdjacentLocalMetadata = preloadAdjacentLocalMetadata
+            ?? preloadAdjacentLocalMusicTracks
+            ?? Self.preloadsAdjacentLocalMetadataByDefault
+        self.adjacentFullPreloadPCMByteLimit = adjacentFullPreloadPCMByteLimit ?? Self.maxAdjacentFullPreloadPCMBytes
+        self.localPreparedFileCache = LocalPreparedFileCache(
+            capacity: Self.maxPreparedCacheEntries,
+            maxBytes: preparedCacheByteLimit ?? Self.maxPreparedCacheBytes
+        )
+        self.localAudioDescriptorCache = LocalAudioDescriptorCache(capacity: Self.maxAdjacentMetadataCacheEntries)
         finishInitialization()
     }
 
@@ -708,11 +981,16 @@ final class OrbisonicViewModel: ObservableObject {
     deinit {
         testToneStopTask?.cancel()
         diagnosticSequenceTask?.cancel()
+        diagnosticsLogRefreshTask?.cancel()
         localMusicScanTask?.cancel()
         localPlayNowTask?.cancel()
         localFileLoadTask?.cancel()
+        localFileDecodeTask?.cancel()
         localFileLoadDebounceTask?.cancel()
         localFileLoadStatusTask?.cancel()
+        localPreparedFilePreloadTask?.cancel()
+        localPreparedFilePreloadDecodeTask?.cancel()
+        localMetadataPreloadTask?.cancel()
         roonArtworkFetchTask?.cancel()
         spotifyPlaybackStatusDebounceTask?.cancel()
         sourceSwitchTask?.cancel()
@@ -856,17 +1134,20 @@ final class OrbisonicViewModel: ObservableObject {
 
         guard panel.runModal() == .OK, let url = panel.url else {
             statusMessage = "Diagnostic export canceled."
+            lastDiagnosticExportResult = "Canceled."
             return
         }
 
         do {
             try diagnosticReportText().write(to: url, atomically: true, encoding: .utf8)
             statusMessage = "Exported log to \(url.lastPathComponent)."
+            lastDiagnosticExportResult = "Exported \(url.lastPathComponent)."
             AppLogger.shared.notice(category: "diagnostics", "Exported diagnostic bundle path=\(redactedPath(url.path))")
         } catch {
             let message = "Could not save diagnostics: \(error.localizedDescription)"
             statusMessage = message
             lastError = message
+            lastDiagnosticExportResult = message
             AppLogger.shared.error(category: "diagnostics", message)
         }
     }
@@ -958,12 +1239,23 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func redactSensitiveText(_ value: String) -> String {
         let tokenPattern = #"(#token=)[A-Za-z0-9_-]+"#
-        let tokenRedacted = value.replacingOccurrences(
+        var redacted = value.replacingOccurrences(
             of: tokenPattern,
             with: "$1REDACTED",
             options: .regularExpression
         )
-        return redactedPath(tokenRedacted)
+        let credentialPatterns = [
+            (#"(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._~+/=-]+"#, "$1REDACTED"),
+            (#"(?i)\b(token|secret|password|credential|api[_-]?key)(["'=:\s]+)[^"\s,;]+"#, "$1$2REDACTED")
+        ]
+        for (pattern, replacement) in credentialPatterns {
+            redacted = redacted.replacingOccurrences(
+                of: pattern,
+                with: replacement,
+                options: .regularExpression
+            )
+        }
+        return redactedPath(redacted)
     }
 
     private func redactedPath(_ value: String) -> String {
@@ -1452,6 +1744,7 @@ final class OrbisonicViewModel: ObservableObject {
         }
         if mode != .filePlayback {
             cancelPendingLocalFileLoad()
+            clearLocalPreparedFilePreloads(reason: "source changed to \(mode.rawValue)")
         }
         logSourceSwitchTiming(activeDebugTiming, "old source detach/stop end", previousSource: sourceMode, nextSource: mode)
 
@@ -1892,6 +2185,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func applyLocalMusicScanResult(_ result: LocalMusicScanResult) {
+        clearLocalPreparedFilePreloads(reason: "local music scan result applied")
         localMusicTracks = result.tracks
         localMusicPlaylists = result.playlists
 
@@ -2164,6 +2458,7 @@ final class OrbisonicViewModel: ObservableObject {
             lastError = message
             isLocalFileLoading = false
             pendingSessionQueueIndex = nil
+            clearPendingLocalPresentation()
             logLocalPlayNowDebug(
                 "completed",
                 selectedTrack: track,
@@ -2380,6 +2675,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     func clearSessionQueue() {
         cancelPendingLocalFileLoad()
+        clearLocalPreparedFilePreloads(reason: "session queue cleared")
         sessionQueue = []
         sessionQueueIndex = nil
         selectedSessionQueueIndex = nil
@@ -2398,6 +2694,7 @@ final class OrbisonicViewModel: ObservableObject {
     func removeSessionQueueItem(_ index: Int) {
         guard sessionQueue.indices.contains(index) else { return }
 
+        clearLocalPreparedFilePreloads(reason: "session queue item removed")
         let removed = sessionQueue.remove(at: index)
 
         if sessionQueue.isEmpty {
@@ -2495,7 +2792,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var currentLocalArtworkURL: URL? {
-        guard let path = (currentQueueTrack ?? currentLocalMusicTrack)?.artworkPath else {
+        guard let path = visibleLocalPlaybackTrack?.artworkPath else {
             return nil
         }
 
@@ -2535,6 +2832,43 @@ final class OrbisonicViewModel: ObservableObject {
         return sessionQueue[sessionQueueIndex]
     }
 
+    private var audibleLocalPlaybackTrack: LocalMusicTrack? {
+        currentQueueTrack ?? currentLocalMusicTrack
+    }
+
+    private var hasAudibleLocalPresentation: Bool {
+        audibleLocalPlaybackTrack != nil || currentFileURL != nil || sourceMetadata != nil
+    }
+
+    var visibleLocalPlaybackTrack: LocalMusicTrack? {
+        if let audibleLocalPlaybackTrack {
+            return audibleLocalPlaybackTrack
+        }
+
+        if !hasAudibleLocalPresentation,
+           isLocalFileLoading,
+           let pendingSessionQueueIndex,
+           sessionQueue.indices.contains(pendingSessionQueueIndex) {
+            return sessionQueue[pendingSessionQueueIndex]
+        }
+
+        return nil
+    }
+
+    var visibleLocalSourceMetadata: AudioSourceMetadata? {
+        if let sourceMetadata {
+            return sourceMetadata
+        }
+
+        if !hasAudibleLocalPresentation,
+           isLocalFileLoading,
+           let pendingLocalSourceMetadata {
+            return pendingLocalSourceMetadata
+        }
+
+        return nil
+    }
+
     private func queueTrack(for index: Int) -> LocalMusicTrack? {
         sessionQueue.indices.contains(index) ? sessionQueue[index] : nil
     }
@@ -2550,12 +2884,14 @@ final class OrbisonicViewModel: ObservableObject {
         currentIndex: Int?,
         selectedIndex: Int?
     ) {
+        clearLocalPreparedFilePreloads(reason: "test local music queue replaced")
         localMusicTracks = tracks
         sessionQueue = tracks
         sessionQueueIndex = currentIndex
         selectedSessionQueueIndex = selectedIndex
         selectedLibraryTrackID = nil
         pendingSessionQueueIndex = nil
+        clearPendingLocalPresentation()
     }
 
     func setSourceModeForTesting(_ mode: SourceMode) {
@@ -2609,6 +2945,14 @@ final class OrbisonicViewModel: ObservableObject {
         playQueueIndex(index)
     }
 
+    static var adjacentFullLocalPCMPreloadEnabledByDefaultForTesting: Bool {
+        preloadsAdjacentLocalMusicTracksByDefault
+    }
+
+    var adjacentFullLocalPCMPreloadEnabledForTesting: Bool {
+        Self.enableAdjacentLocalPCMPreload && preloadsAdjacentLocalMusicTracks
+    }
+
     func loadQueueIndexForTesting(_ index: Int, autoplay: Bool = false, isPlaying: Bool = false) async throws {
         guard sessionQueue.indices.contains(index) else { return }
         let track = sessionQueue[index]
@@ -2621,6 +2965,24 @@ final class OrbisonicViewModel: ObservableObject {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         self.isPlaying = isPlaying
+    }
+
+    func hasPreparedLocalFileForTesting(path: String) -> Bool {
+        localPreparedFileCache.containsValid(for: URL(fileURLWithPath: path))
+    }
+
+    func hasCachedLocalDescriptorForTesting(path: String) -> Bool {
+        localAudioDescriptorCache.containsValid(for: URL(fileURLWithPath: path))
+    }
+
+    @discardableResult
+    func cachePreparedLocalFileForTesting(_ loaded: LoadedAudioFile) -> String {
+        guard let key = PreparedLocalFileKey.make(for: loaded.url) else {
+            return "file changed"
+        }
+
+        let result = localPreparedFileCache.store(loaded, for: loaded.url, expectedKey: key)
+        return result.reason
     }
 
     func triggerPlaybackEndedForTesting() {
@@ -2649,8 +3011,20 @@ final class OrbisonicViewModel: ObservableObject {
             startPolicy: startPolicy,
             debugTiming: debugTiming
         )
-        currentLocalFileLoadGeneration = request.generation
         pendingSessionQueueIndex = queueCommit?.index
+        logLocalTransportTiming(
+            debugTiming,
+            "user intent received",
+            targetQueueIndex: queueCommit?.index,
+            track: queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: url,
+            extra: [
+                "generation=\(request.generation)",
+                "autoplay=\(autoplay)",
+                "startPolicy=\"\(String(describing: startPolicy))\"",
+                "kind=\"\(String(describing: kind))\""
+            ]
+        )
         logLocalTransportTiming(
             debugTiming,
             "pending target set",
@@ -2664,16 +3038,24 @@ final class OrbisonicViewModel: ObservableObject {
             loadStarted: false
         )
         statusMessage = requestImmediateStatus(request)
+        isLocalFileLoading = true
+        publishPendingLocalIntent(for: request)
         logLocalTransportTiming(
             debugTiming,
-            "UI state updated",
+            "UI state published",
             targetQueueIndex: queueCommit?.index,
             track: queueCommit.flatMap { queueTrack(for: $0.index) },
             fileURL: url,
             extra: ["status=\"\(statusMessage)\""]
         )
         lastError = nil
-        isLocalFileLoading = true
+        cancelLocalPreparedFilePreload(debugTiming: debugTiming, reason: "new local playback generation \(request.generation)")
+
+        if let loaded = preparedLocalFile(for: request) {
+            finishPreparedLocalFileLoad(loaded, request: request)
+            return true
+        }
+
         startLocalFileLoadStatusTask(for: request)
 
         queueLocalFileLoadForStart(request)
@@ -2688,10 +3070,10 @@ final class OrbisonicViewModel: ObservableObject {
         startPolicy: LocalFileLoadStartPolicy,
         debugTiming: DebugTimingContext?
     ) -> LocalFileLoadRequest {
-        localFileLoadSequence &+= 1
+        let generation = nextLocalPlaybackGeneration()
         return LocalFileLoadRequest(
-            id: localFileLoadSequence,
-            generation: localFileLoadSequence,
+            id: generation,
+            generation: generation,
             url: url,
             autoplay: autoplay,
             queueCommit: queueCommit,
@@ -2703,6 +3085,17 @@ final class OrbisonicViewModel: ObservableObject {
         )
     }
 
+    private func nextLocalPlaybackGeneration() -> UInt64 {
+        localFileLoadSequence = max(localFileLoadSequence, currentLocalFileLoadGeneration)
+        localFileLoadSequence &+= 1
+        currentLocalFileLoadGeneration = localFileLoadSequence
+        return currentLocalFileLoadGeneration
+    }
+
+    private func isCurrentLocalPlaybackGeneration(_ generation: UInt64) -> Bool {
+        currentLocalFileLoadGeneration == generation
+    }
+
     private func requestTrackTitle(_ request: LocalFileLoadRequest) -> String? {
         request.queueCommit.flatMap { queueTrack(for: $0.index)?.displayTitle }
     }
@@ -2711,6 +3104,217 @@ final class OrbisonicViewModel: ObservableObject {
         request.kind.immediateStatus(
             trackTitle: requestTrackTitle(request),
             fileName: request.url.lastPathComponent
+        )
+    }
+
+    private func track(for request: LocalFileLoadRequest) -> LocalMusicTrack? {
+        if let queueCommit = request.queueCommit,
+           sessionQueue.indices.contains(queueCommit.index),
+           sessionQueue[queueCommit.index].id == queueCommit.trackID {
+            return sessionQueue[queueCommit.index]
+        }
+
+        return localMusicTracks.first { $0.id == request.url.path }
+    }
+
+    private func publishPendingLocalIntent(for request: LocalFileLoadRequest) {
+        guard isCurrentLocalPlaybackGeneration(request.generation) else { return }
+
+        pendingLocalPresentationGeneration = request.generation
+        pendingLocalAssetDescriptor = nil
+        pendingLocalSourceMetadata = pendingMetadata(for: request)
+        loadedFileName = request.url.lastPathComponent
+
+        if let track = track(for: request) {
+            duration = track.duration
+            loadedChannels = SurroundLayoutDetector.fallbackLayout(for: track.channelCount).channels
+        } else {
+            duration = 0
+            loadedChannels = []
+        }
+        currentTime = 0
+        scrubProgress = 0
+    }
+
+    private func publishPendingLocalDescriptor(_ descriptor: AudioAssetDescriptor, for request: LocalFileLoadRequest) {
+        guard activeLocalFileLoadRequest?.id == request.id,
+              isCurrentLocalPlaybackGeneration(request.generation)
+        else {
+            logLocalTransportTiming(
+                request.debugTiming,
+                "stale descriptor discarded",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: request.url,
+                extra: [
+                    "reason=\"descriptor completed for stale local load\"",
+                    "generation=\(request.generation)",
+                    "currentGeneration=\(currentLocalFileLoadGeneration)"
+                ]
+            )
+            return
+        }
+
+        pendingLocalPresentationGeneration = request.generation
+        pendingLocalAssetDescriptor = descriptor
+        pendingLocalSourceMetadata = pendingMetadata(for: descriptor, request: request)
+        loadedFileName = descriptor.url.lastPathComponent
+        duration = descriptor.durationSeconds ?? 0
+        currentTime = 0
+        scrubProgress = 0
+        loadedChannels = descriptor.channelLayout.channels
+        logLocalTransportTiming(
+            request.debugTiming,
+            "UI descriptor state published",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: request.url,
+            extra: descriptor.logFields
+        )
+    }
+
+    private func clearPendingLocalPresentation(generation: UInt64? = nil) {
+        if let generation,
+           let pendingLocalPresentationGeneration,
+           pendingLocalPresentationGeneration != generation {
+            return
+        }
+
+        pendingLocalPresentationGeneration = nil
+        pendingLocalAssetDescriptor = nil
+        pendingLocalSourceMetadata = nil
+    }
+
+    private func pendingMetadata(for request: LocalFileLoadRequest) -> AudioSourceMetadata {
+        let track = track(for: request)
+        let channelCount = track?.channelCount ?? 0
+        let layout = channelCount > 0
+            ? SurroundLayoutDetector.fallbackLayout(for: channelCount)
+            : SurroundLayout(name: "Probing", channels: [])
+
+        return AudioSourceMetadata(
+            fileName: request.url.lastPathComponent,
+            containerName: request.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
+            codecName: "Probing",
+            layoutName: track?.layoutName ?? layout.name,
+            channelSummary: track?.channelSummary ?? layout.channelSummary,
+            channelCount: channelCount,
+            sampleRate: track?.sampleRate ?? 0,
+            bitDepth: 0,
+            duration: track?.duration ?? 0,
+            title: track?.title?.trimmedNilIfBlank,
+            album: track?.album?.trimmedNilIfBlank,
+            artist: track?.artist?.trimmedNilIfBlank,
+            formatNote: "Preparing full playback buffers."
+        )
+    }
+
+    private func pendingMetadata(
+        for descriptor: AudioAssetDescriptor,
+        request: LocalFileLoadRequest
+    ) -> AudioSourceMetadata {
+        let track = track(for: request)
+        return AudioSourceMetadata(
+            fileName: descriptor.url.lastPathComponent,
+            containerName: descriptor.containerDescription ?? descriptor.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
+            codecName: descriptor.codecDescription ?? "Unknown",
+            layoutName: descriptor.channelLayout.name,
+            channelSummary: descriptor.channelLayout.channelSummary,
+            channelCount: descriptor.channelCount,
+            sampleRate: descriptor.sourceSampleRate,
+            bitDepth: 0,
+            duration: descriptor.durationSeconds ?? 0,
+            title: track?.title?.trimmedNilIfBlank,
+            album: track?.album?.trimmedNilIfBlank,
+            artist: track?.artist?.trimmedNilIfBlank,
+            formatNote: "Descriptor ready; preparing full playback buffers."
+        )
+    }
+
+    private func logStreamingLocalPlaybackDecision(
+        _ descriptor: AudioAssetDescriptor?,
+        request: LocalFileLoadRequest
+    ) {
+        var fields = descriptor?.logFields ?? []
+        fields.append("enabled=\(Self.enableStreamingLocalPlayback)")
+        fields.append("initialPrerollFrames=\(StreamingLocalPlaybackPolicy.initialPrerollFrames)")
+        fields.append("steadyChunkFrames=\(StreamingLocalPlaybackPolicy.steadyChunkFrames)")
+        fields.append("targetBufferAheadSeconds=\(String(format: "%.1f", StreamingLocalPlaybackPolicy.targetBufferAheadSeconds))")
+        fields.append("hardPCMByteCap=\(StreamingLocalPlaybackPolicy.hardPCMByteCap)")
+        fields.append("reason=\"engine scheduler still consumes prepared full-file buffers\"")
+
+        logLocalTransportTiming(
+            request.debugTiming,
+            Self.enableStreamingLocalPlayback
+                ? "streaming local source skeleton enabled but falling back to full prepare"
+                : "streaming local source disabled; using full prepare fallback",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: request.url,
+            extra: fields
+        )
+    }
+
+    private func preparedLocalFile(for request: LocalFileLoadRequest) -> LoadedAudioFile? {
+        guard activeLocalFileLoadRequest == nil,
+              localFileLoadTask == nil,
+              let loaded = localPreparedFileCache.takeValid(for: request.url)
+        else { return nil }
+
+        if localFileLoadDebounceTask != nil {
+            cancelLocalFileLoadDebounce(reason: "prepared cache hit")
+        }
+        queuedLocalFileLoadRequest = nil
+        readyQueuedLocalFileLoadGeneration = nil
+        logLocalTransportTiming(
+            request.debugTiming,
+            "prepared cache hit",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: request.url
+        )
+        return loaded
+    }
+
+    private func finishPreparedLocalFileLoad(_ loaded: LoadedAudioFile, request: LocalFileLoadRequest) {
+        if let validationFailure = localFileLoadValidationFailure(for: request) {
+            pendingSessionQueueIndex = nil
+            isLocalFileLoading = false
+            clearPendingLocalPresentation(generation: request.generation)
+            logLocalTransportTiming(
+                request.debugTiming,
+                "stale prepared cache discarded",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: request.url,
+                extra: ["reason=\"\(validationFailure)\""]
+            )
+            logLocalPlayNowDebug(
+                "completed",
+                request: request,
+                loadStarted: false,
+                loadCompleted: false,
+                error: validationFailure
+            )
+            return
+        }
+
+        pendingSessionQueueIndex = nil
+        isLocalFileLoading = false
+        stopLocalFileLoadStatusTask()
+        clearPendingLocalPresentation(generation: request.generation)
+        logLocalPlayNowDebug(
+            "load completed",
+            request: request,
+            loadStarted: false,
+            loadCompleted: true
+        )
+        finishLoadedFile(
+            loaded,
+            autoplay: request.autoplay,
+            queueCommit: request.queueCommit,
+            localPlayNowRequest: request,
+            debugTiming: request.debugTiming
         )
     }
 
@@ -2770,14 +3374,36 @@ final class OrbisonicViewModel: ObservableObject {
         localFileLoadStatusTask = nil
     }
 
+    private func cancelActiveLocalFileDecode(reason: String, debugTiming: DebugTimingContext? = nil) {
+        guard let decodeTask = localFileDecodeTask else { return }
+
+        let request = activeLocalFileLoadRequest
+        decodeTask.cancel()
+        logLocalTransportTiming(
+            debugTiming ?? request?.debugTiming,
+            "decode cancel requested",
+            targetQueueIndex: request?.queueCommit?.index,
+            track: request?.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: request?.url,
+            extra: ["reason=\"\(reason)\""]
+        )
+    }
+
+    private func clearLocalFileDecodeTask(for requestID: UInt64) {
+        guard localFileDecodeRequestID == requestID else { return }
+
+        localFileDecodeTask = nil
+        localFileDecodeRequestID = nil
+    }
+
     private func isLocalFileLoadRequestCurrent(_ request: LocalFileLoadRequest) -> Bool {
-        currentLocalFileLoadGeneration == request.generation &&
+        isCurrentLocalPlaybackGeneration(request.generation) &&
             (activeLocalFileLoadRequest?.generation == request.generation ||
              queuedLocalFileLoadRequest?.generation == request.generation)
     }
 
     private func localFileLoadValidationFailure(for request: LocalFileLoadRequest) -> String? {
-        guard currentLocalFileLoadGeneration == request.generation else {
+        guard isCurrentLocalPlaybackGeneration(request.generation) else {
             return "generation \(request.generation) invalidated by \(currentLocalFileLoadGeneration)"
         }
         guard sourceMode == .filePlayback else {
@@ -2790,8 +3416,9 @@ final class OrbisonicViewModel: ObservableObject {
             guard sessionQueue[queueCommit.index].id == queueCommit.trackID else {
                 return "target queue index \(queueCommit.index) now points at a different track"
             }
-            guard pendingSessionQueueIndex == queueCommit.index else {
-                return "pending target no longer matches \(queueCommit.index)"
+            if let pendingSessionQueueIndex,
+               pendingSessionQueueIndex != queueCommit.index {
+                return "pending target changed from \(queueCommit.index) to \(pendingSessionQueueIndex)"
             }
         }
         return nil
@@ -2838,6 +3465,10 @@ final class OrbisonicViewModel: ObservableObject {
                 track: activeRequest.queueCommit.flatMap { queueTrack(for: $0.index) },
                 fileURL: activeRequest.url,
                 extra: ["reason=\"superseded by local load \(request.generation)\""]
+            )
+            cancelActiveLocalFileDecode(
+                reason: "superseded by local load \(request.generation)",
+                debugTiming: activeRequest.debugTiming
             )
         }
         if let queuedRequest = queuedLocalFileLoadRequest,
@@ -2887,7 +3518,7 @@ final class OrbisonicViewModel: ObservableObject {
                     return
                 }
                 guard let self else { return }
-                guard self.currentLocalFileLoadGeneration == request.generation,
+                guard self.isCurrentLocalPlaybackGeneration(request.generation),
                       self.queuedLocalFileLoadRequest?.generation == request.generation
                 else {
                     self.logLocalTransportTiming(
@@ -2918,6 +3549,19 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func startLocalFileLoad(_ request: LocalFileLoadRequest) {
+        guard isCurrentLocalPlaybackGeneration(request.generation) else {
+            clearPendingLocalPresentation(generation: request.generation)
+            logLocalTransportTiming(
+                request.debugTiming,
+                "stale completion discarded",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: request.url,
+                extra: ["reason=\"start ignored for stale generation \(request.generation)\""]
+            )
+            return
+        }
+
         activeLocalFileLoadRequest = request
         if readyQueuedLocalFileLoadGeneration == request.generation {
             readyQueuedLocalFileLoadGeneration = nil
@@ -2941,27 +3585,136 @@ final class OrbisonicViewModel: ObservableObject {
 
         localFileLoadTask = Task { @MainActor [weak self] in
             do {
+                guard let self else { return }
+                var localDescriptor: AudioAssetDescriptor?
+                if let descriptor = self.localAudioDescriptorCache.descriptor(for: request.url) {
+                    localDescriptor = descriptor
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "descriptor cache hit before full prepare",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url,
+                        extra: descriptor.logFields
+                    )
+                    self.publishPendingLocalDescriptor(descriptor, for: request)
+                } else {
+                    do {
+                        let descriptorProbeStart = DispatchTime.now().uptimeNanoseconds
+                        self.logLocalTransportTiming(
+                            request.debugTiming,
+                            "descriptor probe started",
+                            targetQueueIndex: request.queueCommit?.index,
+                            track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                            fileURL: request.url
+                        )
+                        let descriptor = try await AudioFileProbe().probe(
+                            url: request.url,
+                            debugTiming: request.debugTiming
+                        )
+                        localDescriptor = descriptor
+                        self.logLocalTransportTiming(
+                            request.debugTiming,
+                            "descriptor probe finished",
+                            targetQueueIndex: request.queueCommit?.index,
+                            track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                            fileURL: request.url,
+                            extra: descriptor.logFields + [
+                                "probeMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - descriptorProbeStart) / 1_000_000.0))"
+                            ]
+                        )
+                        self.publishPendingLocalDescriptor(descriptor, for: request)
+                    } catch is CancellationError {
+                        self.logLocalTransportTiming(
+                            request.debugTiming,
+                            "descriptor probe canceled",
+                            targetQueueIndex: request.queueCommit?.index,
+                            track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                            fileURL: request.url
+                        )
+                        self.completeLocalFileLoad(request: request, result: .failure(CancellationError()))
+                        return
+                    } catch {
+                        self.logLocalTransportTiming(
+                            request.debugTiming,
+                            "descriptor probe failed",
+                            targetQueueIndex: request.queueCommit?.index,
+                            track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                            fileURL: request.url,
+                            extra: ["error=\"\(error.localizedDescription)\"", "reason=\"continuing to existing full prepare path\""]
+                        )
+                    }
+                }
+                self.logStreamingLocalPlaybackDecision(localDescriptor, request: request)
+
+                guard self.activeLocalFileLoadRequest?.id == request.id,
+                      self.isCurrentLocalPlaybackGeneration(request.generation)
+                else {
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "stale completion discarded",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url,
+                        extra: ["reason=\"descriptor completed for stale local load\""]
+                    )
+                    self.completeLocalFileLoad(request: request, result: .failure(CancellationError()))
+                    return
+                }
+
+                if Self.enableStreamingLocalPlayback,
+                   request.autoplay,
+                   self.queuedLocalFileLoadRequest == nil,
+                   let descriptor = localDescriptor {
+                    do {
+                        try await self.finishStreamingLocalFileLoad(
+                            descriptor,
+                            request: request
+                        )
+                        return
+                    } catch is CancellationError {
+                        self.completeLocalFileLoad(request: request, result: .failure(CancellationError()))
+                        return
+                    } catch {
+                        self.logLocalTransportTiming(
+                            request.debugTiming,
+                            "streaming start failed; falling back to full prepare",
+                            targetQueueIndex: request.queueCommit?.index,
+                            track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                            fileURL: request.url,
+                            extra: ["error=\"\(error.localizedDescription)\""]
+                        )
+                    }
+                }
+
                 let decodeStart = DispatchTime.now().uptimeNanoseconds
                 request.debugTiming?.log(
                     "decode started",
-                    sourceMode: self?.sourceMode,
+                    sourceMode: self.sourceMode,
                     targetQueueIndex: request.queueCommit?.index,
-                    trackTitle: request.queueCommit.flatMap { self?.queueTrack(for: $0.index)?.displayTitle },
+                    trackTitle: request.queueCommit.flatMap { self.queueTrack(for: $0.index)?.displayTitle },
                     fileURL: request.url
                 )
-                let loaded = try await Task.detached(priority: .utility) {
+                let decodeTask = Task.detached(priority: .utility) {
                     try audioLoader(request.url, request.debugTiming)
-                }.value
+                }
+                self.localFileDecodeTask = decodeTask
+                self.localFileDecodeRequestID = request.id
+                let loaded = try await withTaskCancellationHandler {
+                    try await decodeTask.value
+                } onCancel: {
+                    decodeTask.cancel()
+                }
                 let decodeMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - decodeStart) / 1_000_000.0
                 request.debugTiming?.log(
                     "decode finished",
-                    sourceMode: self?.sourceMode,
+                    sourceMode: self.sourceMode,
                     targetQueueIndex: request.queueCommit?.index,
-                    trackTitle: request.queueCommit.flatMap { self?.queueTrack(for: $0.index)?.displayTitle },
+                    trackTitle: request.queueCommit.flatMap { self.queueTrack(for: $0.index)?.displayTitle },
                     fileURL: request.url,
                     extra: ["decodeMs=\(String(format: "%.1f", decodeMilliseconds))"]
                 )
-                guard let self else { return }
+                self.clearLocalFileDecodeTask(for: request.id)
                 guard !Task.isCancelled else {
                     self.logLocalTransportTiming(
                         request.debugTiming,
@@ -2985,6 +3738,30 @@ final class OrbisonicViewModel: ObservableObject {
                 self.completeLocalFileLoad(request: request, result: .success(loaded))
             } catch {
                 guard let self else { return }
+                self.clearLocalFileDecodeTask(for: request.id)
+                if error is CancellationError {
+                    self.logLocalTransportTiming(
+                        request.debugTiming,
+                        "decode canceled",
+                        targetQueueIndex: request.queueCommit?.index,
+                        track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                        fileURL: request.url,
+                        extra: ["reason=\"cancellation observed by AudioFileLoader\""]
+                    )
+                    guard self.activeLocalFileLoadRequest?.id == request.id else {
+                        self.logLocalTransportTiming(
+                            request.debugTiming,
+                            "stale completion discarded",
+                            targetQueueIndex: request.queueCommit?.index,
+                            track: request.queueCommit.flatMap { self.queueTrack(for: $0.index) },
+                            fileURL: request.url,
+                            extra: ["reason=\"canceled decode no longer active\""]
+                        )
+                        return
+                    }
+                    self.completeLocalFileLoad(request: request, result: .failure(error))
+                    return
+                }
                 guard !Task.isCancelled else {
                     self.logLocalTransportTiming(
                         request.debugTiming,
@@ -3014,11 +3791,31 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func completeLocalFileLoad(request: LocalFileLoadRequest, result: Result<LoadedAudioFile, Error>) {
         localFileLoadTask = nil
+        clearLocalFileDecodeTask(for: request.id)
         if activeLocalFileLoadRequest?.generation == request.generation {
             activeLocalFileLoadRequest = nil
         }
 
         if let queuedRequest = queuedLocalFileLoadRequest {
+            guard isCurrentLocalPlaybackGeneration(queuedRequest.generation) else {
+                logLocalTransportTiming(
+                    queuedRequest.debugTiming,
+                    "stale completion discarded",
+                    targetQueueIndex: queuedRequest.queueCommit?.index,
+                    track: queuedRequest.queueCommit.flatMap { queueTrack(for: $0.index) },
+                    fileURL: queuedRequest.url,
+                    extra: ["reason=\"queued generation \(queuedRequest.generation) invalidated by \(currentLocalFileLoadGeneration)\""]
+                )
+                queuedLocalFileLoadRequest = nil
+                readyQueuedLocalFileLoadGeneration = nil
+                if activeLocalFileLoadRequest == nil {
+                    pendingSessionQueueIndex = nil
+                    isLocalFileLoading = false
+                    stopLocalFileLoadStatusTask()
+                    clearPendingLocalPresentation()
+                }
+                return
+            }
             logLocalTransportTiming(
                 request.debugTiming,
                 "stale completion discarded",
@@ -3055,6 +3852,7 @@ final class OrbisonicViewModel: ObservableObject {
             }
             if activeLocalFileLoadRequest == nil && queuedLocalFileLoadRequest == nil {
                 isLocalFileLoading = false
+                clearPendingLocalPresentation(generation: request.generation)
             }
             logLocalPlayNowDebug(
                 "completed",
@@ -3085,7 +3883,25 @@ final class OrbisonicViewModel: ObservableObject {
                 localPlayNowRequest: request,
                 debugTiming: request.debugTiming
             )
+        case .failure(let error) where error is CancellationError:
+            clearPendingLocalPresentation(generation: request.generation)
+            logLocalPlayNowDebug(
+                "completed",
+                request: request,
+                loadStarted: true,
+                loadCompleted: false,
+                error: "canceled"
+            )
+            logLocalTransportTiming(
+                request.debugTiming,
+                "decode canceled",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: request.url,
+                extra: ["reason=\"cancellation completed before UI commit\""]
+            )
         case .failure(let error):
+            clearPendingLocalPresentation(generation: request.generation)
             logLocalPlayNowDebug(
                 "completed",
                 request: request,
@@ -3109,8 +3925,25 @@ final class OrbisonicViewModel: ObservableObject {
         localPlayNowRequest: LocalFileLoadRequest?,
         debugTiming: DebugTimingContext?
     ) {
+        if let localPlayNowRequest,
+           let validationFailure = localFileLoadValidationFailure(for: localPlayNowRequest) {
+            clearPendingLocalPresentation(generation: localPlayNowRequest.generation)
+            logLocalTransportTiming(
+                debugTiming,
+                "stale completion discarded",
+                targetQueueIndex: queueCommit?.index,
+                track: queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: loaded.url,
+                extra: ["reason=\"\(validationFailure)\""]
+            )
+            return
+        }
+
         cancelDiagnosticsForMusicAction()
         sourceMode = .filePlayback
+        defer {
+            scheduleAdjacentLocalFilePreloads(reason: "loaded \(loaded.url.lastPathComponent)")
+        }
 
         let commitStart = DispatchTime.now().uptimeNanoseconds
         logLocalTransportTiming(
@@ -3136,6 +3969,7 @@ final class OrbisonicViewModel: ObservableObject {
             track: queueCommit.flatMap { queueTrack(for: $0.index) },
             fileURL: loaded.url
         )
+        clearPendingLocalPresentation(generation: localPlayNowRequest?.generation)
         loadedFileName = loaded.url.lastPathComponent
         currentFileURL = loaded.url
         if let queueCommit {
@@ -3257,6 +4091,144 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func finishStreamingLocalFileLoad(
+        _ descriptor: AudioAssetDescriptor,
+        request: LocalFileLoadRequest
+    ) async throws {
+        if let validationFailure = localFileLoadValidationFailure(for: request) {
+            clearPendingLocalPresentation(generation: request.generation)
+            logLocalTransportTiming(
+                request.debugTiming,
+                "stale streaming start discarded",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: descriptor.url,
+                extra: ["reason=\"\(validationFailure)\""]
+            )
+            throw CancellationError()
+        }
+
+        cancelDiagnosticsForMusicAction()
+        sourceMode = .filePlayback
+        guard prepareOutputForMusicPlayback() else {
+            throw StreamingAudioFileSourceError.invalidConfiguration("output preparation failed")
+        }
+
+        let commitStart = DispatchTime.now().uptimeNanoseconds
+        logLocalTransportTiming(
+            request.debugTiming,
+            "streaming engine commit started",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: descriptor.url,
+            extra: descriptor.logFields
+        )
+        let source = StreamingAudioFileSource(url: descriptor.url, debugTiming: request.debugTiming)
+        try await engine.startStreaming(
+            source: source,
+            descriptor: descriptor,
+            debugTiming: request.debugTiming
+        )
+
+        if let validationFailure = localFileLoadValidationFailure(for: request) {
+            engine.stop()
+            clearPendingLocalPresentation(generation: request.generation)
+            logLocalTransportTiming(
+                request.debugTiming,
+                "stale streaming start discarded",
+                targetQueueIndex: request.queueCommit?.index,
+                track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+                fileURL: descriptor.url,
+                extra: ["reason=\"\(validationFailure)\""]
+            )
+            throw CancellationError()
+        }
+
+        localFileLoadTask = nil
+        clearLocalFileDecodeTask(for: request.id)
+        if activeLocalFileLoadRequest?.generation == request.generation {
+            activeLocalFileLoadRequest = nil
+        }
+        isLocalFileLoading = false
+        pendingSessionQueueIndex = nil
+        stopLocalFileLoadStatusTask()
+
+        logLocalTransportTiming(
+            request.debugTiming,
+            "streaming engine commit finished",
+            targetQueueIndex: request.queueCommit?.index,
+            track: request.queueCommit.flatMap { queueTrack(for: $0.index) },
+            fileURL: descriptor.url,
+            extra: ["commitMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - commitStart) / 1_000_000.0))"]
+        )
+
+        let metadata = streamingMetadata(for: descriptor, request: request)
+        clearPendingLocalPresentation(generation: request.generation)
+        loadedFileName = descriptor.url.lastPathComponent
+        currentFileURL = descriptor.url
+        if let queueCommit = request.queueCommit {
+            sessionQueueIndex = queueCommit.index
+            if !sessionQueue.indices.contains(queueCommit.index) ||
+                sessionQueue[queueCommit.index].id != queueCommit.trackID {
+                refreshSessionQueueIndexForCurrentFile()
+            }
+        }
+        sourceMetadata = metadata
+        loadedChannels = descriptor.channelLayout.channels
+        resetRendererRequestToAutomatic(reason: "new streaming track")
+        duration = descriptor.durationSeconds ?? 0
+        currentTime = 0
+        scrubProgress = 0
+        meterStore.configure(channels: descriptor.channelLayout.channels)
+        meterStore.reset()
+        monitorMeterStore.reset()
+        updateRendererMeters(from: Array(repeating: 0, count: descriptor.channelLayout.channelCount))
+        isPlaying = true
+        lastHeartbeatSecond = -1
+        lastLiveMeterLogSecond = -1
+        lastLiveBufferLogSecond = -1
+        lastLiveSilenceWarningSecond = -1
+        lastLiveSignalPresent = nil
+        lastLiveSignalDetectedSecond = nil
+        liveAudioSignalState = .unknown
+        liveAudioSignalSilenceDuration = nil
+        liveSignalStatus = "Streaming file playback source loaded."
+        liveBufferStatus = "No live buffer."
+        roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
+        roonSignalPath = nil
+        statusMessage = "Streaming \(metadata.fileName) through \(routeDisplayName) with \(rendererScene.renderMode.displayName)."
+        logLocalPlayNowDebug(
+            "completed",
+            request: request,
+            loadStarted: true,
+            loadCompleted: true,
+            playStarted: true
+        )
+        scheduleAdjacentLocalFilePreloads(reason: "streaming \(descriptor.url.lastPathComponent)")
+    }
+
+    private func streamingMetadata(
+        for descriptor: AudioAssetDescriptor,
+        request: LocalFileLoadRequest
+    ) -> AudioSourceMetadata {
+        let track = track(for: request)
+        return AudioSourceMetadata(
+            fileName: descriptor.url.lastPathComponent,
+            containerName: descriptor.containerDescription ?? descriptor.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
+            codecName: descriptor.codecDescription ?? "Unknown",
+            layoutName: descriptor.channelLayout.name,
+            channelSummary: descriptor.channelLayout.channelSummary,
+            channelCount: descriptor.channelCount,
+            sampleRate: descriptor.sourceSampleRate,
+            bitDepth: 32,
+            duration: descriptor.durationSeconds ?? 0,
+            title: track?.title?.trimmedNilIfBlank,
+            album: track?.album?.trimmedNilIfBlank,
+            artist: track?.artist?.trimmedNilIfBlank,
+            formatNote: "Streaming local playback; decoded in bounded chunks."
+        )
+    }
+
     private func handleLocalFileLoadFailure(
         url: URL,
         error: Error,
@@ -3285,13 +4257,14 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func cancelPendingLocalFileLoad(debugTiming: DebugTimingContext? = nil) {
+        cancelLocalPreparedFilePreload(debugTiming: debugTiming, reason: "pending local load canceled")
         let activeTiming = debugTiming ?? activeLocalFileLoadRequest?.debugTiming ?? queuedLocalFileLoadRequest?.debugTiming
         let canceledRequest = queuedLocalFileLoadRequest ?? activeLocalFileLoadRequest
         if localFileLoadDebounceTask != nil {
             cancelLocalFileLoadDebounce(reason: "local load canceled")
         }
         let invalidatedGeneration = currentLocalFileLoadGeneration
-        currentLocalFileLoadGeneration &+= 1
+        let newGeneration = nextLocalPlaybackGeneration()
         if localFileLoadTask != nil || activeLocalFileLoadRequest != nil || queuedLocalFileLoadRequest != nil {
             logLocalTransportTiming(
                 activeTiming,
@@ -3308,15 +4281,17 @@ final class OrbisonicViewModel: ObservableObject {
                 fileURL: canceledRequest?.url,
                 extra: [
                     "invalidatedGeneration=\(invalidatedGeneration)",
-                    "currentGeneration=\(currentLocalFileLoadGeneration)"
+                    "currentGeneration=\(newGeneration)"
                 ]
             )
         }
+        cancelActiveLocalFileDecode(reason: "local load canceled", debugTiming: activeTiming)
         queuedLocalFileLoadRequest = nil
         readyQueuedLocalFileLoadGeneration = nil
         pendingSessionQueueIndex = nil
         isLocalFileLoading = false
         stopLocalFileLoadStatusTask()
+        clearPendingLocalPresentation()
     }
 
     private func loadLocalMusicDatabase() {
@@ -3328,6 +4303,7 @@ final class OrbisonicViewModel: ObservableObject {
         sessionQueueIndex = nil
         selectedSessionQueueIndex = nil
         pendingSessionQueueIndex = nil
+        clearPendingLocalPresentation()
         AppLogger.shared.notice(
             category: "local-music",
             "Loaded local music database tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) watchFolders=\(localMusicSettings.watchFolderPaths.count)"
@@ -3351,6 +4327,411 @@ final class OrbisonicViewModel: ObservableObject {
             shuffle: false,
             autoplay: false
         )
+    }
+
+    private func clearLocalPreparedFilePreloadDecodeTask(for decodeID: UInt64) {
+        guard localPreparedFilePreloadDecodeID == decodeID else { return }
+
+        localPreparedFilePreloadDecodeTask = nil
+        localPreparedFilePreloadDecodeID = nil
+    }
+
+    private func cancelLocalPreparedFilePreload(
+        debugTiming: DebugTimingContext? = nil,
+        reason: String = "local playback intent"
+    ) {
+        let hadPreparedPreload = localPreparedFilePreloadTask != nil
+        let hadPreparedDecode = localPreparedFilePreloadDecodeTask != nil
+        let hadMetadataPreload = localMetadataPreloadTask != nil
+        let hadAnyPreload = hadPreparedPreload || hadPreparedDecode || hadMetadataPreload
+        if hadAnyPreload {
+            logLocalTransportTiming(
+                debugTiming,
+                "old preload cancellation requested",
+                extra: [
+                    "reason=\"\(reason)\"",
+                    "hadPreparedPreload=\(hadPreparedPreload)",
+                    "hadPreparedDecode=\(hadPreparedDecode)",
+                    "hadMetadataPreload=\(hadMetadataPreload)"
+                ]
+            )
+        }
+        localPreparedFilePreloadDecodeTask?.cancel()
+        localPreparedFilePreloadDecodeTask = nil
+        localPreparedFilePreloadDecodeID = nil
+        localPreparedFilePreloadTask?.cancel()
+        localPreparedFilePreloadTask = nil
+        localMetadataPreloadTask?.cancel()
+        localMetadataPreloadTask = nil
+        if hadAnyPreload {
+            logLocalTransportTiming(
+                debugTiming,
+                "old preload cancellation observed",
+                extra: [
+                    "reason=\"\(reason)\"",
+                    "preparedPreloadActive=\(localPreparedFilePreloadTask != nil)",
+                    "preparedDecodeActive=\(localPreparedFilePreloadDecodeTask != nil)",
+                    "metadataPreloadActive=\(localMetadataPreloadTask != nil)"
+                ]
+            )
+        }
+    }
+
+    private func clearLocalPreparedFilePreloads(reason: String) {
+        cancelLocalPreparedFilePreload(reason: reason)
+        localPreparedFileCache.removeAll()
+        localAudioDescriptorCache.removeAll()
+        AppLogger.shared.info(category: "local-music", "Cleared local preload caches reason=\(reason)")
+    }
+
+    private func scheduleAdjacentLocalFilePreloads(reason: String) {
+        cancelLocalPreparedFilePreload(reason: "reschedule adjacent preloads: \(reason)")
+        guard sourceMode == .filePlayback else { return }
+
+        let fullPCMPreloadEnabled = Self.enableAdjacentLocalPCMPreload && preloadsAdjacentLocalMusicTracks
+        if !fullPCMPreloadEnabled {
+            logAdjacentLocalPCMPreloadDisabledIfNeeded(reason: reason)
+        }
+
+        let candidates = adjacentLocalFilePreloadCandidates()
+        guard !candidates.isEmpty else { return }
+
+        let preloadGeneration = currentLocalFileLoadGeneration
+        scheduleAdjacentLocalMetadataPreloads(
+            candidates: Array(candidates.prefix(Self.maxAdjacentMetadataPreloadCount)),
+            reason: reason,
+            generation: preloadGeneration
+        )
+        guard fullPCMPreloadEnabled else { return }
+
+        scheduleAdjacentFullLocalPCMPreloads(
+            candidates: candidates,
+            reason: reason,
+            generation: preloadGeneration
+        )
+    }
+
+    private func scheduleAdjacentLocalMetadataPreloads(
+        candidates: [(track: LocalMusicTrack, key: PreparedLocalFileKey, estimatedDecodedBytes: Int?)],
+        reason: String,
+        generation preloadGeneration: UInt64
+    ) {
+        guard preloadsAdjacentLocalMetadata else { return }
+
+        let metadataCandidates = candidates.filter {
+            !localAudioDescriptorCache.containsValid(for: $0.track.url)
+        }
+        guard !metadataCandidates.isEmpty else { return }
+
+        localMetadataPreloadTask = Task { @MainActor [weak self] in
+            defer { self?.localMetadataPreloadTask = nil }
+            for candidate in metadataCandidates {
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                guard self.shouldPreloadAdjacentTrack(candidate.track, expectedKey: candidate.key, generation: preloadGeneration),
+                      !self.localAudioDescriptorCache.containsValid(for: candidate.track.url)
+                else { continue }
+
+                let debugTiming = DebugTimingLog.makeCommand(prefix: "local-metadata-preload", sourceMode: self.sourceMode)
+                self.logLocalTransportTiming(
+                    debugTiming,
+                    "adjacent metadata preload started",
+                    track: candidate.track,
+                    fileURL: candidate.track.url,
+                    extra: [
+                        "generation=\(preloadGeneration)",
+                        "estimatedDecodedBytes=\(candidate.estimatedDecodedBytes.map(String.init) ?? "unknown")",
+                        "reason=\"\(reason)\""
+                    ]
+                )
+
+                do {
+                    let preloadStart = DispatchTime.now().uptimeNanoseconds
+                    let descriptor = try await AudioFileProbe().probe(
+                        url: candidate.track.url,
+                        debugTiming: debugTiming,
+                        priority: .background
+                    )
+                    try Task.checkCancellation()
+                    let preloadMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - preloadStart) / 1_000_000.0
+
+                    guard self.shouldPreloadAdjacentTrack(candidate.track, expectedKey: candidate.key, generation: preloadGeneration) else {
+                        self.logLocalTransportTiming(
+                            debugTiming,
+                            "adjacent metadata preload discarded",
+                            track: candidate.track,
+                            fileURL: candidate.track.url,
+                            extra: [
+                                "generation=\(preloadGeneration)",
+                                "currentGeneration=\(self.currentLocalFileLoadGeneration)",
+                                "reason=\"queue, file, or playback generation changed\""
+                            ]
+                        )
+                        continue
+                    }
+
+                    let storeResult = self.localAudioDescriptorCache.store(
+                        descriptor,
+                        for: candidate.track.url,
+                        expectedKey: candidate.key
+                    )
+                    var logFields = descriptor.logFields
+                    logFields.append(contentsOf: [
+                        "generation=\(preloadGeneration)",
+                        "metadataPreloadMs=\(String(format: "%.1f", preloadMilliseconds))",
+                        "reason=\"\(storeResult.reason)\""
+                    ])
+                    self.logLocalTransportTiming(
+                        debugTiming,
+                        storeResult.stored ? "adjacent metadata preload finished" : "adjacent metadata preload discarded",
+                        track: candidate.track,
+                        fileURL: candidate.track.url,
+                        extra: logFields
+                    )
+                } catch is CancellationError {
+                    self.logLocalTransportTiming(
+                        debugTiming,
+                        "adjacent metadata preload canceled",
+                        track: candidate.track,
+                        fileURL: candidate.track.url,
+                        extra: [
+                            "generation=\(preloadGeneration)",
+                            "currentGeneration=\(self.currentLocalFileLoadGeneration)"
+                        ]
+                    )
+                    return
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.logLocalTransportTiming(
+                        debugTiming,
+                        "adjacent metadata preload failed",
+                        track: candidate.track,
+                        fileURL: candidate.track.url,
+                        extra: ["error=\"\(error.localizedDescription)\""]
+                    )
+                }
+            }
+        }
+    }
+
+    private func scheduleAdjacentFullLocalPCMPreloads(
+        candidates: [(track: LocalMusicTrack, key: PreparedLocalFileKey, estimatedDecodedBytes: Int?)],
+        reason: String,
+        generation preloadGeneration: UInt64
+    ) {
+        let audioLoader = localAudioLoader
+        localPreparedFilePreloadTask = Task { @MainActor [weak self] in
+            defer { self?.localPreparedFilePreloadTask = nil }
+            for candidate in candidates {
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                guard self.shouldPreloadAdjacentTrack(candidate.track, expectedKey: candidate.key, generation: preloadGeneration),
+                      !self.localPreparedFileCache.containsValid(for: candidate.track.url)
+                else { continue }
+
+                let debugTiming = DebugTimingLog.makeCommand(prefix: "local-preload", sourceMode: self.sourceMode)
+                let budgetDecision = self.adjacentPreloadBudgetDecision(estimatedBytes: candidate.estimatedDecodedBytes)
+                self.logLocalTransportTiming(
+                    debugTiming,
+                    budgetDecision.allowed ? "adjacent full PCM preload budget allowed" : "adjacent full PCM preload skipped",
+                    track: candidate.track,
+                    fileURL: candidate.track.url,
+                    extra: [
+                        "estimatedDecodedBytes=\(candidate.estimatedDecodedBytes.map(String.init) ?? "unknown")",
+                        "maxAdjacentFullPreloadPCMBytes=\(self.adjacentFullPreloadPCMByteLimit)",
+                        "allowed=\(budgetDecision.allowed)",
+                        "reason=\"\(budgetDecision.reason)\""
+                    ]
+                )
+                guard budgetDecision.allowed else { continue }
+
+                self.logLocalTransportTiming(
+                    debugTiming,
+                    "adjacent full PCM preload started",
+                    track: candidate.track,
+                    fileURL: candidate.track.url,
+                    extra: [
+                        "generation=\(preloadGeneration)",
+                        "estimatedDecodedBytes=\(candidate.estimatedDecodedBytes.map(String.init) ?? "unknown")",
+                        "reason=\"\(reason)\""
+                    ]
+                )
+
+                var preloadDecodeID: UInt64?
+                do {
+                    let preloadStart = DispatchTime.now().uptimeNanoseconds
+                    self.localPreparedFilePreloadDecodeSequence &+= 1
+                    preloadDecodeID = self.localPreparedFilePreloadDecodeSequence
+                    let decodeTask = Task.detached(priority: .utility) {
+                        try audioLoader(candidate.track.url, debugTiming)
+                    }
+                    self.localPreparedFilePreloadDecodeTask = decodeTask
+                    self.localPreparedFilePreloadDecodeID = preloadDecodeID
+                    let loaded = try await withTaskCancellationHandler {
+                        try await decodeTask.value
+                    } onCancel: {
+                        decodeTask.cancel()
+                    }
+                    if let preloadDecodeID {
+                        self.clearLocalPreparedFilePreloadDecodeTask(for: preloadDecodeID)
+                    }
+                    let preloadMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - preloadStart) / 1_000_000.0
+
+                    guard !Task.isCancelled else {
+                        self.logLocalTransportTiming(
+                            debugTiming,
+                            "adjacent full PCM preload discarded",
+                            track: candidate.track,
+                            fileURL: candidate.track.url,
+                            extra: [
+                                "generation=\(preloadGeneration)",
+                                "currentGeneration=\(self.currentLocalFileLoadGeneration)",
+                                "reason=\"preload task canceled before cache store\""
+                            ]
+                        )
+                        return
+                    }
+                    guard self.shouldPreloadAdjacentTrack(candidate.track, expectedKey: candidate.key, generation: preloadGeneration) else {
+                        self.logLocalTransportTiming(
+                            debugTiming,
+                            "adjacent full PCM preload discarded",
+                            track: candidate.track,
+                            fileURL: candidate.track.url,
+                            extra: [
+                                "generation=\(preloadGeneration)",
+                                "currentGeneration=\(self.currentLocalFileLoadGeneration)",
+                                "reason=\"queue, file, or playback generation changed\""
+                            ]
+                        )
+                        continue
+                    }
+
+                    try Task.checkCancellation()
+                    let storeResult = self.localPreparedFileCache.store(
+                        loaded,
+                        for: candidate.track.url,
+                        expectedKey: candidate.key
+                    )
+                    self.logLocalTransportTiming(
+                        debugTiming,
+                        storeResult.stored ? "adjacent full PCM preload finished" : "adjacent full PCM preload discarded",
+                        track: candidate.track,
+                        fileURL: candidate.track.url,
+                        extra: [
+                            "generation=\(preloadGeneration)",
+                            "estimatedDecodedBytes=\(loaded.preparedPCMByteCount)",
+                            "maxPreparedCacheBytes=\(Self.maxPreparedCacheBytes)",
+                            "preloadMs=\(String(format: "%.1f", preloadMilliseconds))",
+                            "reason=\"\(storeResult.reason)\""
+                        ]
+                    )
+                } catch {
+                    if let preloadDecodeID {
+                        self.clearLocalPreparedFilePreloadDecodeTask(for: preloadDecodeID)
+                    }
+                    if error is CancellationError {
+                        self.logLocalTransportTiming(
+                            debugTiming,
+                            "adjacent full PCM preload canceled",
+                            track: candidate.track,
+                            fileURL: candidate.track.url,
+                            extra: [
+                                "generation=\(preloadGeneration)",
+                                "currentGeneration=\(self.currentLocalFileLoadGeneration)",
+                                "reason=\"cancellation observed by AudioFileLoader\""
+                            ]
+                        )
+                        return
+                    }
+                    guard !Task.isCancelled else { return }
+                    self.logLocalTransportTiming(
+                        debugTiming,
+                        "adjacent full PCM preload failed",
+                        track: candidate.track,
+                        fileURL: candidate.track.url,
+                        extra: ["error=\"\(error.localizedDescription)\""]
+                    )
+                }
+            }
+        }
+    }
+
+    private func adjacentPreloadBudgetDecision(estimatedBytes: Int?) -> (allowed: Bool, reason: String) {
+        guard adjacentFullPreloadPCMByteLimit > 0 else {
+            return (false, "adjacent full PCM preload cap is zero")
+        }
+
+        guard let estimatedBytes, estimatedBytes > 0 else {
+            return (false, "missing decoded PCM estimate")
+        }
+
+        guard estimatedBytes <= adjacentFullPreloadPCMByteLimit else {
+            return (false, "estimated decoded PCM exceeds adjacent preload cap")
+        }
+
+        return (true, "within adjacent preload cap")
+    }
+
+    private func logAdjacentLocalPCMPreloadDisabledIfNeeded(reason: String) {
+        guard !didLogAdjacentLocalPCMPreloadDisabled else { return }
+
+        didLogAdjacentLocalPCMPreloadDisabled = true
+        AppLogger.shared.info(
+            category: "local-music",
+            "Skipped adjacent local full PCM preload because enableAdjacentLocalPCMPreload=false reason=\(reason)"
+        )
+    }
+
+    private func adjacentLocalFilePreloadCandidates() -> [(track: LocalMusicTrack, key: PreparedLocalFileKey, estimatedDecodedBytes: Int?)] {
+        guard let currentIndex = sessionQueueIndex,
+              sessionQueue.indices.contains(currentIndex),
+              sessionQueue.count > 1
+        else { return [] }
+
+        let nextIndex = (currentIndex + 1) % sessionQueue.count
+        let previousIndex = (currentIndex - 1 + sessionQueue.count) % sessionQueue.count
+        var seenTrackIDs = Set<String>()
+        var candidates: [(track: LocalMusicTrack, key: PreparedLocalFileKey, estimatedDecodedBytes: Int?)] = []
+
+        for index in [nextIndex, previousIndex] {
+            let track = sessionQueue[index]
+            guard track.id != currentFileURL?.path,
+                  seenTrackIDs.insert(track.id).inserted,
+                  !localPreparedFileCache.containsValid(for: track.url),
+                  let key = PreparedLocalFileKey.make(for: track.url)
+            else { continue }
+
+            candidates.append((
+                track: track,
+                key: key,
+                estimatedDecodedBytes: estimatedPreparedPCMBytes(for: track)
+            ))
+        }
+
+        return candidates
+    }
+
+    private func estimatedPreparedPCMBytes(for track: LocalMusicTrack) -> Int? {
+        PreparedPCMPolicy.estimatedDecodedPCMBytes(
+            durationSeconds: track.duration,
+            sampleRate: track.sampleRate,
+            channelCount: track.channelCount
+        )
+    }
+
+    private func shouldPreloadAdjacentTrack(_ track: LocalMusicTrack, expectedKey: PreparedLocalFileKey, generation: UInt64) -> Bool {
+        guard isCurrentLocalPlaybackGeneration(generation),
+              sourceMode == .filePlayback,
+              PreparedLocalFileKey.make(for: track.url) == expectedKey,
+              let currentIndex = sessionQueueIndex,
+              sessionQueue.indices.contains(currentIndex),
+              sessionQueue.count > 1,
+              sessionQueue.contains(where: { $0.id == track.id })
+        else { return false }
+
+        let nextIndex = (currentIndex + 1) % sessionQueue.count
+        let previousIndex = (currentIndex - 1 + sessionQueue.count) % sessionQueue.count
+        return sessionQueue[nextIndex].id == track.id || sessionQueue[previousIndex].id == track.id
     }
 
     private func persistLocalMusicDatabase() {
@@ -3394,6 +4775,7 @@ final class OrbisonicViewModel: ObservableObject {
             queue = tracks
         }
 
+        clearLocalPreparedFilePreloads(reason: "session queue replaced")
         sessionQueue = queue
         let startIndex = queue.firstIndex { $0.id == startTrack.id } ?? 0
         logLocalTransportTiming(
@@ -3522,6 +4904,7 @@ final class OrbisonicViewModel: ObservableObject {
               sourceIndex != destinationIndex
         else { return }
 
+        clearLocalPreparedFilePreloads(reason: "session queue reordered")
         sessionQueue.swapAt(sourceIndex, destinationIndex)
 
         if let currentIndex = sessionQueueIndex {
@@ -3562,6 +4945,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     func startRoonPipe() {
         cancelDiagnosticsForMusicAction()
+        clearLocalPreparedFilePreloads(reason: "manual Roon input started")
         sourceMode = .roon
         currentFileURL = nil
         refreshRoutesIfNeeded(force: true)
@@ -3590,6 +4974,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     func startSpotifyPipe() {
         cancelDiagnosticsForMusicAction()
+        clearLocalPreparedFilePreloads(reason: "manual Spotify input started")
         sourceMode = .spotify
         currentFileURL = nil
         roonNowPlaying = nil
@@ -3688,6 +5073,8 @@ final class OrbisonicViewModel: ObservableObject {
             lastHeartbeatSecond = -1
             lastLiveMeterLogSecond = -1
             lastLiveBufferLogSecond = -1
+            lastLiveUnderflowCount = 0
+            lastLiveUnderflowAt = nil
             lastLiveSilenceWarningSecond = -1
             lastLiveSignalPresent = nil
             lastLiveSignalDetectedSecond = nil
@@ -4059,6 +5446,9 @@ final class OrbisonicViewModel: ObservableObject {
         lastLiveSignalDetectedSecond = nil
         liveAudioSignalState = .unknown
         liveAudioSignalSilenceDuration = nil
+        livePipeStatus = nil
+        lastLiveUnderflowCount = 0
+        lastLiveUnderflowAt = nil
         liveBufferStatus = "No live buffer."
         let waitingText = stoppedLiveSourceStatusText(for: sourceMode)
         liveSignalStatus = waitingText
@@ -4084,6 +5474,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func clearLoadedSourceSnapshot() {
         sourceMetadata = nil
+        clearPendingLocalPresentation()
         loadedChannels = []
         loadedFileName = "No file loaded"
         meterStore.configure(channels: [])
@@ -4389,6 +5780,7 @@ final class OrbisonicViewModel: ObservableObject {
         } catch {
             AppLogger.shared.error(category: "diagnostics", "\(kind.title) failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
+            lastDiagnosticFailure = DiagnosticEvent(message: error.localizedDescription, timestamp: Date())
             finishDiagnosticChannelWalk(restoreMusic: true, automatic: false)
             return false
         }
@@ -4461,6 +5853,7 @@ final class OrbisonicViewModel: ObservableObject {
             } catch {
                 AppLogger.shared.error(category: "diagnostics", "Failed to return to file playback: \(error.localizedDescription)")
                 lastError = error.localizedDescription
+                lastDiagnosticFailure = DiagnosticEvent(message: error.localizedDescription, timestamp: Date())
                 statusMessage = "Diagnostics stopped, but music could not resume."
             }
 
@@ -4556,6 +5949,7 @@ final class OrbisonicViewModel: ObservableObject {
         } catch {
             AppLogger.shared.error(category: "diagnostics", "Test tone failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
+            lastDiagnosticFailure = DiagnosticEvent(message: error.localizedDescription, timestamp: Date())
             testToneStatus = "Test tone failed."
         }
     }
@@ -4631,6 +6025,7 @@ final class OrbisonicViewModel: ObservableObject {
         } catch {
             AppLogger.shared.error(category: "diagnostics", "Speaker test tone failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
+            lastDiagnosticFailure = DiagnosticEvent(message: error.localizedDescription, timestamp: Date())
             testToneStatus = "Speaker test tone failed."
         }
     }
@@ -4666,6 +6061,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         isScrubbing = editing
         if !editing {
+            cancelLocalPreparedFilePreload(reason: "seek")
             engine.seek(toProgress: scrubProgress)
             currentTime = duration * scrubProgress
         }
@@ -4837,7 +6233,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .testTone:
             return "Test Tone"
         case .filePlayback:
-            return sourceMetadata?.fileName ?? "Local Music"
+            return visibleLocalSourceMetadata?.fileName ?? "Local Music"
         case .aux:
             return "Aux Cable"
         }
@@ -4869,7 +6265,7 @@ final class OrbisonicViewModel: ObservableObject {
             return testToneStatus.isEmpty ? selectedTestTonePoint.rawValue : "\(selectedTestTonePoint.rawValue) • \(testToneStatus)"
         }
 
-        guard let metadata = sourceMetadata else {
+        guard let metadata = visibleLocalSourceMetadata else {
             return "Use Local Music to choose a track."
         }
 
@@ -4881,7 +6277,7 @@ final class OrbisonicViewModel: ObservableObject {
             return "Test tone -> selected renderer path"
         }
 
-        guard let metadata = sourceMetadata else {
+        guard let metadata = visibleLocalSourceMetadata else {
             return "Waiting For Render Input"
         }
 
@@ -4900,7 +6296,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var renderFlowDetail: String {
-        guard let metadata = sourceMetadata else {
+        guard let metadata = visibleLocalSourceMetadata else {
             if sourceMode == .testTone {
                 return "Synthetic source for Output 1 Monitor and Output 2 Renderer checks."
             }
@@ -5011,6 +6407,176 @@ final class OrbisonicViewModel: ObservableObject {
         )
     }
 
+    var monitorOutputDiagnosticsRows: [InputSourceStatusRow] {
+        makeOutputDiagnosticsRows(
+            title: "",
+            selection: monitorOutputSelection,
+            resolvedRoute: monitorOutputRoute,
+            includesRendererLimit: false
+        )
+    }
+
+    var rendererOutputDiagnosticsRows: [InputSourceStatusRow] {
+        makeOutputDiagnosticsRows(
+            title: "",
+            selection: rendererOutputSelection,
+            resolvedRoute: rendererOutputRoute,
+            includesRendererLimit: true
+        )
+    }
+
+    var diagnosticOverallStateText: String {
+        if sourceSwitchTargetMode != nil || isLiveMonitorTransitioning || isDiagnosticTransitioning {
+            return "recovering"
+        }
+
+        if let lastError, !lastError.isEmpty {
+            return "errored"
+        }
+
+        if sourceMode == .off {
+            return "ready"
+        }
+
+        if sourceMode.isLiveInput {
+            switch liveMonitorState {
+            case .monitoring:
+                return liveAudioSignalState == .noSignal ? "no signal" : "capturing"
+            case .muted:
+                return "muted"
+            case .silent:
+                return "no signal"
+            case .unavailable:
+                return "blocked"
+            case .error:
+                return "errored"
+            case .stopped:
+                return "ready"
+            }
+        }
+
+        if isLocalFileLoading {
+            return "recovering"
+        }
+
+        if isTestTonePlaying || isDiagnosticSequencePlaying {
+            return "capturing"
+        }
+
+        return isPlaying ? "capturing" : "ready"
+    }
+
+    var inputPermissionStatusText: String {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return "Authorized"
+        case .denied:
+            return "Denied"
+        case .restricted:
+            return "Restricted"
+        case .notDetermined:
+            return "Not determined"
+        @unknown default:
+            return "Unknown"
+        }
+    }
+
+    var diagnosticPreviousSourceText: String {
+        diagnosticReturnContext?.sourceMode.rawValue ?? "None"
+    }
+
+    var diagnosticOutput2PathText: String {
+        if rendererDiagnosticsUsingMonitorPreview {
+            return "Monitor preview"
+        }
+        if rendererOutputRoute.isAvailable {
+            return "Real renderer output"
+        }
+        return "No Output 2 Renderer route"
+    }
+
+    var diagnosticMonitorDownmixText: String {
+        if rendererDiagnosticsMonitorDownmixAvailable {
+            return "Available on \(monitorOutputRoute.deviceName)"
+        }
+        if monitorOutputRoute.isAvailable {
+            return "Available when Output 2 diagnostics need monitor preview"
+        }
+        return "Unavailable"
+    }
+
+    var diagnosticSpeechSampleRateText: String {
+        let speechRate = DiagnosticSpeechRenderer.clip(for: selectedDiagnosticSpeakerChannel)?.sampleRate
+        let outputRate: Double
+        if rendererOutputRoute.isAvailable {
+            outputRate = rendererOutputRoute.nominalSampleRate
+        } else if outputRoute.isAvailable {
+            outputRate = outputRoute.nominalSampleRate
+        } else {
+            outputRate = 0
+        }
+
+        let speechText = speechRate.map(formatSampleRate) ?? "not available"
+        let outputText = outputRate > 0 ? formatSampleRate(outputRate) : "unknown output rate"
+        return "\(speechText) speech -> \(outputText) output"
+    }
+
+    var spotifyAdvertisedDeviceName: String {
+        spotifyReceiverClient.configuration.receiverName
+    }
+
+    var appLaunchContextText: String {
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            return "Proper .app bundle"
+        }
+        if Bundle.main.executableURL != nil {
+            return "Raw executable"
+        }
+        return "Unknown"
+    }
+
+    func refreshRecentLogSnippetsIfNeeded() {
+        guard !hasLoadedRecentLogSnippets,
+              !isLoadingRecentLogSnippets
+        else { return }
+
+        refreshRecentLogSnippets()
+    }
+
+    func refreshRecentLogSnippets() {
+        diagnosticsLogRefreshTask?.cancel()
+        isLoadingRecentLogSnippets = true
+        recentLogSnippetStatus = "Loading recent warning and error lines..."
+        AppLogger.shared.info(
+            category: "diagnostics",
+            "Diagnostics log refresh requested maxBytes=\(Self.diagnosticsLogTailMaxBytes) maxLines=\(Self.diagnosticsLogMaxLines)"
+        )
+
+        let logStore = diagnosticsLogStore
+        diagnosticsLogRefreshTask = Task { [weak self] in
+            let result = await logStore.readRecentInterestingLinesWithMetrics(
+                maxBytes: Self.diagnosticsLogTailMaxBytes,
+                maxLines: Self.diagnosticsLogMaxLines
+            )
+            AppLogger.shared.info(
+                category: "diagnostics",
+                "Diagnostics log refresh finished bytesRead=\(result.bytesRead) fileSizeBytes=\(result.fileSizeBytes) linesReturned=\(result.lines.count) elapsedMs=\(String(format: "%.1f", result.elapsedMilliseconds))"
+            )
+
+            await MainActor.run {
+                guard let self, !Task.isCancelled else { return }
+
+                self.recentWarningAndErrorLogSnippets = result.lines.map(self.redactSensitiveText)
+                self.isLoadingRecentLogSnippets = false
+                self.hasLoadedRecentLogSnippets = true
+                self.recentLogSnippetStatus = result.lines.isEmpty
+                    ? "No recent warning or error lines in the latest log tail."
+                    : "Showing \(result.lines.count) recent warning/error line\(result.lines.count == 1 ? "" : "s")."
+                self.diagnosticsLogRefreshTask = nil
+            }
+        }
+    }
+
     var systemOutputNowText: String {
         systemOutputRoute.isAvailable ? "\(systemOutputRoute.deviceName) • \(systemOutputRoute.routeDetail)" : "No verified system output"
     }
@@ -5044,7 +6610,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     var selectedSourceDeviceStatusText: String {
         guard let expectedLoopback = sourceMode.expectedLoopback else {
-            return sourceMetadata?.fileName ?? "No local file loaded."
+            return visibleLocalSourceMetadata?.fileName ?? "No local file loaded."
         }
 
         if inputRoute.uid == expectedLoopback.deviceUID {
@@ -5391,27 +6957,31 @@ final class OrbisonicViewModel: ObservableObject {
         resolvedRoute: OutputRouteInfo,
         includesRendererLimit: Bool
     ) -> [InputSourceStatusRow] {
+        func rowTitle(_ suffix: String) -> String {
+            title.trimmedNilIfBlank.map { "\($0) \(suffix)" } ?? suffix
+        }
+
         let selectedRoute = selectedOutputCandidate(for: selection)
         let diagnosticRoute = selectedRoute ?? (resolvedRoute.isAvailable ? resolvedRoute : nil)
         var rows: [InputSourceStatusRow] = [
-            InputSourceStatusRow(title: "\(title) selected device", value: outputDiagnosticSelectionText(selection: selection, selectedRoute: selectedRoute)),
-            InputSourceStatusRow(title: "\(title) effective/resolved device", value: outputDiagnosticRouteText(resolvedRoute)),
-            InputSourceStatusRow(title: "\(title) Core Audio UID", value: diagnosticRoute?.uid.trimmedNilIfBlank ?? outputSelectedDeviceUID(selection) ?? "none"),
-            InputSourceStatusRow(title: "\(title) effective Core Audio UID", value: resolvedRoute.uid.trimmedNilIfBlank ?? "none"),
-            InputSourceStatusRow(title: "\(title) transport type", value: diagnosticRoute?.transportName ?? "none"),
-            InputSourceStatusRow(title: "\(title) channel count", value: diagnosticRoute.map { "\($0.outputChannelCount)" } ?? "none"),
-            InputSourceStatusRow(title: "\(title) sample rate", value: outputDiagnosticSampleRateText(diagnosticRoute)),
-            InputSourceStatusRow(title: "\(title) route detail", value: diagnosticRoute?.routeDetail ?? "not selected"),
-            InputSourceStatusRow(title: "\(title) safety classification", value: outputSafetyClassification(for: diagnosticRoute)),
-            InputSourceStatusRow(title: "\(title) feedback-loop classification", value: outputFeedbackClassification(for: diagnosticRoute))
+            InputSourceStatusRow(title: rowTitle("selected device"), value: outputDiagnosticSelectionText(selection: selection, selectedRoute: selectedRoute)),
+            InputSourceStatusRow(title: rowTitle("resolved device"), value: outputDiagnosticRouteText(resolvedRoute)),
+            InputSourceStatusRow(title: rowTitle("device UID"), value: diagnosticRoute?.uid.trimmedNilIfBlank ?? outputSelectedDeviceUID(selection) ?? "none"),
+            InputSourceStatusRow(title: rowTitle("resolved device UID"), value: resolvedRoute.uid.trimmedNilIfBlank ?? "none"),
+            InputSourceStatusRow(title: rowTitle("transport"), value: diagnosticRoute?.transportName ?? "none"),
+            InputSourceStatusRow(title: rowTitle("channels"), value: diagnosticRoute.map { "\($0.outputChannelCount)" } ?? "none"),
+            InputSourceStatusRow(title: rowTitle("sample rate"), value: outputDiagnosticSampleRateText(diagnosticRoute)),
+            InputSourceStatusRow(title: rowTitle("route detail"), value: diagnosticRoute?.routeDetail ?? "not selected"),
+            InputSourceStatusRow(title: rowTitle("safety"), value: outputSafetyClassification(for: diagnosticRoute)),
+            InputSourceStatusRow(title: rowTitle("feedback loop"), value: outputFeedbackClassification(for: diagnosticRoute))
         ]
 
         if case .device(let uid) = selection, selectedRoute == nil {
-            rows.append(InputSourceStatusRow(title: "\(title) unavailable remembered device", value: uid))
+            rows.append(InputSourceStatusRow(title: rowTitle("unavailable remembered device"), value: uid))
         }
 
         if let selectedRoute, case .virtualOutput(let name) = selectedRoute.routeRisk {
-            rows.append(InputSourceStatusRow(title: "\(title) virtual-device warning", value: "Verify \(name) is the intended output target."))
+            rows.append(InputSourceStatusRow(title: rowTitle("virtual-device warning"), value: "Verify \(name) is the intended output target."))
         }
 
         if includesRendererLimit,
@@ -5420,7 +6990,7 @@ final class OrbisonicViewModel: ObservableObject {
                outputChannelCount: rendererScene.outputSpeakers.count,
                sampleRate: rendererOutputRoute.nominalSampleRate
            ) {
-            rows.append(InputSourceStatusRow(title: "\(title) high-rate channel warning", value: "Dante Virtual Soundcard Pro supports only 16x16 channels at 176.4/192 kHz."))
+            rows.append(InputSourceStatusRow(title: rowTitle("high-rate channel warning"), value: "Dante Virtual Soundcard Pro supports only 16x16 channels at 176.4/192 kHz."))
         }
 
         return rows
@@ -6635,10 +8205,16 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func updateLiveBufferStatus(elapsedSecond: Int) {
         guard let bufferStatus = engine.liveInputStatus() else {
+            livePipeStatus = nil
             liveBufferStatus = "No live buffer."
             return
         }
 
+        livePipeStatus = bufferStatus
+        if bufferStatus.underflowCount > lastLiveUnderflowCount {
+            lastLiveUnderflowAt = Date()
+            lastLiveUnderflowCount = bufferStatus.underflowCount
+        }
         liveBufferStatus = bufferStatus.displayText(sampleRate: sourceMetadata?.sampleRate ?? inputRoute.nominalSampleRate)
 
         guard elapsedSecond >= 0,
@@ -6821,9 +8397,13 @@ final class OrbisonicViewModel: ObservableObject {
         refreshRoutesIfNeeded(force: true)
 
         if changed {
-            statusMessage = "Aligned BlackHole to \(formatSampleRate(targetSampleRate)); restarting the Roon pipe."
+            let message = "Aligned BlackHole to \(formatSampleRate(targetSampleRate)); restarting the Roon pipe."
+            statusMessage = message
+            lastRecoveryEvent = DiagnosticEvent(message: message, timestamp: Date())
         } else {
+            let message = "Checked BlackHole sample-rate mismatch; manual Audio MIDI Setup alignment may be required."
             statusMessage = "Legacy loopback is \(formatSampleRate(inputRoute.nominalSampleRate)) while Roon is \(formatSampleRate(targetSampleRate)). Set the loopback to \(formatSampleRate(targetSampleRate)) in Audio MIDI Setup if capture stays silent."
+            lastRecoveryEvent = DiagnosticEvent(message: message, timestamp: Date())
         }
 
         if wasPlaying {

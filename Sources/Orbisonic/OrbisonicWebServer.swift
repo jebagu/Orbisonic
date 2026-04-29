@@ -697,7 +697,7 @@ extension OrbisonicViewModel {
         case .aux:
             return webPlayerIsPlaying
         case .filePlayback:
-            return currentQueueTrack != nil || currentLocalMusicTrack != nil || sourceMetadata != nil
+            return visibleLocalPlaybackTrack != nil || visibleLocalSourceMetadata != nil
         case .testTone:
             return isTestTonePlaying
         }
@@ -1010,10 +1010,10 @@ extension OrbisonicViewModel {
         case .spotify:
             return spotifyVisibleNowPlaying?.displayTitle ?? "Spotify"
         case .filePlayback:
-            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+            if let track = visibleLocalPlaybackTrack {
                 return track.displayTitle
             }
-            if let metadata = sourceMetadata {
+            if let metadata = visibleLocalSourceMetadata {
                 return metadata.title?.trimmedNilIfBlank ?? metadata.fileName
             }
             return "Nothing playing right now"
@@ -1039,10 +1039,10 @@ extension OrbisonicViewModel {
         case .spotify:
             return spotifyVisibleNowPlaying?.artistText ?? "Controlled from Spotify Connect."
         case .filePlayback:
-            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+            if let track = visibleLocalPlaybackTrack {
                 return track.displaySubtitle
             }
-            if let metadata = sourceMetadata {
+            if let metadata = visibleLocalSourceMetadata {
                 let albumArtist = [metadata.album?.trimmedNilIfBlank, metadata.artist?.trimmedNilIfBlank].compactMap { $0 }.joined(separator: " - ")
                 return albumArtist.isEmpty ? "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)" : albumArtist
             }
@@ -1065,10 +1065,10 @@ extension OrbisonicViewModel {
         case .spotify:
             return webPublicMetadataText(spotifyVisibleNowPlaying?.artistText)
         case .filePlayback:
-            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+            if let track = visibleLocalPlaybackTrack {
                 return webPublicMetadataText(track.displayArtist)
             }
-            return sourceMetadata?.artist?.trimmedNilIfBlank ?? ""
+            return visibleLocalSourceMetadata?.artist?.trimmedNilIfBlank ?? ""
         }
     }
 
@@ -1083,10 +1083,10 @@ extension OrbisonicViewModel {
         case .spotify:
             return webPublicMetadataText(spotifyVisibleNowPlaying?.albumText)
         case .filePlayback:
-            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+            if let track = visibleLocalPlaybackTrack {
                 return webPublicMetadataText(track.displayAlbum)
             }
-            return sourceMetadata?.album?.trimmedNilIfBlank ?? ""
+            return visibleLocalSourceMetadata?.album?.trimmedNilIfBlank ?? ""
         }
     }
 
@@ -1128,19 +1128,13 @@ extension OrbisonicViewModel {
         if status.hasPrefix("Starting playback") {
             return "Loading"
         }
-        if status.hasPrefix("Loading selected track") {
-            return "Loading"
-        }
-        if status.hasPrefix("Loading previous track") {
-            return "Loading"
-        }
-        if status.hasPrefix("Loading large audio file") {
+        if status.hasPrefix("Loading") {
             return "Loading"
         }
         if status.hasPrefix("Still loading") {
             return "Still loading."
         }
-        return "Loading next track..."
+        return "Loading"
     }
 
     private var webRoonPlaybackStatus: String {
@@ -1199,7 +1193,7 @@ extension OrbisonicViewModel {
         case .spotify:
             return spotifyVisibleNowPlaying?.positionText ?? "0:00"
         case .filePlayback:
-            return sourceMetadata == nil ? "0:00" : formattedCurrentTime()
+            return visibleLocalSourceMetadata == nil ? "0:00" : formattedCurrentTime()
         case .off, .aux, .testTone:
             return "0:00"
         }
@@ -1212,7 +1206,7 @@ extension OrbisonicViewModel {
         case .spotify:
             return spotifyVisibleNowPlaying?.durationText ?? "0:00"
         case .filePlayback:
-            return sourceMetadata == nil ? "0:00" : formattedDuration()
+            return visibleLocalSourceMetadata == nil ? "0:00" : formattedDuration()
         case .off, .aux, .testTone:
             return "0:00"
         }
@@ -1278,7 +1272,7 @@ extension OrbisonicViewModel {
         case .testTone:
             return testToneStatus
         case .filePlayback:
-            guard let metadata = sourceMetadata else { return "No local file loaded." }
+            guard let metadata = visibleLocalSourceMetadata else { return "No local file loaded." }
             return "\(webFormatText(for: metadata)) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
         }
     }
@@ -1321,7 +1315,7 @@ extension OrbisonicViewModel {
         case .spotify:
             return false
         case .filePlayback:
-            let hasPlayableLocalSource = sourceMetadata != nil || !localMusicTracks.isEmpty
+            let hasPlayableLocalSource = visibleLocalSourceMetadata != nil || !localMusicTracks.isEmpty
             switch control {
             case "previous", "next":
                 return !sessionQueue.isEmpty || !localMusicTracks.isEmpty
@@ -1378,10 +1372,10 @@ extension OrbisonicViewModel {
         case .aux:
             return inputRoute.isAvailable && inputRoute.inputChannelCount > 0 ? inputRoute.inputChannelCount : nil
         case .filePlayback:
-            if let metadata = sourceMetadata, metadata.channelCount > 0 {
+            if let metadata = visibleLocalSourceMetadata, metadata.channelCount > 0 {
                 return metadata.channelCount
             }
-            if let track = currentQueueTrack ?? currentLocalMusicTrack, track.channelCount > 0 {
+            if let track = visibleLocalPlaybackTrack, track.channelCount > 0 {
                 return track.channelCount
             }
             return nil
@@ -1450,14 +1444,14 @@ extension OrbisonicViewModel {
         case .aux:
             return inputRoute.isAvailable ? "\(webFormatSampleRate(inputRoute.nominalSampleRate)) input" : liveSignalStatus
         case .filePlayback:
-            if let metadata = sourceMetadata {
+            if let metadata = visibleLocalSourceMetadata {
                 var parts = [webFormatText(for: metadata), metadata.sampleRateText]
                 if metadata.bitDepth > 0 {
                     parts.append("\(metadata.bitDepth)-bit")
                 }
                 return parts.filter { !$0.isEmpty && $0 != "-" }.joined(separator: " / ")
             }
-            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+            if let track = visibleLocalPlaybackTrack {
                 return "\(track.url.pathExtension.uppercased().trimmedNilIfBlank ?? "Local music") / \(track.sampleRateText)"
             }
             return "Waiting for Local Music"
@@ -1488,10 +1482,10 @@ extension OrbisonicViewModel {
         case .roon:
             return webRoonFormatText
         case .filePlayback:
-            if let metadata = sourceMetadata {
+            if let metadata = visibleLocalSourceMetadata {
                 return webFormatText(for: metadata)
             }
-            if let track = currentQueueTrack ?? currentLocalMusicTrack {
+            if let track = visibleLocalPlaybackTrack {
                 return webFormatText(forFileExtension: track.url.pathExtension)
             }
             return ""

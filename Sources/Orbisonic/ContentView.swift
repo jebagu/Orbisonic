@@ -55,7 +55,7 @@ private enum PlayerTransportKind: String, CaseIterable, Identifiable {
     }
 }
 
-private enum AppBuildInfo {
+enum AppBuildInfo {
     static var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }
@@ -175,16 +175,6 @@ struct PlayerDetailRowContent: Equatable {
     let title: String
     let value: String
     var hasTopDivider = false
-}
-
-private struct DiagnosticInfoRow {
-    let title: String
-    let value: String
-
-    init(_ title: String, _ value: String) {
-        self.title = title
-        self.value = value
-    }
 }
 
 enum LocalFilePlayerRowsModel {
@@ -410,7 +400,7 @@ enum VUMeterChannelLabel {
     }
 }
 
-private enum LabTheme {
+enum LabTheme {
     static let bg = Color(red: 7.0 / 255.0, green: 16.0 / 255.0, blue: 20.0 / 255.0)
     static let bgBottom = Color(red: 2.0 / 255.0, green: 7.0 / 255.0, blue: 10.0 / 255.0)
     static let panel = Color(red: 13.0 / 255.0, green: 24.0 / 255.0, blue: 29.0 / 255.0).opacity(0.88)
@@ -429,7 +419,7 @@ private enum LabTheme {
     static let controlRadius: CGFloat = 7
 }
 
-private struct LabButtonStyle: ButtonStyle {
+struct LabButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var isActive = false
@@ -547,7 +537,7 @@ struct ContentView: View {
             stage
         }
         .padding(24)
-        .frame(minWidth: 1_220, minHeight: 780)
+        .frame(minWidth: 1_220, minHeight: 780, alignment: .topLeading)
         .background(
             ZStack {
                 LinearGradient(
@@ -645,21 +635,21 @@ struct ContentView: View {
     private var selectedStageContent: some View {
         switch selectedStageTab {
         case .input:
-            tabPage { inputTab }
+            stageViewport { inputTab }
         case .routing:
-            tabPage { routingTab }
+            stageViewport { routingTab }
         case .renderer:
-            tabPage { rendererTab }
+            stageViewport { rendererTab }
         case .output:
-            tabPage { outputTab }
+            stageViewport { outputTab }
         case .analyzerVU:
-            containedTabPage { analyzerVUTab }
+            stageViewport(scrolls: false) { analyzerVUTab }
         case .localMusic:
-            containedTabPage { localMusicTab }
+            stageViewport(scrolls: false) { localMusicTab }
         case .diagnostics:
-            tabPage { diagnosticsTab }
+            stageViewport { diagnosticsTab }
         case .settings:
-            tabPage { settingsTab }
+            stageViewport { settingsTab }
         }
     }
 
@@ -1673,7 +1663,7 @@ struct ContentView: View {
     }
 
     private var rendererInputChannelText: String {
-        if let metadata = model.sourceMetadata {
+        if let metadata = model.visibleLocalSourceMetadata {
             return "\(metadata.channelCount)"
         }
 
@@ -1682,7 +1672,7 @@ struct ContentView: View {
     }
 
     private var rendererSourceLayoutText: String {
-        if let metadata = model.sourceMetadata {
+        if let metadata = model.visibleLocalSourceMetadata {
             return metadata.layoutName
         }
 
@@ -1807,13 +1797,7 @@ struct ContentView: View {
         if status.hasPrefix("Starting playback") {
             return "Starting"
         }
-        if status.hasPrefix("Loading selected track") {
-            return "Loading"
-        }
-        if status.hasPrefix("Loading previous track") {
-            return "Loading"
-        }
-        if status.hasPrefix("Loading large audio file") {
+        if status.hasPrefix("Loading") {
             return "Loading"
         }
         if status.hasPrefix("Still loading") {
@@ -1983,10 +1967,10 @@ struct ContentView: View {
         case .spotify:
             return model.spotifyVisibleNowPlaying?.displayTitle ?? "Spotify"
         case .filePlayback:
-            if let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
+            if let track = model.visibleLocalPlaybackTrack {
                 return track.displayTitle
             }
-            if let metadata = model.sourceMetadata {
+            if let metadata = model.visibleLocalSourceMetadata {
                 return metadata.fileName
             }
             return "No source loaded"
@@ -2012,10 +1996,10 @@ struct ContentView: View {
         case .spotify:
             return model.spotifyVisibleNowPlaying?.artistText ?? "Controlled from Spotify Connect."
         case .filePlayback:
-            if let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
+            if let track = model.visibleLocalPlaybackTrack {
                 return track.displaySubtitle
             }
-            if let metadata = model.sourceMetadata {
+            if let metadata = model.visibleLocalSourceMetadata {
                 return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
             }
             return "Choose Roon, Spotify, Aux Cable, or Local Music."
@@ -2225,7 +2209,7 @@ struct ContentView: View {
         case .spotify:
             return true
         case .filePlayback:
-            let hasPlayableLocalSource = model.sourceMetadata != nil || !model.localMusicTracks.isEmpty
+            let hasPlayableLocalSource = model.visibleLocalSourceMetadata != nil || !model.localMusicTracks.isEmpty
             switch kind {
             case .back, .forward:
                 return model.sessionQueue.isEmpty && model.localMusicTracks.isEmpty
@@ -2287,7 +2271,7 @@ struct ContentView: View {
     }
 
     private var isPlayerProgressEditable: Bool {
-        model.sourceMode == .filePlayback && model.sourceMetadata != nil
+        model.sourceMode == .filePlayback && model.visibleLocalSourceMetadata != nil
     }
 
     private var playerProgressBinding: Binding<Double> {
@@ -2323,7 +2307,7 @@ struct ContentView: View {
         case .spotify:
             return model.spotifyVisibleNowPlaying?.positionText ?? "0:00"
         case .filePlayback:
-            return model.sourceMetadata == nil ? "0:00" : model.formattedCurrentTime()
+            return model.visibleLocalSourceMetadata == nil ? "0:00" : model.formattedCurrentTime()
         case .off:
             return "0:00"
         case .aux:
@@ -2340,7 +2324,7 @@ struct ContentView: View {
         case .spotify:
             return model.spotifyVisibleNowPlaying?.durationText ?? "0:00"
         case .filePlayback:
-            return model.sourceMetadata == nil ? "0:00" : model.formattedDuration()
+            return model.visibleLocalSourceMetadata == nil ? "0:00" : model.formattedDuration()
         case .off, .aux, .testTone:
             return "0:00"
         }
@@ -2450,20 +2434,12 @@ struct ContentView: View {
     private var localFilePlayerRows: [PlayerDetailRow] {
         var rows: [PlayerDetailRow] = []
 
-        if model.isLocalFileLoading {
-            rows.append(PlayerDetailRow(title: "Loading", value: model.statusMessage))
-            if let pendingIndex = model.pendingSessionQueueIndex,
-               model.sessionQueue.indices.contains(pendingIndex) {
-                rows.append(PlayerDetailRow(title: "Pending", value: model.sessionQueue[pendingIndex].displayTitle))
-            }
-        }
-
-        if let metadata = model.sourceMetadata {
+        if let metadata = model.visibleLocalSourceMetadata {
             rows.append(contentsOf: LocalFilePlayerRowsModel.rows(metadata: metadata).map(playerDetailRow))
             return rows
         }
 
-        if let track = model.currentQueueTrack ?? model.currentLocalMusicTrack {
+        if let track = model.visibleLocalPlaybackTrack {
             rows.append(contentsOf: LocalFilePlayerRowsModel.rows(track: track).map(playerDetailRow))
             return rows
         }
@@ -2763,16 +2739,15 @@ struct ContentView: View {
     }
 
     private var localMusicAllTracksPanel: some View {
-        settingsPanel(title: "Music") {
+        settingsPanel(title: "Music", fillsHeight: true) {
             localMusicSearchSortBar
             infoRow(title: "Tracks", value: model.localMusicCountText)
             localMusicTrackList(model.visibleLocalMusicTracks)
         }
-        .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var localMusicPlaylistsPanel: some View {
-        settingsPanel(title: "Playlists") {
+        settingsPanel(title: "Playlists", fillsHeight: true) {
             HStack(spacing: 10) {
                 Button(action: { model.addSelectedLocalMusicPlaylistToQueue(shuffle: false) }) {
                     Label("Add to Queue", systemImage: "text.badge.plus")
@@ -2805,13 +2780,13 @@ struct ContentView: View {
                 }
                 .padding(8)
             }
-            .frame(minHeight: localMusicListMinHeight, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(localMusicListBackground)
         }
     }
 
     private var localMusicQueuePanel: some View {
-        settingsPanel(title: "Session Queue") {
+        settingsPanel(title: "Session Queue", fillsHeight: true) {
             HStack {
                 Spacer(minLength: 0)
 
@@ -2844,7 +2819,7 @@ struct ContentView: View {
                 }
                 .padding(8)
             }
-            .frame(minHeight: localMusicListMinHeight, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(localMusicListBackground)
         }
     }
@@ -2927,11 +2902,9 @@ struct ContentView: View {
             }
             .padding(8)
         }
-        .frame(minHeight: localMusicListMinHeight, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(localMusicListBackground)
     }
-
-    private var localMusicListMinHeight: CGFloat { 500 }
 
     private var localMusicListBackground: some View {
         RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
@@ -3507,323 +3480,32 @@ struct ContentView: View {
     }
 
     private var diagnosticsTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            settingsPanel(title: "Source Health") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(sourceHealthDiagnosticRows.enumerated()), id: \.offset) { _, row in
-                        sourceHealthDiagnosticRow(row)
-                    }
-                }
-            }
-
-            settingsPanel(title: "Output Diagnostics") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(outputDiagnosticRows.enumerated()), id: \.offset) { _, row in
-                        sourceHealthDiagnosticRow(row)
-                    }
-                }
-            }
-
-            HStack(alignment: .top, spacing: 18) {
-                diagnosticWalkPanel(
-                    title: "Output 1 Monitor Channel Walk",
-                    channelText: "\(model.monitorChannelWalkCount) ch",
-                    actionTitle: "Walk Output 1 Monitor",
-                    meterTitle: "Output 1 Monitor VU",
-                    meterSubtitle: "2-channel Output 1 Monitor walk",
-                    meterAppearance: monitorVUMeterAppearance,
-                    meterStore: model.monitorMeterStore,
-                    action: model.startMonitorChannelWalk
-                )
-
-                diagnosticWalkPanel(
-                    title: "Output 2 Renderer Channel Walk",
-                    channelText: "\(model.rendererOutputChannelWalkCount) ch",
-                    actionTitle: "Walk Output 2 Renderer",
-                    meterTitle: "Output 2 Renderer VU",
-                    meterSubtitle: "30.1 Output 2 Renderer walk",
-                    meterAppearance: rendererVUMeterAppearance,
-                    meterStore: model.rendererMeterStore,
-                    action: model.startRendererOutputChannelWalk
-                )
-            }
-
-            diagnosticSpeakerTonePanel
-
-            settingsPanel(title: "Build") {
-                infoRow(title: "Version", value: AppBuildInfo.version)
-                infoRow(title: "Build", value: AppBuildInfo.buildNumber)
-                infoRow(title: "Commit", value: AppBuildInfo.gitCommit)
-                infoRow(title: "Built", value: AppBuildInfo.buildDate)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        DiagnosticsView(model: model)
     }
 
-    private var sourceHealthDiagnosticRows: [DiagnosticInfoRow] {
-        var rows: [DiagnosticInfoRow] = [
-            DiagnosticInfoRow("Active source", model.sourceMode.rawValue)
-        ]
-
-        if model.sourceMode.isLiveInput {
-            rows.append(DiagnosticInfoRow("Selected input device", model.selectedSourceDeviceStatusText))
-        }
-
-        rows.append(contentsOf: model.inputSourceDiagnosticsRows.map {
-            DiagnosticInfoRow($0.title, $0.value)
-        })
-
-        if model.sourceMode == .spotify {
-            rows.append(contentsOf: model.spotifySourceHealthLines.map {
-                DiagnosticInfoRow($0.title, $0.value)
-            })
-        }
-
-        if model.sourceMode.isLiveInput {
-            rows.append(DiagnosticInfoRow("Audio signal detail", model.liveSignalStatus))
-            rows.append(DiagnosticInfoRow("Buffer", model.liveBufferStatus))
-            rows.append(DiagnosticInfoRow("Capture format", liveCaptureFormatText))
-        }
-
-        if let streamFormatText {
-            rows.append(DiagnosticInfoRow("Stream format", streamFormatText))
-        }
-
-        if let sampleRateMismatchText = model.liveSourceSampleRateMismatchText {
-            rows.append(DiagnosticInfoRow("Sample-rate mismatch", sampleRateMismatchText))
-        }
-
-        if model.sourceMode == .roon {
-            rows.append(DiagnosticInfoRow("Roon bridge", model.roonBridgeSnapshot.statusText))
-            rows.append(DiagnosticInfoRow("Roon endpoint", model.roonBridgeSnapshot.audioPathText))
-        }
-
-        if model.sourceMode == .spotify {
-            rows.append(DiagnosticInfoRow("Spotify receiver", model.spotifyReceiverStatus.message))
-        }
-
-        if let errorText = sourceHealthErrorText {
-            rows.append(DiagnosticInfoRow("Error", errorText))
-        }
-
-        return rows.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    }
-
-    private var outputDiagnosticRows: [DiagnosticInfoRow] {
-        model.outputDiagnosticsRows.map {
-            DiagnosticInfoRow($0.title, $0.value)
-        }
-    }
-
-    private var streamFormatText: String? {
-        guard let metadata = model.sourceMetadata else {
-            return nil
-        }
-
-        return "\(metadata.layoutName) • \(metadata.codecName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
-    }
-
-    private var liveCaptureFormatText: String {
-        guard model.sourceMode.isLiveInput else {
-            return "No live capture."
-        }
-
-        return "\(model.inputRoute.displayName) • \(model.activeLiveChannelCount) active of \(model.inputRoute.inputChannelCount) ch • \(formatSampleRate(model.inputRoute.nominalSampleRate))"
-    }
-
-    private var sourceHealthErrorText: String? {
-        if let playbackError = liveInputPlaybackErrorText {
-            return playbackError
-        }
-
-        if model.sourceMode == .spotify {
-            switch model.spotifyReceiverStatus.state {
-            case .failed, .embeddedModuleUnavailable:
-                return model.spotifyReceiverStatus.message.trimmedNilIfBlank
-            case .notStarted, .waitingForConnection, .running, .restarting:
-                break
-            }
-        }
-
-        return model.lastError?.trimmedNilIfBlank
-    }
-
-    private func sourceHealthDiagnosticRow(_ row: DiagnosticInfoRow) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(row.title.uppercased())
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(LabTheme.textSoft)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: 170, alignment: .leading)
-
-            Text(row.value)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(LabTheme.text)
-                .textSelection(.enabled)
-                .lineLimit(3)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, minHeight: 24, alignment: .topLeading)
-        }
-    }
-
-    private var diagnosticSpeakerTonePanel: some View {
-        settingsPanel(title: "Test Tone") {
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Menu {
-                        ForEach(1...model.diagnosticSpeakerChannelCount, id: \.self) { channel in
-                            Button("Channel \(channel)") {
-                                model.selectDiagnosticSpeakerChannel(channel)
-                            }
-                        }
-                    } label: {
-                        HStack {
-                            Text("CHANNEL")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(LabTheme.textSoft)
-                            Spacer()
-                            Text("\(model.selectedDiagnosticSpeakerChannel)")
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundStyle(LabTheme.text)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(LabTheme.cyan)
-                        }
-                    }
-                    .buttonStyle(LabButtonStyle())
-
-                    HStack(spacing: 10) {
-                        Button(action: model.playSelectedDiagnosticSpeakerTone) {
-                            Label("Play Tone", systemImage: "speaker.wave.2.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
-
-                        Button(action: { model.stopTestTone() }) {
-                            Image(systemName: "stop.fill")
-                                .frame(width: 32, height: 32)
-                        }
-                        .buttonStyle(LabButtonStyle())
-                        .disabled(!model.isTestTonePlaying)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("CHANNEL \(model.selectedDiagnosticSpeakerChannel)")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(LabTheme.textSoft)
-                    Text(model.isTestTonePlaying ? "PLAYING" : "READY")
-                        .font(.system(size: 18, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(model.isTestTonePlaying ? LabTheme.cyan : LabTheme.text)
-                    if !model.testToneStatus.isEmpty {
-                        Text(model.testToneStatus)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(LabTheme.textSoft)
-                            .lineLimit(2)
-                    }
-                }
-                .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
-                .padding(12)
-                .background(
-                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                        .fill(model.isTestTonePlaying ? LabTheme.cyan.opacity(0.10) : Color.black.opacity(0.14))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                .stroke(model.isTestTonePlaying ? LabTheme.cyan.opacity(0.42) : LabTheme.line, lineWidth: 1)
-                        )
-                )
-            }
-        }
-    }
-
-    private func diagnosticWalkPanel(
-        title: String,
-        channelText: String,
-        actionTitle: String,
-        meterTitle: String,
-        meterSubtitle: String,
-        meterAppearance: VUMeterAppearance,
-        meterStore: ChannelMeterStore,
-        action: @escaping () -> Void
+    @ViewBuilder
+    private func stageViewport<Content: View>(
+        scrolls: Bool = true,
+        @ViewBuilder content: () -> Content
     ) -> some View {
-        settingsPanel(title: title) {
-            HStack(spacing: 10) {
-                Button(action: action) {
-                    Label(actionTitle, systemImage: "speaker.wave.3.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
-                .disabled(model.isDiagnosticSequencePlaying)
-
-                Button(action: model.stopDiagnosticsAndReturnToMusic) {
-                    Image(systemName: "stop.fill")
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(LabButtonStyle())
-                .disabled(!model.isDiagnosticSequencePlaying)
-                .help("Stop and return to the previous source")
+        if scrolls {
+            ScrollView(.vertical, showsIndicators: true) {
+                content()
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.trailing, 6)
+                    .padding(.bottom, 8)
             }
-
-            HStack(spacing: 12) {
-                Text(channelText)
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundStyle(LabTheme.cyan)
-                    .frame(width: 72, height: 30)
-                    .background(
-                        RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                            .fill(LabTheme.cyan.opacity(0.10))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                    .stroke(LabTheme.cyan.opacity(0.38), lineWidth: 1)
-                            )
-                    )
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(model.activeDiagnosticText)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(LabTheme.text)
-                        .lineLimit(1)
-                    Text(model.diagnosticWalkStatus)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .lineLimit(2)
-                }
-            }
-
-            infoRow(title: "Output", value: model.outputNowText)
-
-            AudioMotionVUMeterPanel(
-                title: meterTitle,
-                subtitle: meterSubtitle,
-                style: selectedAudioMotionVUStyle,
-                appearance: meterAppearance,
-                meterStore: meterStore,
-                minMeterHeight: 126,
-                showsMeterPills: false
-            )
-        }
-    }
-
-    private func tabPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        ScrollView(.vertical, showsIndicators: true) {
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
             content()
                 .padding(.trailing, 6)
                 .padding(.bottom, 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func containedTabPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .padding(.trailing, 6)
-            .padding(.bottom, 8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var outputChannelText: String {
-        guard let metadata = model.sourceMetadata else {
+        guard let metadata = model.visibleLocalSourceMetadata else {
             return "No source loaded"
         }
 
@@ -4085,6 +3767,7 @@ struct ContentView: View {
     private func settingsPanel<Content: View>(
         title: String,
         minHeight: CGFloat? = nil,
+        fillsHeight: Bool = false,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -4093,7 +3776,12 @@ struct ContentView: View {
                 .foregroundStyle(LabTheme.text)
             content()
         }
-        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: minHeight,
+            maxHeight: fillsHeight ? .infinity : nil,
+            alignment: .topLeading
+        )
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)

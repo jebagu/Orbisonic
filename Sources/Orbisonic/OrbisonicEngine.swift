@@ -35,8 +35,90 @@ enum OutputDeviceSelectionError: LocalizedError {
     }
 }
 
+private final class StreamingScheduledChunk {
+    let id = UUID()
+    let startFrame: AVAudioFramePosition
+    let frameCount: AVAudioFrameCount
+    let monoBuffers: [AVAudioPCMBuffer]
+
+    init(
+        startFrame: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount,
+        monoBuffers: [AVAudioPCMBuffer]
+    ) {
+        self.startFrame = startFrame
+        self.frameCount = frameCount
+        self.monoBuffers = monoBuffers
+    }
+
+    var byteCount: Int {
+        monoBuffers.reduce(0) { partial, buffer in
+            let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+            let listedBytes = audioBuffers.reduce(0) { bytePartial, audioBuffer in
+                bytePartial + Int(audioBuffer.mDataByteSize)
+            }
+            if listedBytes > 0 {
+                return partial + listedBytes
+            }
+
+            let bytes = PreparedPCMPolicy.estimatedDecodedPCMBytes(
+                frameCount: AVAudioFramePosition(buffer.frameLength),
+                channelCount: 1
+            ) ?? 0
+            return partial + bytes
+        }
+    }
+}
+
+private final class StreamingPlaybackContext {
+    let token = UUID()
+    let source: StreamingAudioFileSource
+    let descriptor: AudioAssetDescriptor
+    let layout: SurroundLayout
+    let metadata: AudioSourceMetadata
+    let monoFormat: AVAudioFormat
+    let monoBufferPool: PCMBufferPool
+
+    var scheduledChunks: [UUID: StreamingScheduledChunk] = [:]
+    var scheduledFrames: AVAudioFramePosition = 0
+    var scheduledBytes = 0
+    var scheduledChunkCount = 0
+    var reachedEndOfSource = false
+    var scheduleTask: Task<Void, Never>?
+
+    init(
+        source: StreamingAudioFileSource,
+        descriptor: AudioAssetDescriptor,
+        layout: SurroundLayout,
+        metadata: AudioSourceMetadata,
+        monoFormat: AVAudioFormat
+    ) {
+        self.source = source
+        self.descriptor = descriptor
+        self.layout = layout
+        self.metadata = metadata
+        self.monoFormat = monoFormat
+        self.monoBufferPool = PCMBufferPool(
+            format: monoFormat,
+            maxRetainedBuffers: max(layout.channelCount * 4, 4),
+            maxFrameCapacity: StreamingLocalPlaybackPolicy.steadyChunkFrames
+        )
+    }
+
+    var durationFrames: AVAudioFramePosition {
+        descriptor.durationFrames ?? 0
+    }
+
+    var durationSeconds: TimeInterval {
+        descriptor.durationSeconds ?? 0
+    }
+}
+
 final class OrbisonicEngine {
     var onPlaybackEnded: (() -> Void)?
+
+    private static let maxStreamingScheduledAheadSeconds: TimeInterval = 2
+    private static let maxStreamingScheduledPCMBytes = 64 * 1_024 * 1_024
 
     private let engine = AVAudioEngine()
     private let environment = AVAudioEnvironmentNode()
@@ -64,6 +146,7 @@ final class OrbisonicEngine {
     private let rendererPlaybackLock = NSLock()
     private var rendererPlaybackFrame: AVAudioFramePosition = 0
     private var rendererPlaybackCompletionSent = false
+    private var streamingPlayback: StreamingPlaybackContext?
     private let monitorMeterLock = NSLock()
     private var monitorMeterLevelSnapshot: [Float] = []
     private var currentStartFrame: AVAudioFramePosition = 0
@@ -96,6 +179,7 @@ final class OrbisonicEngine {
         debugTiming?.log("commit start", fileURL: loaded.url)
         AppLogger.shared.info(category: "engine", "Loading prepared file into engine: \(loaded.url.lastPathComponent)")
 
+        cancelStreamingPlayback(reason: "prepared file loaded")
         debugTiming?.log(
             "stop old local playback start",
             fileURL: loaded.url,
@@ -127,6 +211,109 @@ final class OrbisonicEngine {
         )
 
         return loaded
+    }
+
+    @MainActor
+    func startStreaming(
+        source: StreamingAudioFileSource,
+        descriptor: AudioAssetDescriptor,
+        debugTiming: DebugTimingContext? = nil
+    ) async throws {
+        let commitStart = DispatchTime.now().uptimeNanoseconds
+        debugTiming?.log(
+            "streaming engine commit start",
+            fileURL: descriptor.url,
+            extra: descriptor.logFields
+        )
+
+        guard descriptor.channelCount > 0,
+              OrbisonicAudioLimits.supportsSourceChannelCount(descriptor.channelCount)
+        else {
+            throw AudioFileLoaderError.unsupportedChannelCount(
+                UInt32(max(descriptor.channelCount, 0)),
+                maxSupported: OrbisonicAudioLimits.maxSourceChannelCount
+            )
+        }
+        guard let monoFormat = AVAudioFormat(
+            standardFormatWithSampleRate: descriptor.sourceSampleRate,
+            channels: 1
+        ) else {
+            throw AudioFileLoaderError.monoFormatCreationFailed(descriptor.sourceSampleRate)
+        }
+
+        stopLiveInput()
+        stopTestTone()
+        cancelStreamingPlayback(reason: "new streaming source")
+        detachSourceNodes()
+        detachRendererSourceNode()
+
+        let metadata = Self.streamingMetadata(for: descriptor)
+        let context = StreamingPlaybackContext(
+            source: source,
+            descriptor: descriptor,
+            layout: descriptor.channelLayout,
+            metadata: metadata,
+            monoFormat: monoFormat
+        )
+
+        loadedFile = nil
+        liveInputSource = nil
+        streamingPlayback = context
+        currentStartFrame = 0
+        pausedPlaybackNeedsReschedule = false
+        state = .ready
+        completionToken = context.token
+
+        rebuildStreamingPlaybackGraph(for: context, debugTiming: debugTiming)
+        applyTuning(tuning)
+
+        source.start()
+        do {
+            try await scheduleStreamingPreroll(for: context, debugTiming: debugTiming)
+        } catch {
+            cancelStreamingPlayback(reason: "initial preroll failed")
+            throw error
+        }
+
+        if !engine.isRunning {
+            try engine.start()
+            AppLogger.shared.notice(category: "engine", "AVAudioEngine started for streaming local playback.")
+        }
+        debugTiming?.log(
+            "playback scheduled",
+            fileURL: descriptor.url,
+            extra: [
+                "scheduledFrames=\(context.scheduledFrames)",
+                "currentBytes=\(context.scheduledBytes)",
+                "capBytes=\(Self.maxStreamingScheduledPCMBytes)"
+            ]
+        )
+        startPlayers()
+        state = .playing
+        startStreamingScheduleTask(for: context, debugTiming: debugTiming)
+        debugTiming?.log(
+            "playback started",
+            fileURL: descriptor.url,
+            extra: [
+                "scheduledFrames=\(context.scheduledFrames)",
+                "currentBytes=\(context.scheduledBytes)",
+                "capBytes=\(Self.maxStreamingScheduledPCMBytes)"
+            ]
+        )
+
+        AppLogger.shared.notice(
+            category: "streaming",
+            "Started streaming playback file=\(descriptor.url.lastPathComponent) channels=\(descriptor.channelCount) sampleRate=\(String(format: "%.1f", descriptor.sourceSampleRate)) scheduledBytes=\(context.scheduledBytes)"
+        )
+        debugTiming?.log(
+            "streaming engine commit finish",
+            fileURL: descriptor.url,
+            extra: [
+                "commitMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - commitStart) / 1_000_000.0))",
+                "scheduledFrames=\(context.scheduledFrames)",
+                "scheduledBytes=\(context.scheduledBytes)"
+            ]
+        )
     }
 
     func updateRenderer(
@@ -202,6 +389,7 @@ final class OrbisonicEngine {
         detachPlayerNodes()
         detachRendererSourceNode()
         detachSourceNodes()
+        cancelStreamingPlayback(reason: "live input started")
 
         guard inputRoute.isAvailable else {
             throw LiveInputError.inputDeviceUnavailable(inputRoute.deviceName)
@@ -333,6 +521,11 @@ final class OrbisonicEngine {
     func play(debugTiming: DebugTimingContext? = nil) throws {
         stopTestTone()
 
+        if let streamingPlayback {
+            try playStreaming(streamingPlayback, debugTiming: debugTiming)
+            return
+        }
+
         guard let loadedFile else {
             AppLogger.shared.error(category: "engine", "Play requested with no loaded file.")
             return
@@ -364,8 +557,24 @@ final class OrbisonicEngine {
             AppLogger.shared.debug(category: "transport", "Play requested while already playing.")
         case .idle, .ready:
             scheduleFromCurrentPosition(debugTiming: debugTiming)
+            debugTiming?.log(
+                "playback scheduled",
+                fileURL: loadedFile.url,
+                extra: [
+                    "startFrame=\(currentStartFrame)",
+                    "preparedBytes=\(loadedFile.preparedPCMByteCount)"
+                ]
+            )
             startPlayers()
             state = .playing
+            debugTiming?.log(
+                "playback started",
+                fileURL: loadedFile.url,
+                extra: [
+                    "startFrame=\(currentStartFrame)",
+                    "preparedBytes=\(loadedFile.preparedPCMByteCount)"
+                ]
+            )
             AppLogger.shared.notice(
                 category: "transport",
                 "Started playback state=\(state.rawValue) startFrame=\(currentStartFrame) layout=\(loadedFile.layout.name)"
@@ -377,7 +586,9 @@ final class OrbisonicEngine {
         guard state == .playing else { return }
         currentStartFrame = playbackFrame()
         pausedPlaybackNeedsReschedule = false
-        if usesDirectRendererPlayback {
+        if streamingPlayback != nil {
+            playerNodes.forEach { $0.pause() }
+        } else if usesDirectRendererPlayback {
             engine.pause()
             resetMonitorMeterLevels()
         } else {
@@ -447,8 +658,10 @@ final class OrbisonicEngine {
     }
 
     func stop() {
+        let hadStreamingPlayback = streamingPlayback != nil
         playerNodes.forEach { $0.stop() }
         resetRendererPlayback(to: 0)
+        cancelStreamingPlayback(reason: "transport stop")
         if liveInputSource != nil {
             stopLiveInput()
         }
@@ -458,7 +671,7 @@ final class OrbisonicEngine {
         completionToken = UUID()
         currentStartFrame = 0
         pausedPlaybackNeedsReschedule = false
-        state = loadedFile == nil ? .idle : .ready
+        state = (loadedFile == nil && !hadStreamingPlayback) ? .idle : .ready
         AppLogger.shared.notice(category: "transport", "Stopped playback. state=\(state.rawValue)")
     }
 
@@ -633,6 +846,22 @@ final class OrbisonicEngine {
     }
 
     func seek(toProgress progress: Double) {
+        if let streamingPlayback {
+            let clampedProgress = progress.clamped(to: 0...1)
+            let frameCount = streamingPlayback.durationFrames
+            let nextFrame = AVAudioFramePosition(Double(frameCount) * clampedProgress)
+            currentStartFrame = min(nextFrame, max(frameCount - 1, 0))
+            AppLogger.shared.info(
+                category: "streaming",
+                "Streaming seek requested progress=\(String(format: "%.3f", clampedProgress)) frame=\(currentStartFrame); canceling current streaming decode."
+            )
+            playerNodes.forEach { $0.stop() }
+            cancelStreamingPlayback(reason: "seek")
+            pausedPlaybackNeedsReschedule = false
+            state = .ready
+            return
+        }
+
         guard let loadedFile else { return }
         let clampedProgress = progress.clamped(to: 0...1)
         let nextFrame = AVAudioFramePosition(Double(loadedFile.frameCount) * clampedProgress)
@@ -663,6 +892,11 @@ final class OrbisonicEngine {
             return Date().timeIntervalSince(liveStartDate ?? Date())
         }
 
+        if let streamingPlayback {
+            guard streamingPlayback.descriptor.sourceSampleRate > 0 else { return 0 }
+            return Double(playbackFrame()) / streamingPlayback.descriptor.sourceSampleRate
+        }
+
         guard let loadedFile else { return 0 }
         return Double(playbackFrame()) / loadedFile.sampleRate
     }
@@ -672,12 +906,23 @@ final class OrbisonicEngine {
             return 0
         }
 
+        if let streamingPlayback {
+            return streamingPlayback.durationSeconds
+        }
+
         return loadedFile?.duration ?? 0
     }
 
     func channelMeterLevels() -> [Float] {
         if let livePipe {
             return livePipe.latestMeterLevels()
+        }
+
+        if let streamingPlayback {
+            guard state == .playing || state == .paused else {
+                return Array(repeating: 0, count: streamingPlayback.layout.channelCount)
+            }
+            return Array(repeating: 0, count: streamingPlayback.layout.channelCount)
         }
 
         guard let loadedFile else {
@@ -825,6 +1070,312 @@ final class OrbisonicEngine {
         AppLogger.shared.debug(category: "transport", "Paused playback will reschedule on resume. reason=\(reason) frame=\(currentStartFrame)")
     }
 
+    private func rebuildStreamingPlaybackGraph(
+        for context: StreamingPlaybackContext,
+        debugTiming: DebugTimingContext? = nil
+    ) {
+        let graphStart = DispatchTime.now().uptimeNanoseconds
+#if DEBUG
+        debugPlaybackGraphBuildCount += 1
+#endif
+        debugTiming?.log("streaming graph rebuild start", fileURL: context.descriptor.url)
+        detachPlayerNodes()
+        detachRendererSourceNode()
+
+        playerNodes = context.layout.channels.map { _ in AVAudioPlayerNode() }
+        for player in playerNodes {
+            engine.attach(player)
+            engine.connect(player, to: environment, format: context.monoFormat)
+        }
+
+        AppLogger.shared.info(
+            category: "streaming",
+            "Rebuilt streaming player graph with \(playerNodes.count) mono point sources."
+        )
+        debugTiming?.log(
+            "streaming graph rebuild end",
+            fileURL: context.descriptor.url,
+            extra: [
+                "graphMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - graphStart) / 1_000_000.0))",
+                "playerNodes=\(playerNodes.count)"
+            ]
+        )
+    }
+
+    private func scheduleStreamingPreroll(
+        for context: StreamingPlaybackContext,
+        debugTiming: DebugTimingContext?
+    ) async throws {
+        let targetFrames = AVAudioFramePosition(StreamingLocalPlaybackPolicy.initialPrerollFrames)
+        while context.scheduledFrames < targetFrames {
+            try Task.checkCancellation()
+            guard streamingPlayback?.token == context.token else {
+                throw CancellationError()
+            }
+            guard let chunk = try await context.source.nextChunk() else {
+                context.reachedEndOfSource = true
+                break
+            }
+            try scheduleStreamingChunk(chunk, for: context, debugTiming: debugTiming)
+        }
+
+        guard context.scheduledFrames > 0 else {
+            throw StreamingAudioFileSourceError.sourceClosed
+        }
+    }
+
+    private func startStreamingScheduleTask(
+        for context: StreamingPlaybackContext,
+        debugTiming: DebugTimingContext?
+    ) {
+        context.scheduleTask?.cancel()
+        context.scheduleTask = Task { @MainActor [weak self, weak context] in
+            guard let self, let context else { return }
+            do {
+                while !Task.isCancelled {
+                    guard self.streamingPlayback?.token == context.token else { return }
+                    if context.reachedEndOfSource {
+                        if context.scheduledFrames == 0 {
+                            self.finishStreamingPlaybackNaturally(token: context.token)
+                        }
+                        return
+                    }
+
+                    if self.streamingScheduleIsFull(context) {
+                        try await Task.sleep(nanoseconds: 10_000_000)
+                        continue
+                    }
+
+                    guard let chunk = try await context.source.nextChunk() else {
+                        context.reachedEndOfSource = true
+                        if context.scheduledFrames == 0 {
+                            self.finishStreamingPlaybackNaturally(token: context.token)
+                            return
+                        }
+                        continue
+                    }
+
+                    try self.scheduleStreamingChunk(chunk, for: context, debugTiming: debugTiming)
+                }
+            } catch is CancellationError {
+                AppLogger.shared.info(category: "streaming", "Streaming scheduler canceled file=\(context.descriptor.url.lastPathComponent)")
+                debugTiming?.log("streaming scheduler canceled", fileURL: context.descriptor.url)
+            } catch {
+                guard self.streamingPlayback?.token == context.token else { return }
+                AppLogger.shared.error(category: "streaming", "Streaming scheduler failed file=\(context.descriptor.url.lastPathComponent) error=\(error.localizedDescription)")
+                debugTiming?.log(
+                    "streaming scheduler failed",
+                    fileURL: context.descriptor.url,
+                    extra: ["error=\"\(error.localizedDescription)\""]
+                )
+                self.stop()
+            }
+        }
+    }
+
+    private func streamingScheduleIsFull(_ context: StreamingPlaybackContext) -> Bool {
+        let byteCapReached = context.scheduledBytes >= Self.maxStreamingScheduledPCMBytes
+        let frameCap = AVAudioFramePosition(
+            max(context.descriptor.sourceSampleRate * Self.maxStreamingScheduledAheadSeconds, 0)
+                .rounded(.up)
+        )
+        let frameCapReached = frameCap > 0 && context.scheduledFrames >= frameCap
+        return byteCapReached || frameCapReached
+    }
+
+    private func scheduleStreamingChunk(
+        _ chunk: PCMChunk,
+        for context: StreamingPlaybackContext,
+        debugTiming: DebugTimingContext?
+    ) throws {
+        guard streamingPlayback?.token == context.token else {
+            chunk.recycleBuffer()
+            throw CancellationError()
+        }
+
+        let scheduledChunk = try makeScheduledStreamingChunk(from: chunk, context: context)
+        chunk.recycleBuffer()
+        guard context.scheduledBytes + scheduledChunk.byteCount <= Self.maxStreamingScheduledPCMBytes else {
+            scheduledChunk.monoBuffers.forEach { context.monoBufferPool.recycle($0) }
+            throw StreamingAudioFileSourceError.chunkExceedsQueueLimit(
+                chunkBytes: scheduledChunk.byteCount,
+                maxBytes: Self.maxStreamingScheduledPCMBytes
+            )
+        }
+
+        context.scheduledChunks[scheduledChunk.id] = scheduledChunk
+        context.scheduledFrames += AVAudioFramePosition(scheduledChunk.frameCount)
+        context.scheduledBytes += scheduledChunk.byteCount
+        context.scheduledChunkCount += 1
+#if DEBUG
+        debugScheduleFromCurrentPositionCount += 1
+#endif
+
+        for (index, player) in playerNodes.enumerated() {
+            let buffer = scheduledChunk.monoBuffers[index]
+            if index == 0 {
+                let token = context.token
+                let chunkID = scheduledChunk.id
+                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.streamingChunkDidFinish(chunkID: chunkID, token: token)
+                    }
+                }
+            } else {
+                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack)
+            }
+        }
+
+        if context.scheduledChunkCount == 1 || context.scheduledChunkCount.isMultiple(of: 16) {
+            AppLogger.shared.debug(
+                category: "streaming",
+                "Scheduled streaming chunk file=\(context.descriptor.url.lastPathComponent) startFrame=\(scheduledChunk.startFrame) frames=\(scheduledChunk.frameCount) currentBytes=\(context.scheduledBytes) capBytes=\(Self.maxStreamingScheduledPCMBytes)"
+            )
+            debugTiming?.log(
+                context.scheduledChunkCount == 1 ? "first chunk playback scheduled" : "streaming schedule buffer usage",
+                fileURL: context.descriptor.url,
+                extra: [
+                    "startFrame=\(scheduledChunk.startFrame)",
+                    "frameCount=\(scheduledChunk.frameCount)",
+                    "chunkBytes=\(scheduledChunk.byteCount)",
+                    "scheduledFrames=\(context.scheduledFrames)",
+                    "currentBytes=\(context.scheduledBytes)",
+                    "capBytes=\(Self.maxStreamingScheduledPCMBytes)"
+                ]
+            )
+        }
+    }
+
+    private func makeScheduledStreamingChunk(
+        from chunk: PCMChunk,
+        context: StreamingPlaybackContext
+    ) throws -> StreamingScheduledChunk {
+        guard let channelData = chunk.buffer.floatChannelData else {
+            throw AudioFileLoaderError.formatConversionFailed("missing streaming chunk float channel data")
+        }
+
+        let frameCount = chunk.frameCount
+        let sourceChannelCount = Int(chunk.buffer.format.channelCount)
+        var monoBuffers: [AVAudioPCMBuffer] = []
+        monoBuffers.reserveCapacity(context.layout.channelCount)
+
+        for channelIndex in 0..<context.layout.channelCount {
+            guard let monoBuffer = context.monoBufferPool.checkout(frameCapacity: frameCount),
+                  let monoData = monoBuffer.floatChannelData
+            else {
+                throw AudioFileLoaderError.monoBufferAllocationFailed
+            }
+
+            monoBuffer.frameLength = frameCount
+            let destination = monoData[0]
+            if channelIndex < sourceChannelCount {
+                destination.update(from: channelData[channelIndex], count: Int(frameCount))
+            } else {
+                destination.initialize(repeating: 0, count: Int(frameCount))
+            }
+            monoBuffers.append(monoBuffer)
+        }
+
+        return StreamingScheduledChunk(
+            startFrame: chunk.startFrame,
+            frameCount: frameCount,
+            monoBuffers: monoBuffers
+        )
+    }
+
+    private func streamingChunkDidFinish(chunkID: UUID, token: UUID) {
+        guard let context = streamingPlayback,
+              context.token == token,
+              let chunk = context.scheduledChunks.removeValue(forKey: chunkID)
+        else {
+            AppLogger.shared.debug(category: "streaming", "Ignored stale streaming chunk completion.")
+            return
+        }
+
+        context.scheduledFrames = max(context.scheduledFrames - AVAudioFramePosition(chunk.frameCount), 0)
+        context.scheduledBytes = max(context.scheduledBytes - chunk.byteCount, 0)
+        chunk.monoBuffers.forEach { context.monoBufferPool.recycle($0) }
+
+        AppLogger.shared.debug(
+            category: "streaming",
+            "Streaming chunk consumed file=\(context.descriptor.url.lastPathComponent) chunkFrames=\(chunk.frameCount) scheduledBytes=\(context.scheduledBytes)"
+        )
+
+        if context.reachedEndOfSource && context.scheduledFrames == 0 {
+            finishStreamingPlaybackNaturally(token: token)
+        }
+    }
+
+    private func finishStreamingPlaybackNaturally(token: UUID) {
+        guard let context = streamingPlayback,
+              context.token == token,
+              state == .playing
+        else { return }
+
+        AppLogger.shared.notice(category: "streaming", "Streaming playback finished naturally file=\(context.descriptor.url.lastPathComponent)")
+        stop()
+        onPlaybackEnded?()
+    }
+
+    private func playStreaming(
+        _ context: StreamingPlaybackContext,
+        debugTiming: DebugTimingContext?
+    ) throws {
+        if !engine.isRunning {
+            try engine.start()
+            AppLogger.shared.notice(category: "engine", "AVAudioEngine started for streaming playback.")
+        }
+
+        switch state {
+        case .paused:
+            playerNodes.forEach { $0.play() }
+            pausedPlaybackNeedsReschedule = false
+            state = .playing
+            AppLogger.shared.notice(category: "streaming", "Resumed streaming playback at \(formatTime(currentTime())) / \(context.metadata.durationText).")
+        case .playing:
+            AppLogger.shared.debug(category: "streaming", "Streaming play requested while already playing.")
+        case .idle, .ready:
+            startPlayers()
+            state = .playing
+            startStreamingScheduleTask(for: context, debugTiming: debugTiming)
+            AppLogger.shared.notice(category: "streaming", "Started streaming playback from ready state.")
+        }
+    }
+
+    private func cancelStreamingPlayback(reason: String) {
+        guard let context = streamingPlayback else { return }
+
+        context.scheduleTask?.cancel()
+        context.scheduleTask = nil
+        context.source.cancel()
+        Task {
+            await context.source.clearBufferedChunks()
+        }
+        context.scheduledChunks.values.forEach { chunk in
+            chunk.monoBuffers.forEach { context.monoBufferPool.recycle($0) }
+        }
+        context.scheduledChunks.removeAll()
+        context.scheduledFrames = 0
+        context.scheduledBytes = 0
+        streamingPlayback = nil
+        AppLogger.shared.info(category: "streaming", "Canceled streaming playback file=\(context.descriptor.url.lastPathComponent) reason=\(reason)")
+    }
+
+    private static func streamingMetadata(for descriptor: AudioAssetDescriptor) -> AudioSourceMetadata {
+        AudioSourceMetadata(
+            fileName: descriptor.url.lastPathComponent,
+            containerName: descriptor.containerDescription ?? descriptor.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
+            codecName: descriptor.codecDescription ?? "Unknown",
+            layoutName: descriptor.channelLayout.name,
+            channelSummary: descriptor.channelLayout.channelSummary,
+            channelCount: descriptor.channelCount,
+            sampleRate: descriptor.sourceSampleRate,
+            bitDepth: 32,
+            duration: descriptor.durationSeconds ?? 0,
+            formatNote: "Streaming local playback; decoded in bounded chunks."
+        )
+    }
+
     private func rebuildPlaybackGraph(for loadedFile: LoadedAudioFile, debugTiming: DebugTimingContext? = nil) {
         let graphStart = DispatchTime.now().uptimeNanoseconds
 #if DEBUG
@@ -929,6 +1480,12 @@ final class OrbisonicEngine {
 
         if let loadedFile {
             for (channel, player) in zip(loadedFile.layout.channels, playerNodes) {
+                configureSpatialNode(player, for: channel, tuning: tuning)
+            }
+        }
+
+        if let streamingPlayback {
+            for (channel, player) in zip(streamingPlayback.layout.channels, playerNodes) {
                 configureSpatialNode(player, for: channel, tuning: tuning)
             }
         }
@@ -1309,6 +1866,23 @@ final class OrbisonicEngine {
     }
 
     private func playbackFrame() -> AVAudioFramePosition {
+        if let streamingPlayback {
+            if state == .playing,
+               let renderTime = playerNodes.first?.lastRenderTime,
+               let playerTime = playerNodes.first?.playerTime(forNodeTime: renderTime) {
+                let frame = currentStartFrame + AVAudioFramePosition(playerTime.sampleTime)
+                if streamingPlayback.durationFrames > 0 {
+                    return min(frame, streamingPlayback.durationFrames)
+                }
+                return max(frame, 0)
+            }
+
+            if streamingPlayback.durationFrames > 0 {
+                return min(currentStartFrame, streamingPlayback.durationFrames)
+            }
+            return max(currentStartFrame, 0)
+        }
+
         guard let loadedFile else { return 0 }
 
         if usesDirectRendererPlayback {

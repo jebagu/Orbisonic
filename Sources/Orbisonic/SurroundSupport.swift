@@ -3,7 +3,7 @@ import CoreAudio
 import CoreAudioTypes
 import Foundation
 
-enum SurroundChannelRole: Hashable {
+enum SurroundChannelRole: Hashable, Sendable {
     case frontLeft
     case frontRight
     case center
@@ -160,7 +160,7 @@ enum SurroundChannelRole: Hashable {
     }
 }
 
-struct SurroundChannel: Identifiable, Hashable {
+struct SurroundChannel: Identifiable, Hashable, Sendable {
     let index: Int
     let role: SurroundChannelRole
 
@@ -177,7 +177,7 @@ struct SurroundChannel: Identifiable, Hashable {
     }
 }
 
-struct SurroundLayout: Hashable {
+struct SurroundLayout: Hashable, Sendable {
     let name: String
     let channels: [SurroundChannel]
 

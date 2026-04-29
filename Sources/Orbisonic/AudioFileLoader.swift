@@ -15,6 +15,66 @@ struct LoadedAudioFile: @unchecked Sendable {
         guard sampleRate > 0 else { return 0 }
         return Double(frameCount) / sampleRate
     }
+
+    var preparedPCMByteCount: Int {
+        PreparedPCMPolicy.estimatedDecodedPCMBytes(
+            frameCount: frameCount,
+            channelCount: monoBuffers.count
+        ) ?? 0
+    }
+}
+
+enum PreparedPCMPolicy {
+    static let bytesPerSample = MemoryLayout<Float>.size
+    static let maxFullPreparedPCMBytes = 128 * 1_024 * 1_024
+    static let maxAdjacentFullPreloadPCMBytes = 0
+    static let maxPreparedCacheEntries = 2
+    static let maxPreparedCacheBytes = maxFullPreparedPCMBytes
+
+    static func estimatedDecodedPCMBytes(
+        durationSeconds: TimeInterval,
+        sampleRate: Double,
+        channelCount: Int,
+        bytesPerSample: Int = Self.bytesPerSample
+    ) -> Int? {
+        guard durationSeconds.isFinite,
+              sampleRate.isFinite,
+              durationSeconds >= 0,
+              sampleRate > 0,
+              channelCount > 0,
+              bytesPerSample > 0
+        else { return nil }
+
+        let estimate = durationSeconds * sampleRate * Double(channelCount) * Double(bytesPerSample)
+        guard estimate.isFinite,
+              estimate >= 0,
+              estimate <= Double(Int.max)
+        else { return nil }
+
+        return Int(estimate.rounded(.up))
+    }
+
+    static func estimatedDecodedPCMBytes(
+        frameCount: AVAudioFramePosition,
+        channelCount: Int,
+        bytesPerSample: Int = Self.bytesPerSample
+    ) -> Int? {
+        guard frameCount >= 0,
+              channelCount > 0,
+              bytesPerSample > 0
+        else { return nil }
+
+        let estimate = Double(frameCount) * Double(channelCount) * Double(bytesPerSample)
+        guard estimate.isFinite,
+              estimate <= Double(Int.max)
+        else { return nil }
+
+        return Int(estimate.rounded(.up))
+    }
+
+    static func formatMiB(_ bytes: Int) -> String {
+        String(format: "%.2f MiB", Double(bytes) / 1_048_576.0)
+    }
 }
 
 enum AudioFileLoaderError: LocalizedError {
@@ -76,6 +136,19 @@ final class AudioFileLoader {
         var finalChannelCount: UInt32?
         var finalDuration: TimeInterval?
         var finalPreparedBufferBytes: Int?
+        var decodeCanceled = false
+
+        func checkCancellation(_ phase: String, fileURL: URL? = nil) throws {
+            if Task.isCancelled {
+                decodeCanceled = true
+                timing.log(
+                    "decode canceled",
+                    fileURL: fileURL ?? url,
+                    extra: ["phase=\"\(phase)\""]
+                )
+            }
+            try Task.checkCancellation()
+        }
 
         timing.log(
             "decode start",
@@ -86,9 +159,10 @@ final class AudioFileLoader {
             ]
         )
         defer {
+            let result = decodeSucceeded ? "success" : (decodeCanceled ? "canceled" : "failed")
             var fields = [
                 "totalDecodeMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - decodeStart) / 1_000_000.0))",
-                "result=\"\(decodeSucceeded ? "success" : "failed")\"",
+                "result=\"\(result)\"",
                 "scope=\"loader\""
             ]
             if let finalSampleRate {
@@ -107,22 +181,30 @@ final class AudioFileLoader {
             timing.log("decode finish", fileURL: url, extra: fields)
         }
 
+        try checkCancellation("before file existence check")
         AppLogger.shared.info(category: "loader", "Opening file: \(url.path)")
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw AudioFileLoaderError.fileMissing(url.lastPathComponent)
         }
+        try checkCancellation("after file existence check")
 
         var readURL = url
         var temporaryDecodedURL: URL?
         var matroskaStreamInfo: MatroskaAudioStreamInfo?
         var codecNameOverride: String?
+        try checkCancellation("before metadata tag read")
         var tags = AudioMetadataBuilder.tags(for: url)
+        try checkCancellation("after metadata tag read")
 
         if MatroskaFLACSupport.isMatroska(url) {
+            try checkCancellation("before Matroska probe")
             let containerDecodeStart = DispatchTime.now().uptimeNanoseconds
             timing.log("container decode start", fileURL: url, extra: ["container=\"Matroska\""])
             let streamInfo = try MatroskaAudioProbe().probe(url: url)
+            try checkCancellation("after Matroska probe")
+            try checkCancellation("before Matroska demux")
             let decodedURL = try MatroskaFLACDemuxer().demuxToCAF(url: url, streamInfo: streamInfo)
+            try checkCancellation("after Matroska demux")
             timing.log(
                 "container decode end",
                 fileURL: url,
@@ -141,9 +223,11 @@ final class AudioFileLoader {
                     "sampleRate=\(streamInfo.sampleRate) bitDepth=\(streamInfo.bitDepth)"
             )
         } else if StandaloneFLACSupport.isFLAC(url), forceFFmpegFLACFallback {
+            try checkCancellation("before forced FLAC ffmpeg decode")
             let containerDecodeStart = DispatchTime.now().uptimeNanoseconds
             timing.log("container decode start", fileURL: url, extra: ["container=\"FLAC\"", "decoder=\"ffmpeg\""])
             let decodedURL = try FFmpegAudioDecoder().decodeToCAF(url: url, sourceDescription: "FLAC")
+            try checkCancellation("after forced FLAC ffmpeg decode")
             timing.log(
                 "container decode end",
                 fileURL: url,
@@ -165,16 +249,20 @@ final class AudioFileLoader {
             }
         }
 
-        let file: AVAudioFile
+        var file: AVAudioFile
         let openStart = DispatchTime.now().uptimeNanoseconds
+        try checkCancellation("before open audio file", fileURL: readURL)
         timing.log("open audio file start", fileURL: readURL)
         do {
             file = try AVAudioFile(forReading: readURL)
+            try checkCancellation("after open audio file", fileURL: readURL)
             timing.log(
                 "open audio file end",
                 fileURL: readURL,
                 extra: ["openMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - openStart) / 1_000_000.0))"]
             )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             guard StandaloneFLACSupport.isFLAC(url), temporaryDecodedURL == nil else {
                 throw AudioFileLoaderError.unsupportedAudioFile(url.lastPathComponent, error.localizedDescription)
@@ -188,8 +276,10 @@ final class AudioFileLoader {
                 ]
             )
             let fallbackDecodeStart = DispatchTime.now().uptimeNanoseconds
+            try checkCancellation("before fallback FLAC ffmpeg decode", fileURL: url)
             timing.log("container decode start", fileURL: url, extra: ["container=\"FLAC\"", "decoder=\"ffmpeg\"", "reason=\"native open failed\""])
             let decodedURL = try FFmpegAudioDecoder().decodeToCAF(url: url, sourceDescription: "FLAC")
+            try checkCancellation("after fallback FLAC ffmpeg decode", fileURL: url)
             timing.log(
                 "container decode end",
                 fileURL: url,
@@ -207,8 +297,10 @@ final class AudioFileLoader {
                 "Native FLAC open failed; decoded with ffmpeg file=\(url.lastPathComponent) error=\(error.localizedDescription)"
             )
             let fallbackOpenStart = DispatchTime.now().uptimeNanoseconds
+            try checkCancellation("before fallback open audio file", fileURL: readURL)
             timing.log("open audio file start", fileURL: readURL, extra: ["decoder=\"ffmpeg\""])
             file = try AVAudioFile(forReading: readURL)
+            try checkCancellation("after fallback open audio file", fileURL: readURL)
             timing.log(
                 "open audio file end",
                 fileURL: readURL,
@@ -220,6 +312,33 @@ final class AudioFileLoader {
         }
         let inputFormat = file.processingFormat
         let channelCount = inputFormat.channelCount
+        let estimatedDuration = inputFormat.sampleRate > 0 ? Double(file.length) / inputFormat.sampleRate : 0
+        let estimatedPreparedBytes = PreparedPCMPolicy.estimatedDecodedPCMBytes(
+            durationSeconds: estimatedDuration,
+            sampleRate: inputFormat.sampleRate,
+            channelCount: Int(channelCount)
+        )
+        let estimatedPreparedBytesText = estimatedPreparedBytes.map(String.init) ?? "unknown"
+        let fullPrepareWithinBudget = estimatedPreparedBytes.map { $0 <= PreparedPCMPolicy.maxFullPreparedPCMBytes } ?? false
+        let fullPrepareReason = fullPrepareWithinBudget
+            ? "within selected-track full prepare budget"
+            : "streaming required but fallback full prepare used for selected track"
+        timing.log(
+            "full prepare budget check",
+            fileURL: url,
+            extra: [
+                "estimatedDecodedBytes=\(estimatedPreparedBytesText)",
+                "maxFullPreparedPCMBytes=\(PreparedPCMPolicy.maxFullPreparedPCMBytes)",
+                "allowed=\(fullPrepareWithinBudget)",
+                "reason=\"\(fullPrepareReason)\""
+            ]
+        )
+        if !fullPrepareWithinBudget {
+            AppLogger.shared.notice(
+                category: "loader",
+                "Full prepared PCM estimate exceeds preferred budget file=\(url.lastPathComponent) estimatedBytes=\(estimatedPreparedBytesText) maxBytes=\(PreparedPCMPolicy.maxFullPreparedPCMBytes) reason=\"\(fullPrepareReason)\""
+            )
+        }
 
         guard OrbisonicAudioLimits.supportsSourceChannelCount(Int(channelCount)) else {
             throw AudioFileLoaderError.unsupportedChannelCount(
@@ -243,10 +362,12 @@ final class AudioFileLoader {
 
         let frameCapacity = AVAudioFrameCount(file.length)
         let sourceAllocationStart = DispatchTime.now().uptimeNanoseconds
+        try checkCancellation("before source buffer allocation", fileURL: readURL)
         timing.log("buffer allocation start", fileURL: readURL, extra: ["buffer=\"source\"", "frameCapacity=\(frameCapacity)"])
         guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: frameCapacity) else {
             throw AudioFileLoaderError.sourceBufferAllocationFailed
         }
+        try checkCancellation("after source buffer allocation", fileURL: readURL)
         timing.log(
             "buffer allocation end",
             fileURL: readURL,
@@ -256,8 +377,17 @@ final class AudioFileLoader {
             ]
         )
         let fullReadStart = DispatchTime.now().uptimeNanoseconds
-        timing.log("full read start", fileURL: readURL, extra: ["frames=\(file.length)"])
+        try checkCancellation("before blocking full read", fileURL: readURL)
+        timing.log(
+            "full read start",
+            fileURL: readURL,
+            extra: [
+                "frames=\(file.length)",
+                "reason=\"blocking AVAudioFile full read remains streaming migration target\""
+            ]
+        )
         try file.read(into: sourceBuffer)
+        try checkCancellation("after blocking full read", fileURL: readURL)
         timing.log(
             "full read end",
             fileURL: readURL,
@@ -279,10 +409,12 @@ final class AudioFileLoader {
         }
 
         let conversionAllocationStart = DispatchTime.now().uptimeNanoseconds
+        try checkCancellation("before conversion buffer allocation", fileURL: readURL)
         timing.log("buffer allocation start", fileURL: readURL, extra: ["buffer=\"converted\"", "frameCapacity=\(sourceBuffer.frameLength)"])
         guard let surroundBuffer = AVAudioPCMBuffer(pcmFormat: surroundFormat, frameCapacity: sourceBuffer.frameLength) else {
             throw AudioFileLoaderError.convertedBufferAllocationFailed
         }
+        try checkCancellation("after conversion buffer allocation", fileURL: readURL)
         timing.log(
             "buffer allocation end",
             fileURL: readURL,
@@ -300,8 +432,14 @@ final class AudioFileLoader {
         var conversionError: NSError?
 
         let conversionStart = DispatchTime.now().uptimeNanoseconds
+        try checkCancellation("before format conversion", fileURL: readURL)
         timing.log("format conversion start", fileURL: readURL)
         let status = converter.convert(to: surroundBuffer, error: &conversionError) { _, outStatus in
+            if Task.isCancelled {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+
             if suppliedInput {
                 outStatus.pointee = .endOfStream
                 return nil
@@ -311,6 +449,7 @@ final class AudioFileLoader {
             outStatus.pointee = .haveData
             return sourceBuffer
         }
+        try checkCancellation("after format conversion", fileURL: readURL)
 
         if status == .error || conversionError != nil {
             throw AudioFileLoaderError.formatConversionFailed(conversionError?.localizedDescription ?? "unknown converter error")
@@ -335,11 +474,15 @@ final class AudioFileLoader {
         }
 
         let splitStart = DispatchTime.now().uptimeNanoseconds
+        try checkCancellation("before channel split", fileURL: readURL)
         timing.log("channel split start", fileURL: readURL, extra: ["channels=\(channelCount)", "frames=\(surroundBuffer.frameLength)"])
+        let splitChunkFrames = 65_536
         let monoBuffers = try (0..<Int(channelCount)).map { channelIndex in
+            try checkCancellation("before channel split allocation \(channelIndex)", fileURL: readURL)
             guard let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: surroundBuffer.frameLength) else {
                 throw AudioFileLoaderError.monoBufferAllocationFailed
             }
+            try checkCancellation("after channel split allocation \(channelIndex)", fileURL: readURL)
 
             monoBuffer.frameLength = surroundBuffer.frameLength
             let source = channelData[channelIndex]
@@ -347,9 +490,19 @@ final class AudioFileLoader {
                 throw AudioFileLoaderError.formatConversionFailed("missing mono float channel data")
             }
             let destination = monoChannelData[0]
-            destination.update(from: source, count: Int(surroundBuffer.frameLength))
+            let totalFrames = Int(surroundBuffer.frameLength)
+            var offset = 0
+            while offset < totalFrames {
+                try checkCancellation("channel split copy \(channelIndex)", fileURL: readURL)
+                let frameCount = min(splitChunkFrames, totalFrames - offset)
+                destination
+                    .advanced(by: offset)
+                    .update(from: source.advanced(by: offset), count: frameCount)
+                offset += frameCount
+            }
             return monoBuffer
         }
+        try checkCancellation("after channel split", fileURL: readURL)
         timing.log(
             "channel split end",
             fileURL: readURL,
@@ -372,6 +525,7 @@ final class AudioFileLoader {
             tags: tags
         )
 
+        try checkCancellation("before prepared audio result", fileURL: url)
         AppLogger.shared.notice(
             category: "loader",
             "Prepared playback buffers file=\(metadata.fileName) layout=\(metadata.layoutName) codec=\(metadata.codecName) " +
@@ -381,7 +535,10 @@ final class AudioFileLoader {
         finalSampleRate = surroundFormat.sampleRate
         finalChannelCount = channelCount
         finalDuration = duration
-        finalPreparedBufferBytes = Int(surroundBuffer.frameLength) * Int(channelCount) * MemoryLayout<Float>.size
+        finalPreparedBufferBytes = PreparedPCMPolicy.estimatedDecodedPCMBytes(
+            frameCount: AVAudioFramePosition(surroundBuffer.frameLength),
+            channelCount: Int(channelCount)
+        )
         decodeSucceeded = true
 
         return LoadedAudioFile(
