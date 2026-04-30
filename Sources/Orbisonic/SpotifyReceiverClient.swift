@@ -103,7 +103,12 @@ struct SpotifyNowPlaying: Codable, Equatable, Sendable {
     var repeatTrack: Bool?
     var autoPlay: Bool?
     var clientName: String?
+    var sessionActive: Bool?
     var updatedAt: String?
+
+    var hasActiveConnectSession: Bool {
+        sessionActive == true
+    }
 
     var displayTitle: String {
         title?.trimmedNilIfBlank ?? "Spotify"

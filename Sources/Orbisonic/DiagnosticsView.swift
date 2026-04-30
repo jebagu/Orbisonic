@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private enum DiagnosticsSectionID: Hashable {
@@ -8,7 +9,6 @@ private enum DiagnosticsSectionID: Hashable {
     case localFiles
     case outputRouting
     case renderer
-    case diagnosticTools
     case webControl
     case logsSupport
     case rendererAdvanced
@@ -19,6 +19,51 @@ private enum DiagnosticsRowTone {
     case warning
     case error
     case secondary
+}
+
+private enum DiagnosticsSummaryGroup: String, CaseIterable, Hashable {
+    case orbisonic = "Orbisonic"
+    case source = "Source"
+    case audio = "Audio"
+}
+
+private enum DiagnosticsSummaryState: Equatable {
+    case ok
+    case fault
+    case status
+
+    var label: String {
+        switch self {
+        case .ok:
+            return "OK"
+        case .fault:
+            return "Fault"
+        case .status:
+            return "Status"
+        }
+    }
+
+    var tone: DiagnosticsRowTone {
+        switch self {
+        case .ok:
+            return .normal
+        case .fault:
+            return .error
+        case .status:
+            return .secondary
+        }
+    }
+}
+
+private struct DiagnosticsSummaryRow: Identifiable {
+    let group: DiagnosticsSummaryGroup
+    let name: String
+    let state: DiagnosticsSummaryState
+    let status: String
+    var monospace = false
+    var copyValue: String?
+
+    var id: String { "\(group.rawValue):\(name):\(state.label):\(status)" }
 }
 
 private struct DiagnosticsRow: Identifiable {
@@ -41,6 +86,7 @@ struct DiagnosticsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             topStatusPanel
+            channelWalkPanel
 
             diagnosticsDisclosure(
                 id: .inputHealth,
@@ -102,29 +148,15 @@ struct DiagnosticsView: View {
             ) {
                 diagnosticsRows(rendererWarnings)
                 diagnosticsRows(rendererRows)
-                DisclosureGroup(isExpanded: expansionBinding(for: .rendererAdvanced, defaultExpanded: false)) {
+                diagnosticsInlineDisclosure(
+                    id: .rendererAdvanced,
+                    title: "Advanced renderer details",
+                    defaultExpanded: false
+                ) {
                     diagnosticsRows(rendererAdvancedRows)
                         .padding(.top, 8)
-                } label: {
-                    Text("Advanced renderer details")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(LabTheme.text)
                 }
-                .tint(LabTheme.cyan)
                 .padding(.top, 4)
-            }
-
-            diagnosticsDisclosure(
-                id: .diagnosticTools,
-                title: "Diagnostic Tools",
-                defaultExpanded: false,
-                warnings: diagnosticToolWarnings
-            ) {
-                diagnosticsRows(diagnosticToolWarnings)
-                diagnosticsRows(diagnosticToolRows)
-                channelWalkControls
-                singleSpeakerTestControls
-                diagnosticToneActivityPanel
             }
 
             diagnosticsDisclosure(
@@ -151,31 +183,195 @@ struct DiagnosticsView: View {
     }
 
     private var topStatusPanel: some View {
-        diagnosticsPanel(title: "Top Status") {
-            diagnosticsRows(topStatusRows)
+        diagnosticsPanel(title: "At A Glance") {
+            diagnosticsSummaryHeader
+            ForEach(DiagnosticsSummaryGroup.allCases, id: \.self) { group in
+                diagnosticsSummarySection(
+                    group,
+                    rows: atAGlanceRows.filter { $0.group == group }
+                )
+            }
         }
     }
 
-    private var topStatusRows: [DiagnosticsRow] {
-        var rows = [
-            DiagnosticsRow(label: "Active source", value: model.sourceMode.rawValue),
-            DiagnosticsRow(label: "Overall state", value: model.diagnosticOverallStateText)
+    private var channelWalkPanel: some View {
+        diagnosticsPanel(title: "Speaker Tests") {
+            speakerTestControlRow
+            diagnosticToneActivityPanel
+        }
+    }
+
+    private var atAGlanceRows: [DiagnosticsSummaryRow] {
+        [
+            DiagnosticsSummaryRow(
+                group: .orbisonic,
+                name: "App",
+                state: model.appLaunchContextText == "Raw executable" ? .fault : .ok,
+                status: "v\(AppBuildInfo.version) build \(AppBuildInfo.buildNumber)",
+                monospace: true
+            ),
+            DiagnosticsSummaryRow(
+                group: .orbisonic,
+                name: "Machine Address",
+                state: machineAddressCopyValue == nil ? .status : .ok,
+                status: machineAddressText,
+                monospace: true,
+                copyValue: machineAddressCopyValue
+            ),
+            DiagnosticsSummaryRow(
+                group: .orbisonic,
+                name: "Web Interface",
+                state: webInterfaceCopyValue == nil ? .status : .ok,
+                status: webInterfaceText,
+                monospace: true,
+                copyValue: webInterfaceCopyValue
+            ),
+            DiagnosticsSummaryRow(
+                group: .orbisonic,
+                name: "Last Error",
+                state: model.lastErrorEvent == nil ? .ok : .fault,
+                status: model.lastErrorEvent == nil ? "None" : "See below"
+            ),
+            DiagnosticsSummaryRow(
+                group: .source,
+                name: "Active Source",
+                state: .status,
+                status: model.sourceMode.displayName
+            ),
+            inputRouteSummaryRow,
+            signalSummaryRow,
+            sourceServiceSummaryRow,
+            outputSummaryRow(name: "Output 1", isMonitor: true),
+            outputSummaryRow(name: "Output 2", isMonitor: false)
         ]
+    }
 
-        if let event = model.lastErrorEvent {
-            rows.append(DiagnosticsRow(label: "Last error", value: eventText(event), tone: .error))
-        }
-        if let event = model.lastRecoveryEvent {
-            rows.append(DiagnosticsRow(label: "Last recovery", value: eventText(event), tone: .secondary))
+    private var inputRouteSummaryRow: DiagnosticsSummaryRow {
+        if model.sourceMode.isLiveInput {
+            let isFault = !model.inputRoute.isAvailable || !model.sourceMode.acceptsInputRoute(model.inputRoute)
+            return DiagnosticsSummaryRow(
+                group: .source,
+                name: "Input Route",
+                state: isFault ? .fault : .ok,
+                status: isFault ? "See below" : "OK"
+            )
         }
 
-        rows.append(contentsOf: [
-            DiagnosticsRow(label: "App version", value: AppBuildInfo.version),
-            DiagnosticsRow(label: "Build", value: AppBuildInfo.buildNumber),
-            DiagnosticsRow(label: "Commit", value: AppBuildInfo.gitCommit, monospace: true),
-            DiagnosticsRow(label: "Build date", value: AppBuildInfo.buildDate)
-        ])
-        return rows
+        return DiagnosticsSummaryRow(
+            group: .source,
+            name: "Input Route",
+            state: .status,
+            status: "Idle"
+        )
+    }
+
+    private var signalSummaryRow: DiagnosticsSummaryRow {
+        if model.sourceMode.isLiveInput {
+            switch model.liveAudioSignalState {
+            case .receiving:
+                return DiagnosticsSummaryRow(group: .source, name: "Signal", state: .ok, status: "Running")
+            case .briefSilence, .silentPassage:
+                return DiagnosticsSummaryRow(group: .source, name: "Signal", state: .status, status: "Idle")
+            case .noSignal:
+                return DiagnosticsSummaryRow(group: .source, name: "Signal", state: .fault, status: "No Signal")
+            case .unknown:
+                return DiagnosticsSummaryRow(group: .source, name: "Signal", state: .status, status: "Idle")
+            }
+        }
+
+        if model.isLocalFileLoading {
+            return DiagnosticsSummaryRow(group: .source, name: "Signal", state: .status, status: "Loading")
+        }
+        if model.isPlaying || model.isTestTonePlaying || model.isDiagnosticSequencePlaying {
+            return DiagnosticsSummaryRow(group: .source, name: "Signal", state: .ok, status: "Running")
+        }
+        return DiagnosticsSummaryRow(group: .source, name: "Signal", state: .status, status: "Idle")
+    }
+
+    private var sourceServiceSummaryRow: DiagnosticsSummaryRow {
+        let hasFault: Bool
+        let status: String
+
+        switch model.sourceMode {
+        case .roon:
+            hasFault = !roonWarnings.isEmpty
+            status = "Roon"
+        case .spotify:
+            hasFault = !spotifyWarnings.isEmpty
+            status = "Spotify"
+        case .aux:
+            hasFault = !auxWarnings.isEmpty
+            status = "Aux"
+        case .filePlayback:
+            hasFault = !localFileWarnings.isEmpty
+            status = "Local"
+        case .testTone:
+            hasFault = model.lastDiagnosticFailure != nil
+            status = "Diagnostics"
+        case .off:
+            hasFault = false
+            status = "Idle"
+        }
+
+        return DiagnosticsSummaryRow(
+            group: .source,
+            name: "Source Service",
+            state: hasFault ? .fault : (model.sourceMode == .off ? .status : .ok),
+            status: hasFault ? "See below" : status
+        )
+    }
+
+    private func outputSummaryRow(name: String, isMonitor: Bool) -> DiagnosticsSummaryRow {
+        let route = isMonitor ? model.monitorOutputRoute : model.rendererOutputRoute
+        let selectionText = isMonitor ? model.monitorOutputSelectionText : model.rendererOutputSelectionText
+        let hasFault = isMonitor ? model.monitorOutputWarningText != nil : rendererOutputHasFault
+        let isNotSet = selectionText.localizedCaseInsensitiveContains("not set")
+
+        let state: DiagnosticsSummaryState
+        let status: String
+        if hasFault {
+            state = .fault
+            status = "See below"
+        } else if isNotSet {
+            state = .status
+            status = "Not Set"
+        } else if route.isAvailable {
+            state = .ok
+            status = "OK"
+        } else {
+            state = .status
+            status = "Not Set"
+        }
+
+        return DiagnosticsSummaryRow(group: .audio, name: name, state: state, status: status)
+    }
+
+    private var rendererOutputHasFault: Bool {
+        model.rendererOutputWarningText != nil ||
+            (
+                model.rendererOutputRoute.isAvailable &&
+                    model.rendererScene.outputSpeakers.count > model.rendererOutputRoute.outputChannelCount
+            )
+    }
+
+    private var machineAddressText: String {
+        machineAddressCopyValue ?? "Starting"
+    }
+
+    private var machineAddressCopyValue: String? {
+        guard let host = URLComponents(string: model.webPublicPageURL).flatMap(\.host),
+              isIPv4Address(host) else {
+            return nil
+        }
+        return host
+    }
+
+    private var webInterfaceText: String {
+        model.webPublicPageURL.trimmedNilIfBlank ?? "Starting"
+    }
+
+    private var webInterfaceCopyValue: String? {
+        copyableDiagnosticValue(in: webInterfaceText)
     }
 
     private var inputHealthRows: [DiagnosticsRow] {
@@ -286,7 +482,7 @@ struct DiagnosticsView: View {
         var rows = [
             DiagnosticsRow(label: "Spotify Connect receiver status", value: model.spotifyReceiverStatus.message),
             DiagnosticsRow(label: "Advertised device name", value: model.spotifyAdvertisedDeviceName),
-            DiagnosticsRow(label: "Active Spotify client/session", value: model.spotifyVisibleNowPlaying?.clientName ?? model.spotifyNowPlaying?.clientName ?? "None"),
+            DiagnosticsRow(label: "Active Spotify client/session", value: model.spotifyNowPlayingForActiveStatus?.clientName ?? "None"),
             DiagnosticsRow(label: "Orbisonic active Spotify target", value: spotifyIsActiveTargetText),
             DiagnosticsRow(label: "Spotify loopback availability", value: spotifyLoopbackAvailabilityText),
             DiagnosticsRow(label: "Signal state", value: model.sourceMode == .spotify ? signalStateText : "not active"),
@@ -444,28 +640,10 @@ struct DiagnosticsView: View {
         ]
     }
 
-    private var diagnosticToolRows: [DiagnosticsRow] {
-        [
-            DiagnosticsRow(label: "Output 1 channel walk status", value: model.diagnosticWalkStatus),
-            DiagnosticsRow(label: "Output 2 channel walk status", value: model.diagnosticWalkStatus),
-            DiagnosticsRow(label: "Current channel", value: currentDiagnosticChannelText),
-            DiagnosticsRow(label: "Total channel count", value: model.activeDiagnosticChannelCount > 0 ? "\(model.activeDiagnosticChannelCount)" : "None"),
-            DiagnosticsRow(label: "Output 2 diagnostic path", value: model.diagnosticOutput2PathText),
-            DiagnosticsRow(label: "Monitor downmix availability", value: model.diagnosticMonitorDownmixText),
-            DiagnosticsRow(label: "Selected single speaker test channel", value: "\(model.selectedDiagnosticSpeakerChannel)"),
-            DiagnosticsRow(label: "Test tone state", value: model.isTestTonePlaying ? "Active" : "Inactive"),
-            DiagnosticsRow(label: "Previous source after diagnostics", value: model.diagnosticPreviousSourceText),
-            DiagnosticsRow(label: "Speech sample rate vs output sample rate", value: model.diagnosticSpeechSampleRateText)
-        ]
-    }
-
-    private var diagnosticToolWarnings: [DiagnosticsRow] {
-        guard let failure = model.lastDiagnosticFailure else { return [] }
-        return [DiagnosticsRow(label: "Last diagnostic failure", value: eventText(failure), tone: .error)]
-    }
-
     private var webRows: [DiagnosticsRow] {
         [
+            DiagnosticsRow(label: "Machine address", value: machineAddressText, monospace: true),
+            DiagnosticsRow(label: "Web interface", value: webInterfaceText, monospace: true),
             DiagnosticsRow(label: "Public page status", value: model.webServerStatus),
             DiagnosticsRow(label: "Control server status", value: model.webServerStatus),
             DiagnosticsRow(label: "Permanent local URL", value: "http://127.0.0.1:37943/Orbisonic/", monospace: true),
@@ -500,97 +678,91 @@ struct DiagnosticsView: View {
         return rows
     }
 
-    private var channelWalkControls: some View {
-        diagnosticControlGroup(title: "Channel Walk") {
-            HStack(spacing: 10) {
-                Button(action: model.startMonitorChannelWalk) {
-                    Label("Output 1", systemImage: "speaker.wave.2.fill")
-                        .frame(maxWidth: .infinity)
+    private var speakerTestControlRow: some View {
+        HStack(spacing: 10) {
+            Button(action: model.startMonitorChannelWalk) {
+                Label {
+                    Text("Local Monitor Channel Walk")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                } icon: {
+                    Image(systemName: "speaker.wave.2.fill")
                 }
-                .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
-                .disabled(model.isDiagnosticSequencePlaying)
-
-                Button(action: model.startRendererOutputChannelWalk) {
-                    Label("Output 2", systemImage: "speaker.wave.3.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
-                .disabled(model.isDiagnosticSequencePlaying)
-
-                Button(action: model.stopDiagnosticsAndReturnToMusic) {
-                    Image(systemName: "stop.fill")
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(LabButtonStyle())
-                .disabled(!model.isDiagnosticSequencePlaying)
+                .frame(maxWidth: .infinity)
             }
-        }
-    }
+            .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
+            .disabled(model.isDiagnosticSequencePlaying)
 
-    private var singleSpeakerTestControls: some View {
-        diagnosticControlGroup(title: "Single Speaker Test") {
-            HStack(spacing: 10) {
-                Menu {
-                    ForEach(1...model.diagnosticSpeakerChannelCount, id: \.self) { channel in
-                        Button("Channel \(channel)") {
-                            model.selectDiagnosticSpeakerChannel(channel)
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Text("Channel")
-                        Spacer()
-                        Text("\(model.selectedDiagnosticSpeakerChannel)")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 10, weight: .bold))
-                    }
-                    .foregroundStyle(LabTheme.text)
+            Button(action: model.startRendererOutputChannelWalk) {
+                Label {
+                    Text("Sonic Sphere Channel Walk")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                } icon: {
+                    Image(systemName: "speaker.wave.3.fill")
                 }
-                .buttonStyle(LabButtonStyle())
-
-                Button(action: model.playSelectedDiagnosticSpeakerTone) {
-                    Label("Play Test", systemImage: "speaker.wave.2.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
-
-                Button(action: { model.stopTestTone() }) {
-                    Image(systemName: "stop.fill")
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(LabButtonStyle())
-                .disabled(!model.isTestTonePlaying)
+                .frame(maxWidth: .infinity)
             }
+            .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
+            .disabled(model.isDiagnosticSequencePlaying)
+
+            Button(action: model.stopDiagnosticsAndReturnToMusic) {
+                Image(systemName: "stop.fill")
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(LabButtonStyle())
+            .disabled(!model.isDiagnosticSequencePlaying)
+            .help("Stop channel walk")
+
+            Menu {
+                ForEach(1...model.diagnosticSpeakerChannelCount, id: \.self) { channel in
+                    Button("Channel \(channel)") {
+                        model.selectDiagnosticSpeakerChannel(channel)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("Speaker")
+                    Spacer(minLength: 6)
+                    Text("\(model.selectedDiagnosticSpeakerChannel)")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundStyle(LabTheme.text)
+                .frame(minWidth: 118)
+            }
+            .buttonStyle(LabButtonStyle())
+            .help("Sonic Sphere single speaker test channel")
+
+            Button(action: model.playSelectedDiagnosticSpeakerTone) {
+                Label {
+                    Text("Play Speaker")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                } icon: {
+                    Image(systemName: "speaker.wave.2.fill")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(LabButtonStyle(isActive: true, accent: LabTheme.amber))
+            .help("Play Sonic Sphere single speaker test")
+
+            Button(action: { model.stopTestTone() }) {
+                Image(systemName: "stop.fill")
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(LabButtonStyle())
+            .disabled(!model.isTestTonePlaying)
+            .help("Stop single speaker test")
         }
     }
 
     private var diagnosticToneActivityPanel: some View {
         let summary = model.diagnosticToneActivitySummary
 
-        return diagnosticControlGroup(title: "Tone Activity") {
+        return diagnosticControlGroup(title: "Multichannel VU") {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 10) {
-                    Circle()
-                        .fill(summary.isActive ? LabTheme.amber : LabTheme.textSoft.opacity(0.35))
-                        .frame(width: 9, height: 9)
-                        .padding(.top, 4)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(summary.headline)
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(summary.isActive ? LabTheme.text : LabTheme.textSoft)
-                            .lineLimit(2)
-                        Text(summary.detail)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(LabTheme.textSoft)
-                            .lineLimit(2)
-                            .truncationMode(.tail)
-                    }
-
-                    Spacer(minLength: 0)
-                }
-
                 if summary.isActive {
                     DiagnosticToneMeterStrip(
                         title: "Tone Source",
@@ -602,14 +774,14 @@ struct DiagnosticsView: View {
                 }
 
                 DiagnosticToneMeterStrip(
-                    title: "Output 1 Monitor",
+                    title: "Output 1: Local speakers",
                     meterStore: model.monitorMeterStore,
                     isActive: summary.isActive,
                     accent: LabTheme.green
                 )
 
                 DiagnosticToneMeterStrip(
-                    title: "Output 2 Renderer",
+                    title: "Output 2: Sonic Sphere",
                     meterStore: model.rendererMeterStore,
                     isActive: summary.isActive,
                     accent: LabTheme.amber
@@ -699,25 +871,39 @@ struct DiagnosticsView: View {
         warnings: [DiagnosticsRow],
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        diagnosticsPanel {
-            DisclosureGroup(isExpanded: expansionBinding(for: id, defaultExpanded: defaultExpanded || !warnings.isEmpty)) {
-                VStack(alignment: .leading, spacing: 10) {
-                    content()
-                }
-                .padding(.top, 8)
-            } label: {
-                HStack(spacing: 8) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(LabTheme.text)
-                    if !warnings.isEmpty {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(LabTheme.amber)
-                    }
-                }
-            }
-            .tint(LabTheme.cyan)
+        let expansion = expansionBinding(for: id, defaultExpanded: defaultExpanded || !warnings.isEmpty)
+
+        return OrbisonicDisclosureTray(
+            isExpanded: expansion,
+            title: title,
+            showsWarning: !warnings.isEmpty,
+            titleFontSize: 16,
+            contentTopPadding: 8,
+            contentSpacing: 10,
+            style: .diagnostics
+        ) {
+            content()
+        }
+    }
+
+    private func diagnosticsInlineDisclosure<Content: View>(
+        id: DiagnosticsSectionID,
+        title: String,
+        defaultExpanded: Bool,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        let expansion = expansionBinding(for: id, defaultExpanded: defaultExpanded)
+
+        return OrbisonicDisclosureTray(
+            isExpanded: expansion,
+            title: title,
+            titleFontSize: 12,
+            headerMinHeight: 30,
+            contentTopPadding: 8,
+            contentSpacing: 8,
+            style: .inline
+        ) {
+            content()
         }
     }
 
@@ -745,6 +931,74 @@ struct DiagnosticsView: View {
         )
     }
 
+    private var diagnosticsSummaryHeader: some View {
+        HStack(spacing: 12) {
+            Text("NAME")
+                .frame(width: 150, alignment: .leading)
+            Text("STATE")
+                .frame(width: 70, alignment: .leading)
+            Text("STATUS")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear
+                .frame(width: 28, height: 1)
+        }
+        .font(.system(size: 10, weight: .bold))
+        .foregroundStyle(LabTheme.textSoft)
+    }
+
+    private func diagnosticsSummarySection(
+        _ group: DiagnosticsSummaryGroup,
+        rows: [DiagnosticsSummaryRow]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(group.rawValue.uppercased())
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LabTheme.cyan)
+                .padding(.top, group == .orbisonic ? 0 : 4)
+
+            ForEach(rows) { row in
+                diagnosticsSummaryRow(row)
+            }
+        }
+    }
+
+    private func diagnosticsSummaryRow(_ row: DiagnosticsSummaryRow) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(row.name)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 150, alignment: .leading)
+
+            Text(row.state.label)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(valueColor(for: row.state.tone))
+                .lineLimit(1)
+                .frame(width: 70, alignment: .leading)
+
+            Text(row.status)
+                .font(.system(size: 12, weight: .semibold, design: row.monospace ? .monospaced : .default))
+                .foregroundStyle(valueColor(for: row.state.tone))
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .topLeading)
+
+            if let copyValue = row.copyValue ?? copyableDiagnosticValue(in: row.status) {
+                diagnosticCopyButton(value: copyValue, label: row.name)
+            } else {
+                Color.clear
+                    .frame(width: 28, height: 24)
+            }
+        }
+        .padding(row.state == .fault ? 8 : 0)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                .fill(row.state == .fault ? LabTheme.red.opacity(0.08) : Color.clear)
+        )
+    }
+
     private func diagnosticsRows(_ rows: [DiagnosticsRow]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(rows.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { row in
@@ -769,6 +1023,10 @@ struct DiagnosticsView: View {
                 .lineLimit(row.monospace ? 3 : 2)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, minHeight: 24, alignment: .topLeading)
+
+            if let copyValue = copyableDiagnosticValue(in: row.value) {
+                diagnosticCopyButton(value: copyValue, label: row.label)
+            }
         }
         .padding(row.isWarning ? 8 : 0)
         .background(
@@ -806,6 +1064,71 @@ struct DiagnosticsView: View {
                         .stroke(LabTheme.line, lineWidth: 1)
                 )
         )
+    }
+
+    private func diagnosticCopyButton(value: String, label: String) -> some View {
+        Button {
+            copyDiagnosticValue(value)
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(LabTheme.cyan)
+                .frame(width: 28, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                        .fill(Color.black.opacity(0.16))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                                .stroke(LabTheme.line, lineWidth: 1)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Copy \(label)")
+        .accessibilityLabel("Copy \(label)")
+    }
+
+    private func copyDiagnosticValue(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private func copyableDiagnosticValue(in value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let url = firstRegexMatch(
+            pattern: #"https?://(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?[^\s,)]*"#,
+            in: trimmed
+        ) {
+            return url
+        }
+
+        if let ip = firstRegexMatch(pattern: #"\b(?:\d{1,3}\.){3}\d{1,3}\b"#, in: trimmed),
+           isIPv4Address(ip) {
+            return ip
+        }
+
+        return nil
+    }
+
+    private func firstRegexMatch(pattern: String, in value: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = regex.firstMatch(in: value, range: range),
+              let matchRange = Range(match.range, in: value) else {
+            return nil
+        }
+        return String(value[matchRange])
+    }
+
+    private func isIPv4Address(_ value: String) -> Bool {
+        let parts = value.split(separator: ".")
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { part in
+            guard let octet = Int(part) else { return false }
+            return (0...255).contains(octet)
+        }
     }
 
     private func expansionBinding(for id: DiagnosticsSectionID, defaultExpanded: Bool) -> Binding<Bool> {
@@ -905,7 +1228,7 @@ struct DiagnosticsView: View {
 
     private var spotifyIsActiveTargetText: String {
         guard model.sourceMode == .spotify else { return "No" }
-        if model.spotifyVisibleNowPlaying != nil || model.spotifyNowPlaying != nil || model.liveAudioSignalState.isRecentlyReceiving {
+        if model.spotifyHasActiveSessionForStatus {
             return "Yes"
         }
         return "No"
@@ -925,18 +1248,9 @@ struct DiagnosticsView: View {
         model.monitorOutputRoute.isOrbisonicLoopback || model.rendererOutputRoute.isOrbisonicLoopback || model.outputRoute.isOrbisonicLoopback
     }
 
-    private var currentDiagnosticChannelText: String {
-        guard let active = model.activeDiagnosticChannelIndex else { return "None" }
-        return "\(active + 1)"
-    }
-
     private func signalPlaybackMismatchWarning(sourceName: String) -> String {
         let seconds = model.liveAudioSignalSilenceDuration.map { " for \($0)s" } ?? ""
         return "\(sourceName) reports playback, but Orbisonic has not received signal\(seconds)."
-    }
-
-    private func eventText(_ event: DiagnosticEvent) -> String {
-        "\(event.message) • \(dateText(event.timestamp))"
     }
 
     private func dateText(_ date: Date) -> String {
@@ -978,7 +1292,11 @@ struct DiagnosticsView: View {
     }
 
     private func valueColor(for row: DiagnosticsRow) -> Color {
-        switch row.tone {
+        valueColor(for: row.tone)
+    }
+
+    private func valueColor(for tone: DiagnosticsRowTone) -> Color {
+        switch tone {
         case .warning:
             return LabTheme.amber
         case .error:
@@ -1031,18 +1349,9 @@ private struct DiagnosticToneMeterStrip: View {
                         .lineLimit(1)
 
                     Spacer(minLength: 0)
-
-                    Text(isActive ? "\(activeCount) ACTIVE" : "MUTED")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(isActive && activeCount > 0 ? LabTheme.text : LabTheme.textSoft)
                 }
 
-                if sortedMeters.isEmpty {
-                    Text("No meter channels configured")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                } else {
+                if !sortedMeters.isEmpty {
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 32, maximum: 46), spacing: 6)],
                         alignment: .leading,

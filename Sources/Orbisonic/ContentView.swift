@@ -740,94 +740,55 @@ struct ContentView: View {
 
             routingCompactMeters
 
-            DisclosureGroup(isExpanded: $routingVUOptionsExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    analyzerVUStylePicker
-                    vuMeterVisualGainSliders
-                    vuMeterAppearanceSliders
-                }
-                .padding(.top, 10)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 12, weight: .bold))
-                    Text("VU Options")
-                        .font(.system(size: 12, weight: .bold))
-                    Spacer()
-                    Text(selectedAudioMotionVUStyle.rawValue)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .foregroundStyle(LabTheme.text)
+            OrbisonicDisclosureTray(
+                isExpanded: $routingVUOptionsExpanded,
+                title: "VU Options",
+                systemImage: "slider.horizontal.3",
+                trailingSummary: selectedAudioMotionVUStyle.rawValue
+            ) {
+                analyzerVUStylePicker
+                vuMeterVisualGainSliders
+                vuMeterAppearanceSliders
             }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.16))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                            .stroke(LabTheme.line, lineWidth: 1)
-                    )
-            )
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var analyzerVUTab: some View {
         VStack(alignment: .leading, spacing: 14) {
-            analyzerVUSettingsPanel
-
             AudioMotionVUMeterPanel(
-                title: "Output 2 Renderer VU",
-                subtitle: rendererVUMeterSubtitle,
+                title: "Sonic Sphere VU meter",
+                subtitle: "",
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
-                meterStore: model.rendererMeterStore
+                meterStore: model.rendererMeterStore,
+                minMeterHeight: 300,
+                maxMeterHeight: .infinity
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            analyzerVUSettingsPanel
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var analyzerVUSettingsPanel: some View {
-        DisclosureGroup(isExpanded: $analyzerVUSettingsExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                analyzerVUStylePicker
-                vuSliderRow(
-                    title: "Output 2 Renderer Visual Gain",
-                    valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
-                    lowText: "-10",
-                    highText: "+10",
-                    binding: rendererVUMeterVisualGainBinding,
-                    range: VUMeterControlScale.sliderRange
-                )
-            }
-            .padding(.top, 10)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 12, weight: .bold))
-                Text("Meter Settings")
-                    .font(.system(size: 12, weight: .bold))
-                Spacer()
-                Text(selectedAudioMotionVUStyle.rawValue)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(LabTheme.textSoft)
-                    .lineLimit(1)
-            }
-            .foregroundStyle(LabTheme.text)
+        OrbisonicDisclosureTray(
+            isExpanded: $analyzerVUSettingsExpanded,
+            title: "Meter Settings",
+            systemImage: "slider.horizontal.3",
+            trailingSummary: selectedAudioMotionVUStyle.rawValue
+        ) {
+            analyzerVUStylePicker
+            vuSliderRow(
+                title: "Output 2 Renderer Visual Gain",
+                valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
+                lowText: "-10",
+                highText: "+10",
+                binding: rendererVUMeterVisualGainBinding,
+                range: VUMeterControlScale.sliderRange
+            )
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                .fill(Color.black.opacity(0.16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                        .stroke(LabTheme.line, lineWidth: 1)
-                )
-        )
     }
 
     private var analyzerVUStylePicker: some View {
@@ -1313,8 +1274,8 @@ struct ContentView: View {
             }
 
             AudioMotionVUMeterPanel(
-                title: "Output 2 Renderer",
-                subtitle: rendererVUMeterSubtitle,
+                title: "Sonic Sphere VU meter",
+                subtitle: "",
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
                 meterStore: model.rendererMeterStore,
@@ -1328,7 +1289,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
                 outputDestinationCard(
-                    title: "Listen locally"
+                    title: "Output 1: Listen locally"
                 ) {
                     VStack(alignment: .leading, spacing: 10) {
                         outputLaneControlRow(label: "Device") {
@@ -1342,7 +1303,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
 
                 outputDestinationCard(
-                    title: "Main output"
+                    title: "Output 2: Sonic Sphere"
                 ) {
                     VStack(alignment: .leading, spacing: 10) {
                         outputLaneControlRow(label: "Device") {
@@ -1382,7 +1343,7 @@ struct ContentView: View {
         }
         .buttonStyle(LabButtonStyle(isActive: true))
         .frame(maxWidth: .infinity)
-        .accessibilityLabel("Output 1 Monitor")
+        .accessibilityLabel("Output 1: Listen locally")
         .accessibilityValue(model.monitorOutputDevicePickerText)
     }
 
@@ -1405,7 +1366,7 @@ struct ContentView: View {
         }
         .buttonStyle(LabButtonStyle(isActive: true))
         .frame(maxWidth: .infinity)
-        .accessibilityLabel("Output 2 Renderer")
+        .accessibilityLabel("Output 2: Sonic Sphere")
         .accessibilityValue(model.rendererOutputDevicePickerText)
     }
 
@@ -1432,8 +1393,8 @@ struct ContentView: View {
             }
 
             AudioMotionVUMeterPanel(
-                title: "Output 2 Renderer",
-                subtitle: rendererVUMeterSubtitle,
+                title: "Sonic Sphere VU meter",
+                subtitle: "",
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
                 meterStore: model.rendererMeterStore,
@@ -1893,10 +1854,10 @@ struct ContentView: View {
         }
         if model.liveAudioSignalState.isRecentlyReceiving ||
             model.liveMonitorState == .monitoring ||
-            model.spotifyVisibleNowPlaying?.isPlaying == true {
+            model.spotifyNowPlayingForActiveStatus?.isPlaying == true {
             return "Spotify playing"
         }
-        return model.spotifyVisibleNowPlaying == nil ? "No Spotify track" : "Spotify paused"
+        return model.spotifyNowPlayingForActiveStatus == nil ? "No Spotify track" : "Spotify paused"
     }
 
     private var statusChipForegroundColor: Color {
@@ -1938,7 +1899,7 @@ struct ContentView: View {
         if model.sourceMode == .spotify {
             return model.liveAudioSignalState.isRecentlyReceiving ||
                 model.liveMonitorState == .monitoring ||
-                model.spotifyVisibleNowPlaying?.isPlaying == true
+                model.spotifyNowPlayingForActiveStatus?.isPlaying == true
         }
         if model.sourceMode == .aux {
             return model.liveAudioSignalState.isRecentlyReceiving || model.liveMonitorState == .monitoring
@@ -1999,7 +1960,7 @@ struct ContentView: View {
         case .aux:
             return "Aux Cable"
         case .spotify:
-            return model.spotifyVisibleNowPlaying?.displayTitle ?? "Spotify"
+            return model.spotifyNowPlayingForActiveStatus?.displayTitle ?? "Spotify"
         case .filePlayback:
             if let track = model.visibleLocalPlaybackTrack {
                 return track.displayTitle
@@ -2028,7 +1989,7 @@ struct ContentView: View {
         case .aux:
             return "Controlled in the source app."
         case .spotify:
-            return model.spotifyVisibleNowPlaying?.artistText ?? "Controlled from Spotify Connect."
+            return model.spotifyNowPlayingForActiveStatus?.artistText ?? "Controlled from Spotify Connect."
         case .filePlayback:
             if let track = model.visibleLocalPlaybackTrack {
                 return track.displaySubtitle
@@ -2269,7 +2230,7 @@ struct ContentView: View {
     private var sphereVolumeControl: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Orbisonic Output Volume")
+                Text("Volume")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(LabTheme.text)
                 Spacer()
@@ -2322,8 +2283,8 @@ struct ContentView: View {
             else { return 0 }
             return min(max(position / length, 0), 1)
         case .spotify:
-            guard let position = model.spotifyVisibleNowPlaying?.positionMs,
-                  let duration = model.spotifyVisibleNowPlaying?.durationMs,
+            guard let position = model.spotifyNowPlayingForActiveStatus?.positionMs,
+                  let duration = model.spotifyNowPlayingForActiveStatus?.durationMs,
                   duration > 0
             else { return 0 }
             return min(max(Double(position) / Double(duration), 0), 1)
@@ -2339,7 +2300,7 @@ struct ContentView: View {
         case .roon:
             return timeText(seconds: model.roonBridgeSnapshot.selectedZone?.nowPlaying?.seekPosition)
         case .spotify:
-            return model.spotifyVisibleNowPlaying?.positionText ?? "0:00"
+            return model.spotifyNowPlayingForActiveStatus?.positionText ?? "0:00"
         case .filePlayback:
             return model.visibleLocalSourceMetadata == nil ? "0:00" : model.formattedCurrentTime()
         case .off:
@@ -2356,7 +2317,7 @@ struct ContentView: View {
         case .roon:
             return timeText(seconds: model.roonBridgeSnapshot.selectedZone?.nowPlaying?.length)
         case .spotify:
-            return model.spotifyVisibleNowPlaying?.durationText ?? "0:00"
+            return model.spotifyNowPlayingForActiveStatus?.durationText ?? "0:00"
         case .filePlayback:
             return model.visibleLocalSourceMetadata == nil ? "0:00" : model.formattedDuration()
         case .off, .aux, .testTone:
@@ -2445,7 +2406,7 @@ struct ContentView: View {
         var rows: [PlayerDetailRow] = []
         rows.append(PlayerDetailRow(title: "Format", value: "Spotify Connect 320 kbps"))
         rows.append(PlayerDetailRow(title: "Channels", value: "2 stereo"))
-        rows.append(PlayerDetailRow(title: "Length", value: model.spotifyVisibleNowPlaying?.durationText ?? "-"))
+        rows.append(PlayerDetailRow(title: "Length", value: model.spotifyNowPlayingForActiveStatus?.durationText ?? "-"))
         if let errorText = liveInputPlaybackErrorText {
             rows.append(PlayerDetailRow(title: "Error", value: errorText, hasTopDivider: true))
         }
@@ -2641,8 +2602,8 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 spotifyTransportButton(systemImage: "backward.fill", help: "Previous in Spotify", action: model.playPreviousSpotifyTrack)
                 spotifyTransportButton(
-                    systemImage: (model.spotifyVisibleNowPlaying?.isPlaying ?? false) ? "pause.fill" : "play.fill",
-                    help: (model.spotifyVisibleNowPlaying?.isPlaying ?? false) ? "Pause Spotify" : "Play Spotify",
+                    systemImage: (model.spotifyNowPlayingForActiveStatus?.isPlaying ?? false) ? "pause.fill" : "play.fill",
+                    help: (model.spotifyNowPlayingForActiveStatus?.isPlaying ?? false) ? "Pause Spotify" : "Play Spotify",
                     action: model.toggleSpotifyTransport
                 )
                 spotifyTransportButton(systemImage: "forward.fill", help: "Next in Spotify", action: model.playNextSpotifyTrack)
@@ -2659,7 +2620,7 @@ struct ContentView: View {
 
     private var spotifyCompactStatusText: String {
         var parts: [String] = []
-        if let nowPlaying = model.spotifyVisibleNowPlaying {
+        if let nowPlaying = model.spotifyNowPlayingForActiveStatus {
             if nowPlaying.positionText != "-" || nowPlaying.durationText != "-" {
                 parts.append("\(nowPlaying.positionText) / \(nowPlaying.durationText)")
             }
@@ -4022,6 +3983,7 @@ private struct AudioMotionVUMeterPanel: View {
     let appearance: VUMeterAppearance
     @ObservedObject var meterStore: ChannelMeterStore
     var minMeterHeight: CGFloat = 520
+    var maxMeterHeight: CGFloat? = nil
     var showsMeterPills = true
 
     private var sortedMeters: [ChannelMeter] {
@@ -4052,11 +4014,13 @@ private struct AudioMotionVUMeterPanel: View {
                     Text(title)
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(LabTheme.text)
-                    Text(subtitle)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    if !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(LabTheme.textSoft)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -4080,7 +4044,7 @@ private struct AudioMotionVUMeterPanel: View {
                         appearance: appearance
                     )
                 }
-                .frame(maxWidth: .infinity, minHeight: minMeterHeight, maxHeight: minMeterHeight == 520 ? .infinity : minMeterHeight)
+                .frame(maxWidth: .infinity, minHeight: minMeterHeight, maxHeight: resolvedMaxMeterHeight)
                 .background(
                     RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
                         .fill(Color.black.opacity(0.28))
@@ -4102,6 +4066,13 @@ private struct AudioMotionVUMeterPanel: View {
                         .stroke(LabTheme.line, lineWidth: 1)
                 )
         )
+    }
+
+    private var resolvedMaxMeterHeight: CGFloat? {
+        if let maxMeterHeight {
+            return maxMeterHeight
+        }
+        return minMeterHeight == 520 ? .infinity : minMeterHeight
     }
 
     private func meterPill(_ label: String, _ value: Int, accent: Color = LabTheme.cyan) -> some View {
@@ -4631,11 +4602,13 @@ private struct DenseVUMeterPanel: View {
                     Text(title)
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(LabTheme.text)
-                    Text(subtitle)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    if !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(LabTheme.textSoft)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
 
                 Spacer(minLength: 0)

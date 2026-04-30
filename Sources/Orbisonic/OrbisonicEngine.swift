@@ -15,6 +15,7 @@ enum OutputDeviceSelectionError: LocalizedError {
     case setDeviceFailed(OSStatus)
     case invalidDiagnosticChannel(Int, Int)
     case diagnosticFormatCreationFailed(channelCount: Int, sampleRate: Double)
+    case diagnosticMonitorOutputUnavailable
     case rendererFormatCreationFailed(channelCount: Int, sampleRate: Double)
 
     var errorDescription: String? {
@@ -29,6 +30,8 @@ enum OutputDeviceSelectionError: LocalizedError {
             "Diagnostic channel \(index + 1) is outside the available \(count)-channel range."
         case .diagnosticFormatCreationFailed(let channelCount, let sampleRate):
             "Unable to create a \(channelCount)-channel diagnostic output format at \(sampleRate) Hz."
+        case .diagnosticMonitorOutputUnavailable:
+            "Output 1 Monitor downmix is not configured."
         case .rendererFormatCreationFailed(let channelCount, let sampleRate):
             "Unable to create a \(channelCount)-channel renderer output format at \(sampleRate) Hz."
         }
@@ -728,7 +731,12 @@ final class OrbisonicEngine {
         )
     }
 
-    func playDiagnosticChannelTone(channelIndex: Int, channelCount: Int, monitorDownmix: Bool = false) throws {
+    func playDiagnosticChannelTone(
+        channelIndex: Int,
+        channelCount: Int,
+        monitorDownmix: Bool = false,
+        primaryOutputEnabled: Bool = true
+    ) throws {
         guard channelCount > 0, channelIndex >= 0, channelIndex < channelCount else {
             throw OutputDeviceSelectionError.invalidDiagnosticChannel(channelIndex, channelCount)
         }
@@ -741,7 +749,6 @@ final class OrbisonicEngine {
         stopTestTone()
 
         let sampleRate = preferredOutputSampleRate()
-        let channelFormat = try diagnosticChannelFormat(channelCount: channelCount, sampleRate: sampleRate)
 
         let node: AVAudioSourceNode
         let diagnosticAudioDescription: String
@@ -763,13 +770,18 @@ final class OrbisonicEngine {
             diagnosticAudioDescription = "fallbackToneFrequency=\(frequency)Hz outputSampleRate=\(sampleRate)"
         }
 
-        engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: channelFormat)
-        testToneNodes = [node]
+        if primaryOutputEnabled {
+            let channelFormat = try diagnosticChannelFormat(channelCount: channelCount, sampleRate: sampleRate)
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode, format: channelFormat)
+            testToneNodes = [node]
 
-        if !engine.isRunning {
-            try engine.start()
-            AppLogger.shared.notice(category: "engine", "AVAudioEngine started for channel diagnostic tone.")
+            if !engine.isRunning {
+                try engine.start()
+                AppLogger.shared.notice(category: "engine", "AVAudioEngine started for channel diagnostic tone.")
+            }
+        } else {
+            testToneNodes = []
         }
 
         if monitorDownmix {
@@ -783,7 +795,7 @@ final class OrbisonicEngine {
 
         AppLogger.shared.notice(
             category: "diagnostics",
-            "Started channel diagnostic tone channel=\(channelIndex + 1)/\(channelCount) \(diagnosticAudioDescription) monitorDownmix=\(monitorDownmix)"
+            "Started channel diagnostic tone channel=\(channelIndex + 1)/\(channelCount) \(diagnosticAudioDescription) monitorDownmix=\(monitorDownmix) primaryOutput=\(primaryOutputEnabled)"
         )
     }
 
@@ -1745,7 +1757,9 @@ final class OrbisonicEngine {
         sampleRate: Double,
         gain: Float
     ) throws {
-        guard diagnosticMonitorOutputDeviceID != nil else { return }
+        guard diagnosticMonitorOutputDeviceID != nil else {
+            throw OutputDeviceSelectionError.diagnosticMonitorOutputUnavailable
+        }
         stopDiagnosticMonitorTone()
 
         let node = makeToneNode(frequency: frequency, sampleRate: sampleRate, gain: gain)
@@ -1767,7 +1781,9 @@ final class OrbisonicEngine {
         clip: DiagnosticSpeechClip,
         sampleRate: Double
     ) throws {
-        guard diagnosticMonitorOutputDeviceID != nil else { return }
+        guard diagnosticMonitorOutputDeviceID != nil else {
+            throw OutputDeviceSelectionError.diagnosticMonitorOutputUnavailable
+        }
         stopDiagnosticMonitorTone()
 
         let node = makeMonitorVoiceNode(clip: clip, outputSampleRate: sampleRate)
@@ -1872,7 +1888,7 @@ final class OrbisonicEngine {
                let playerTime = playerNodes.first?.playerTime(forNodeTime: renderTime) {
                 let frame = currentStartFrame + AVAudioFramePosition(playerTime.sampleTime)
                 if streamingPlayback.durationFrames > 0 {
-                    return min(frame, streamingPlayback.durationFrames)
+                    return min(max(frame, 0), streamingPlayback.durationFrames)
                 }
                 return max(frame, 0)
             }
@@ -1896,7 +1912,7 @@ final class OrbisonicEngine {
            let renderTime = playerNodes.first?.lastRenderTime,
            let playerTime = playerNodes.first?.playerTime(forNodeTime: renderTime) {
             let frame = currentStartFrame + AVAudioFramePosition(playerTime.sampleTime)
-            return min(frame, loadedFile.frameCount)
+            return min(max(frame, 0), loadedFile.frameCount)
         }
 
         return min(currentStartFrame, loadedFile.frameCount)

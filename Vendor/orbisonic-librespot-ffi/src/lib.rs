@@ -85,6 +85,7 @@ struct SpotifyState {
     repeat_track: Option<bool>,
     auto_play: Option<bool>,
     client_name: Option<String>,
+    session_active: bool,
 }
 
 static RECEIVER: OnceLock<Mutex<Option<ReceiverHandle>>> = OnceLock::new();
@@ -274,12 +275,15 @@ async fn run_receiver(
         .ok_or_else(|| "No librespot audio backend is available.".to_string())?;
     let loopback_device_name = config.loopback_device_name.clone();
     let mut session = Session::new(session_config.clone(), Some(cache.clone()));
+    let state_path = config.support_dir.join("state.json");
+    write_spotify_state(&state_path, &SpotifyState::default());
+
     let player = Player::new(player_config, session.clone(), soft_volume, move || {
         backend(Some(loopback_device_name), AudioFormat::F32)
     });
     tokio::spawn(write_player_events(
         player.get_player_event_channel(),
-        config.support_dir.join("state.json"),
+        state_path.clone(),
     ));
 
     let mut discovery = Discovery::builder(
@@ -297,6 +301,7 @@ async fn run_receiver(
     loop {
         tokio::select! {
             _ = &mut shutdown_rx => {
+                write_spotify_state(&state_path, &SpotifyState::default());
                 if let Some(spirc) = spirc.take() {
                     let _ = spirc.shutdown();
                 }
@@ -380,16 +385,18 @@ fn handle_receiver_command(command: ReceiverCommand, spirc: Option<&Spirc>) {
 
 async fn write_player_events(mut events: PlayerEventChannel, state_path: PathBuf) {
     let mut state = SpotifyState::default();
+    write_spotify_state(&state_path, &state);
 
     while let Some(event) = events.recv().await {
         apply_player_event(&mut state, event);
-        let _ = fs::write(&state_path, state_json(&state));
+        write_spotify_state(&state_path, &state);
     }
 }
 
 fn apply_player_event(state: &mut SpotifyState, event: PlayerEvent) {
     match event {
         PlayerEvent::TrackChanged { audio_item } => {
+            state.session_active = true;
             state.title = Some(audio_item.name.clone());
             state.uri = Some(audio_item.uri.clone());
             state.duration_ms = Some(audio_item.duration_ms);
@@ -443,6 +450,7 @@ fn apply_player_event(state: &mut SpotifyState, event: PlayerEvent) {
             }
         }
         PlayerEvent::Playing { position_ms, .. } => {
+            state.session_active = true;
             state.is_playing = true;
             state.position_ms = Some(position_ms);
         }
@@ -450,10 +458,12 @@ fn apply_player_event(state: &mut SpotifyState, event: PlayerEvent) {
         | PlayerEvent::Seeked { position_ms, .. }
         | PlayerEvent::PositionCorrection { position_ms, .. }
         | PlayerEvent::PositionChanged { position_ms, .. } => {
+            state.session_active = true;
             state.is_playing = false;
             state.position_ms = Some(position_ms);
         }
         PlayerEvent::Stopped { .. } => {
+            state.session_active = true;
             state.is_playing = false;
             state.position_ms = Some(0);
         }
@@ -471,14 +481,18 @@ fn apply_player_event(state: &mut SpotifyState, event: PlayerEvent) {
             state.auto_play = Some(auto_play);
         }
         PlayerEvent::SessionClientChanged { client_name, .. } => {
+            state.session_active = true;
             state.client_name = Some(client_name);
         }
         PlayerEvent::SessionDisconnected { .. } => {
-            state.is_playing = false;
-            state.client_name = None;
+            *state = SpotifyState::default();
         }
         _ => {}
     }
+}
+
+fn write_spotify_state(state_path: &PathBuf, state: &SpotifyState) {
+    let _ = fs::write(state_path, state_json(state));
 }
 
 fn state_json(state: &SpotifyState) -> String {
@@ -505,6 +519,7 @@ fn state_json(state: &SpotifyState) -> String {
             "\"repeatTrack\":{},",
             "\"autoPlay\":{},",
             "\"clientName\":{},",
+            "\"sessionActive\":{},",
             "\"updatedAt\":{}",
             "}}"
         ),
@@ -527,6 +542,7 @@ fn state_json(state: &SpotifyState) -> String {
         json_option_bool(state.repeat_track),
         json_option_bool(state.auto_play),
         json_option_string(state.client_name.as_deref()),
+        state.session_active,
         json_option_string(Some(updated_at.as_str()))
     )
 }

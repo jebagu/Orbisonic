@@ -85,6 +85,99 @@ final class VURoutingViewTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalMonitorDiagnosticMetersUseLeftOnlyForFirstStereoChannel() {
+        let model = OrbisonicViewModel()
+
+        model.applyLocalMonitorDiagnosticMeterLevels(index: 0)
+
+        XCTAssertEqual(model.monitorChannelWalkCount, 2)
+        XCTAssertEqual(model.monitorMeterStore.channelMeters.map(\.level), [0.86, 0])
+        XCTAssertTrue(model.rendererMeterStore.channelMeters.allSatisfy { $0.level == 0 })
+    }
+
+    @MainActor
+    func testLocalMonitorDiagnosticMetersUseRightOnlyForSecondStereoChannel() {
+        let model = OrbisonicViewModel()
+
+        model.applyLocalMonitorDiagnosticMeterLevels(index: 1)
+
+        XCTAssertEqual(model.monitorChannelWalkCount, 2)
+        XCTAssertEqual(model.monitorMeterStore.channelMeters.map(\.level), [0, 0.86])
+        XCTAssertTrue(model.rendererMeterStore.channelMeters.allSatisfy { $0.level == 0 })
+    }
+
+    func testLocalMonitorDiagnosticPlaybackNeverUsesDownmix() {
+        let options = DiagnosticChannelPlaybackPolicy.options(
+            targetsRenderer: false,
+            rendererMonitorDownmixAvailable: true,
+            rendererMonitorPreview: true
+        )
+
+        XCTAssertEqual(
+            options,
+            DiagnosticChannelPlaybackOptions(
+                monitorDownmix: false,
+                primaryOutputEnabled: true
+            )
+        )
+    }
+
+    func testRendererDiagnosticPlaybackKeepsMonitorDownmixWhenAvailable() {
+        let options = DiagnosticChannelPlaybackPolicy.options(
+            targetsRenderer: true,
+            rendererMonitorDownmixAvailable: true,
+            rendererMonitorPreview: false
+        )
+
+        XCTAssertEqual(
+            options,
+            DiagnosticChannelPlaybackOptions(
+                monitorDownmix: true,
+                primaryOutputEnabled: true
+            )
+        )
+    }
+
+    @MainActor
+    func testRendererDiagnosticMonitorMetersMirrorFirstActiveChannel() {
+        let model = OrbisonicViewModel()
+
+        model.applyRendererDiagnosticMeterLevels(index: 0, monitorDownmixActive: true)
+
+        let rendererLevels = model.rendererMeterStore.channelMeters.map(\.level)
+        let monitorLevels = model.monitorMeterStore.channelMeters.map(\.level)
+        XCTAssertEqual(rendererLevels[0], 0.86, accuracy: 0.001)
+        XCTAssertEqual(monitorLevels.count, 2)
+        XCTAssertEqual(monitorLevels[0], rendererLevels[0], accuracy: 0.001)
+        XCTAssertEqual(monitorLevels[1], rendererLevels[0], accuracy: 0.001)
+    }
+
+    @MainActor
+    func testRendererDiagnosticMonitorMetersMirrorLaterActiveChannel() {
+        let model = OrbisonicViewModel()
+
+        model.applyRendererDiagnosticMeterLevels(index: 11, monitorDownmixActive: true)
+
+        let rendererLevels = model.rendererMeterStore.channelMeters.map(\.level)
+        let monitorLevels = model.monitorMeterStore.channelMeters.map(\.level)
+        XCTAssertEqual(rendererLevels[11], 0.86, accuracy: 0.001)
+        XCTAssertEqual(monitorLevels.count, 2)
+        XCTAssertEqual(monitorLevels[0], rendererLevels[11], accuracy: 0.001)
+        XCTAssertEqual(monitorLevels[1], rendererLevels[11], accuracy: 0.001)
+    }
+
+    @MainActor
+    func testRendererDiagnosticMonitorMetersResetWhenDownmixUnavailable() {
+        let model = OrbisonicViewModel()
+        model.monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: model.monitorChannelWalkCount).channels)
+        model.monitorMeterStore.update(with: [0.5, 0.5])
+
+        model.applyRendererDiagnosticMeterLevels(index: 0, monitorDownmixActive: false)
+
+        XCTAssertEqual(model.monitorMeterStore.channelMeters.map(\.level), [0, 0])
+    }
+
+    @MainActor
     func testDiagnosticSpeakerChannelSelectionClampsWithoutRecursion() {
         let model = OrbisonicViewModel()
 
@@ -126,12 +219,35 @@ final class VURoutingViewTests: XCTestCase {
         let model = OrbisonicViewModel()
         model.isTestTonePlaying = true
         model.selectedTestTonePoint = .rendererFrontLeft
-        model.testToneStatus = "Playing Renderer: Front Left for 3 seconds."
+        model.testToneStatus = "Playing Renderer: Front Left until stopped."
 
         let summary = model.diagnosticToneActivitySummary
 
         XCTAssertTrue(summary.isActive)
         XCTAssertEqual(summary.headline, "Renderer: Front Left")
-        XCTAssertEqual(summary.detail, "Playing Renderer: Front Left for 3 seconds.")
+        XCTAssertEqual(summary.detail, "Playing Renderer: Front Left until stopped.")
+    }
+
+    @MainActor
+    func testStopTestToneClearsToneStateAndMeters() {
+        let model = OrbisonicViewModel()
+        model.isTestTonePlaying = true
+        model.isDiagnosticSequencePlaying = true
+        model.meterStore.configure(channels: [SurroundChannel(index: 0, role: .frontLeft)])
+        model.meterStore.update(with: [0.82])
+        model.monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: model.monitorChannelWalkCount).channels)
+        model.monitorMeterStore.update(with: [0.82, 0.82])
+        model.rendererMeterStore.configureIfNeeded(channels: [SurroundChannel(index: 0, role: .frontLeft)])
+        model.rendererMeterStore.update(with: [0.82])
+
+        model.stopTestTone()
+
+        XCTAssertFalse(model.isTestTonePlaying)
+        XCTAssertFalse(model.isDiagnosticSequencePlaying)
+        XCTAssertFalse(model.isDiagnosticTransitioning)
+        XCTAssertEqual(model.meterStore.channelMeters.map(\.level), [0])
+        XCTAssertEqual(model.monitorMeterStore.channelMeters.map(\.level), [0, 0])
+        XCTAssertEqual(model.rendererMeterStore.channelMeters.map(\.level), [0])
+        XCTAssertEqual(model.testToneStatus, "Diagnostic tone stopped.")
     }
 }

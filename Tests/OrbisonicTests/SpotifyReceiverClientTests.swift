@@ -61,4 +61,36 @@ final class SpotifyReceiverClientTests: XCTestCase {
         XCTAssertEqual(status.state, .restarting)
         XCTAssertFalse(status.message.localizedCaseInsensitiveContains("librespot"))
     }
+
+    func testMissingSessionActiveDecodesAsInactive() throws {
+        let data = """
+        {
+          "title": "Stale Track",
+          "album": "Album",
+          "artists": ["Artist"],
+          "albumArtists": ["Artist"],
+          "uri": "spotify:track:stale",
+          "durationMs": 180000,
+          "positionMs": 0,
+          "isPlaying": false,
+          "isExplicit": false,
+          "popularity": null,
+          "trackNumber": null,
+          "discNumber": null,
+          "coverURL": null,
+          "volume": null,
+          "shuffle": null,
+          "repeatContext": null,
+          "repeatTrack": null,
+          "autoPlay": null,
+          "clientName": null,
+          "updatedAt": "stale"
+        }
+        """.data(using: .utf8)!
+
+        let nowPlaying = try JSONDecoder().decode(SpotifyNowPlaying.self, from: data)
+
+        XCTAssertNil(nowPlaying.sessionActive)
+        XCTAssertFalse(nowPlaying.hasActiveConnectSession)
+    }
 }

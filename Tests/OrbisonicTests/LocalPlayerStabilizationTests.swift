@@ -865,6 +865,7 @@ final class LocalPlayerStabilizationTests: XCTestCase {
             repeatTrack: nil,
             autoPlay: nil,
             clientName: "Spotify",
+            sessionActive: true,
             updatedAt: "test"
         )
     }

@@ -634,7 +634,7 @@ extension OrbisonicViewModel {
     }
 
     private var spotifyConnectSessionStatusValue: String {
-        if spotifyNowPlayingForStatus != nil || spotifyHasReceivingAudio {
+        if spotifyIsSelectedInApp {
             return "Selected in Spotify"
         }
 
@@ -655,7 +655,7 @@ extension OrbisonicViewModel {
     }
 
     private var spotifyIsSelectedInApp: Bool {
-        spotifyNowPlayingForStatus != nil || spotifyHasReceivingAudio
+        spotifyHasActiveSessionForStatus
     }
 
     private var spotifySetupUserStatusValue: String {
@@ -775,11 +775,11 @@ extension OrbisonicViewModel {
     }
 
     private var spotifyNowPlayingForStatus: SpotifyNowPlaying? {
-        spotifyVisibleNowPlaying ?? spotifyNowPlaying
+        spotifyNowPlayingForActiveStatus
     }
 
     private var spotifyHasReceivingAudio: Bool {
-        liveAudioSignalState.isRecentlyReceiving || liveSignalStatus.localizedCaseInsensitiveContains("Signal present") || liveMonitorState == .monitoring
+        spotifyHasReceivingAudioForStatus
     }
 
     private var auxVirtualSoundCardStatusValue: String {

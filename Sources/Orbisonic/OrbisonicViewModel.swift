@@ -406,7 +406,7 @@ private enum DiagnosticChannelWalkKind {
     var title: String {
         switch self {
         case .monitor:
-            "Output 1 Monitor Channel Walk"
+            "Output 1 Local Speakers Channel Walk"
         case .renderer:
             "Output 2 Renderer Channel Walk"
         }
@@ -415,7 +415,7 @@ private enum DiagnosticChannelWalkKind {
     var shortTitle: String {
         switch self {
         case .monitor:
-            "Output 1 Monitor"
+            "Output 1 Local speakers"
         case .renderer:
             "Output 2 Renderer"
         }
@@ -473,6 +473,39 @@ final class ChannelMeterStore: ObservableObject {
         if shouldPublish {
             channelMeters = updated
         }
+    }
+}
+
+enum DiagnosticMonitorDownmixMeterModel {
+    static func levels(from rendererLevels: [Float], monitorChannelCount: Int) -> [Float] {
+        guard monitorChannelCount > 0 else { return [] }
+        let activeLevel = rendererLevels.max() ?? 0
+        return Array(repeating: activeLevel, count: monitorChannelCount)
+    }
+}
+
+struct DiagnosticChannelPlaybackOptions: Equatable {
+    let monitorDownmix: Bool
+    let primaryOutputEnabled: Bool
+}
+
+enum DiagnosticChannelPlaybackPolicy {
+    static func options(
+        targetsRenderer: Bool,
+        rendererMonitorDownmixAvailable: Bool,
+        rendererMonitorPreview: Bool
+    ) -> DiagnosticChannelPlaybackOptions {
+        guard targetsRenderer else {
+            return DiagnosticChannelPlaybackOptions(
+                monitorDownmix: false,
+                primaryOutputEnabled: true
+            )
+        }
+
+        return DiagnosticChannelPlaybackOptions(
+            monitorDownmix: rendererMonitorDownmixAvailable,
+            primaryOutputEnabled: !rendererMonitorPreview
+        )
     }
 }
 
@@ -2812,7 +2845,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var spotifyArtworkURL: URL? {
-        guard let coverURL = spotifyVisibleNowPlaying?.coverURL else { return nil }
+        guard let coverURL = spotifyNowPlayingForActiveStatus?.coverURL else { return nil }
         return URL(string: coverURL)
     }
 
@@ -2914,6 +2947,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func setSpotifyNowPlayingForTesting(_ nowPlaying: SpotifyNowPlaying?) {
+        lastSpotifyNowPlayingRefreshTime = .distantFuture
         updateSpotifyNowPlaying(nowPlaying, reason: "test", forceVisible: true)
     }
 
@@ -2944,6 +2978,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func applySpotifyNowPlayingForTesting(_ nowPlaying: SpotifyNowPlaying?) {
+        lastSpotifyNowPlayingRefreshTime = .distantFuture
         updateSpotifyNowPlaying(nowPlaying, reason: "test")
     }
 
@@ -5105,9 +5140,9 @@ final class OrbisonicViewModel: ObservableObject {
             if sourceMode == .roon, inputRoute.isRoonLoopback {
                 statusMessage = "Make sure Roon is playing to Orbisonic."
             } else if sourceMode == .spotify, inputRoute.isSpotifyLoopback {
-                statusMessage = spotifyVisibleNowPlaying == nil
-                    ? "Open Spotify and choose Orbisonic from the devices menu."
-                    : "Spotify is connected. Control playback from Spotify."
+                statusMessage = spotifyHasActiveSessionForStatus
+                    ? "Spotify is connected. Control playback from Spotify."
+                    : "Open Spotify and choose Orbisonic from the devices menu."
             } else {
                 statusMessage = sourceMode == .aux
                     ? "Select Orbisonic Aux Cable as the output device in Ableton Live, QLab, SPAT Revolution, GarageBand, or another app."
@@ -5639,24 +5674,76 @@ final class OrbisonicViewModel: ObservableObject {
         startMonitorChannelWalk()
     }
 
-    private func startDiagnosticChannelWalk(kind: DiagnosticChannelWalkKind) {
-        refreshRoutesIfNeeded(force: true)
-
-        guard prepareDiagnosticOutput(for: kind) else { return }
-
-        testToneStopTask?.cancel()
-        testToneStopTask = nil
-        diagnosticSequenceTask?.cancel()
-
+    private func captureDiagnosticReturnContextIfNeeded() {
+        guard diagnosticReturnContext == nil else { return }
         diagnosticReturnContext = DiagnosticReturnContext(
             sourceMode: sourceMode,
             wasPlaying: isPlaying,
             progress: min(max(scrubProgress, 0), 1),
             hadSource: sourceMetadata != nil
         )
+    }
 
-        engine.stop()
-        isPlaying = false
+    private func clearActiveDiagnosticPlaybackState(
+        diagnosticWalkStatus nextWalkStatus: String? = nil,
+        testToneStatus nextToneStatus: String? = nil
+    ) {
+        testToneStopTask?.cancel()
+        testToneStopTask = nil
+        diagnosticSequenceTask?.cancel()
+        diagnosticSequenceTask = nil
+        engine.stopTestTone()
+
+        isTestTonePlaying = false
+        isDiagnosticSequencePlaying = false
+        isDiagnosticTransitioning = false
+        activeDiagnosticPoint = nil
+        activeDiagnosticChannelIndex = nil
+        activeDiagnosticChannelCount = 0
+        activeDiagnosticWalkTitle = ""
+        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsMonitorDownmixAvailable = false
+        diagnosticSequencePosition = 0
+        meterStore.reset()
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
+        if let nextWalkStatus {
+            diagnosticWalkStatus = nextWalkStatus
+        }
+        if let nextToneStatus {
+            testToneStatus = nextToneStatus
+        }
+    }
+
+    private func beginDiagnosticPlaybackReplacingCurrent() {
+        captureDiagnosticReturnContextIfNeeded()
+        clearActiveDiagnosticPlaybackState()
+        if isPlaying {
+            engine.stop()
+            isPlaying = false
+        }
+    }
+
+    private func restoreSourceAfterFailedDiagnosticStart(
+        diagnosticWalkStatus walkStatus: String = "Diagnostic start failed.",
+        testToneStatus toneStatus: String = "Diagnostic start failed."
+    ) {
+        clearActiveDiagnosticPlaybackState(
+            diagnosticWalkStatus: walkStatus,
+            testToneStatus: toneStatus
+        )
+        restoreMusicAfterDiagnostics()
+    }
+
+    private func startDiagnosticChannelWalk(kind: DiagnosticChannelWalkKind) {
+        refreshRoutesIfNeeded(force: true)
+        beginDiagnosticPlaybackReplacingCurrent()
+
+        guard prepareDiagnosticOutput(for: kind) else {
+            restoreSourceAfterFailedDiagnosticStart()
+            return
+        }
+
         isTestTonePlaying = true
         isDiagnosticSequencePlaying = true
         isDiagnosticTransitioning = true
@@ -5669,6 +5756,9 @@ final class OrbisonicViewModel: ObservableObject {
         if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
             diagnosticWalkStatus = "Starting Output 2 Renderer channel walk as preview."
             statusMessage = "Output 2 Renderer is not set. Previewing Output 2 Renderer channel walk through \(routeDisplayName)."
+        } else if kind == .monitor {
+            diagnosticWalkStatus = "Starting Output 1 Local speakers direct stereo channel walk."
+            statusMessage = "Running direct stereo Output 1 Local speakers channel walk through \(routeDisplayName)."
         } else {
             diagnosticWalkStatus = "Starting \(kind.shortTitle.lowercased()) channel walk."
             statusMessage = "Running \(kind.shortTitle.lowercased()) channel walk through \(routeDisplayName)."
@@ -5734,33 +5824,55 @@ final class OrbisonicViewModel: ObservableObject {
 
             rendererDiagnosticsUsingMonitorPreview = true
             if monitorOutputRoute.isAvailable {
-                return applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName)
+                guard applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName) else { return false }
+                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: monitorOutputRoute)
+                guard rendererDiagnosticsMonitorDownmixAvailable else {
+                    statusMessage = "Output 1 Monitor downmix is unavailable."
+                    return false
+                }
+                return rendererDiagnosticsMonitorDownmixAvailable
             }
 
             let fallbackRoute = outputRoute.isAvailable ? outputRoute : systemOutputRoute
-            if fallbackRoute.isAvailable, fallbackRoute.isSelectableOutputTarget {
+            if fallbackRoute.isAvailable {
+                guard fallbackRoute.isSelectableOutputTarget else {
+                    let message = outputFeedbackMessage(for: fallbackRoute, purpose: .monitor)
+                    statusMessage = message
+                    lastError = message
+                    return false
+                }
                 outputRoute = fallbackRoute
                 syncRendererAudioRouting()
-            statusMessage = "Output 2 Renderer is not set; using \(fallbackRoute.deviceName) for Output 1 Monitor."
+                statusMessage = "Output 2 Renderer is not set; using \(fallbackRoute.deviceName) for Output 1 Monitor."
                 AppLogger.shared.notice(category: "diagnostics", "Output 2 Renderer diagnostic preview using fallback output=\(fallbackRoute.deviceName)")
-                return true
+                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: fallbackRoute)
+                guard rendererDiagnosticsMonitorDownmixAvailable else {
+                    statusMessage = "Output 1 Monitor downmix is unavailable."
+                    return false
+                }
+                return rendererDiagnosticsMonitorDownmixAvailable
             }
 
-            AppLogger.shared.notice(category: "diagnostics", "Renderer diagnostic preview starting without explicit output route.")
-            return true
+            statusMessage = "Output 2 Renderer is not set and Output 1 Monitor is unavailable."
+            AppLogger.shared.notice(category: "diagnostics", "Renderer diagnostic preview unavailable; no explicit monitor output route.")
+            return false
         }
     }
 
     private func configureDiagnosticMonitorDownmix() -> Bool {
-        guard monitorOutputRoute.isAvailable,
-              monitorOutputRoute.isSelectableOutputTarget
+        configureDiagnosticMonitorDownmix(on: monitorOutputRoute)
+    }
+
+    private func configureDiagnosticMonitorDownmix(on route: OutputRouteInfo) -> Bool {
+        guard route.isAvailable,
+              route.isSelectableOutputTarget
         else {
             AppLogger.shared.warning(category: "diagnostics", "Output 1 Monitor downmix unavailable for Output 2 Renderer diagnostic; no Output 1 Monitor route.")
             return false
         }
 
         do {
-            try engine.setDiagnosticMonitorOutputDevice(monitorOutputRoute.deviceID)
+            try engine.setDiagnosticMonitorOutputDevice(route.deviceID)
             return true
         } catch {
             AppLogger.shared.warning(category: "diagnostics", "Output 1 Monitor downmix unavailable: \(error.localizedDescription)")
@@ -5780,13 +5892,16 @@ final class OrbisonicViewModel: ObservableObject {
         guard isDiagnosticSequencePlaying else { return false }
 
         do {
-            let usesMonitorDownmix = kind == .renderer
-                && !rendererDiagnosticsUsingMonitorPreview
-                && rendererDiagnosticsMonitorDownmixAvailable
+            let playbackOptions = DiagnosticChannelPlaybackPolicy.options(
+                targetsRenderer: kind == .renderer,
+                rendererMonitorDownmixAvailable: rendererDiagnosticsMonitorDownmixAvailable,
+                rendererMonitorPreview: rendererDiagnosticsUsingMonitorPreview
+            )
             try engine.playDiagnosticChannelTone(
                 channelIndex: index,
                 channelCount: total,
-                monitorDownmix: usesMonitorDownmix
+                monitorDownmix: playbackOptions.monitorDownmix,
+                primaryOutputEnabled: playbackOptions.primaryOutputEnabled
             )
             activeDiagnosticPoint = nil
             activeDiagnosticChannelIndex = index
@@ -5796,9 +5911,12 @@ final class OrbisonicViewModel: ObservableObject {
             if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
                 diagnosticWalkStatus = "Playing Output 2 Renderer channel \(index + 1) of \(total) as Output 1 Monitor downmix."
                 statusMessage = "Output 2 Renderer channel \(index + 1) preview is active on \(routeDisplayName)."
-            } else if usesMonitorDownmix {
+            } else if playbackOptions.monitorDownmix {
                 diagnosticWalkStatus = "Playing Output 2 Renderer channel \(index + 1) of \(total) with Output 1 Monitor downmix."
                 statusMessage = "Output 2 Renderer channel \(index + 1) is active on \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)."
+            } else if kind == .monitor {
+                diagnosticWalkStatus = "Playing Output 1 Local speakers channel \(index + 1) of \(total) as direct stereo."
+                statusMessage = "Output 1 Local speakers channel \(index + 1) is active on \(routeDisplayName) with direct L/R separation."
             } else {
                 diagnosticWalkStatus = "Playing \(kind.shortTitle.lowercased()) channel \(index + 1) of \(total)."
                 statusMessage = "\(kind.shortTitle) channel \(index + 1) is active on \(routeDisplayName)."
@@ -5807,20 +5925,9 @@ final class OrbisonicViewModel: ObservableObject {
             meterStore.reset()
             switch kind {
             case .monitor:
-                let channels = SurroundLayoutDetector.fallbackLayout(for: total).channels
-                monitorMeterStore.configureIfNeeded(channels: channels)
-                monitorMeterStore.update(with: activeLevel(index: index, count: total))
-                rendererMeterStore.reset()
+                applyLocalMonitorDiagnosticMeterLevels(index: index)
             case .renderer:
-                let channels = rendererMeterChannels()
-                rendererMeterStore.configureIfNeeded(channels: channels)
-                rendererMeterStore.update(with: activeLevel(index: index, count: channels.count))
-                if rendererDiagnosticsUsingMonitorPreview || usesMonitorDownmix {
-                    monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
-                    monitorMeterStore.update(with: Array(repeating: Float(0.72), count: monitorChannelWalkCount))
-                } else {
-                    monitorMeterStore.reset()
-                }
+                applyRendererDiagnosticMeterLevels(index: index, monitorDownmixActive: playbackOptions.monitorDownmix)
             }
 
             AppLogger.shared.notice(
@@ -5838,24 +5945,9 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func finishDiagnosticChannelWalk(restoreMusic: Bool, automatic: Bool) {
-        diagnosticSequenceTask?.cancel()
-        diagnosticSequenceTask = nil
-        testToneStopTask?.cancel()
-        testToneStopTask = nil
-        engine.stopTestTone()
-
-        isTestTonePlaying = false
-        isDiagnosticSequencePlaying = false
-        activeDiagnosticPoint = nil
-        activeDiagnosticChannelIndex = nil
-        activeDiagnosticChannelCount = 0
-        activeDiagnosticWalkTitle = ""
-        rendererDiagnosticsUsingMonitorPreview = false
-        diagnosticSequencePosition = 0
-        meterStore.reset()
-        monitorMeterStore.reset()
-        rendererMeterStore.reset()
-        diagnosticWalkStatus = automatic ? "Diagnostic channel walk finished." : "Diagnostic channel walk stopped."
+        clearActiveDiagnosticPlaybackState(
+            diagnosticWalkStatus: automatic ? "Diagnostic channel walk finished." : "Diagnostic channel walk stopped."
+        )
 
         AppLogger.shared.notice(
             category: "diagnostics",
@@ -5940,8 +6032,9 @@ final class OrbisonicViewModel: ObservableObject {
     private func cancelDiagnosticsForMusicAction() {
         if isDiagnosticSequencePlaying {
             finishDiagnosticChannelWalk(restoreMusic: false, automatic: false)
-        } else {
-            stopTestTone()
+        } else if isTestTonePlaying {
+            clearActiveDiagnosticPlaybackState(testToneStatus: "Diagnostic tone stopped.")
+            diagnosticReturnContext = nil
         }
     }
 
@@ -5951,22 +6044,27 @@ final class OrbisonicViewModel: ObservableObject {
         try? engine.setDiagnosticMonitorOutputDevice(nil)
 
         let purpose: OutputPurpose = selectedTestTonePoint.spatialChannel == nil ? .monitor : .renderer
-        guard ensureOutputForAction(purpose) else { return }
-        let monitorDownmix = purpose == .renderer && configureDiagnosticMonitorDownmix()
+        beginDiagnosticPlaybackReplacingCurrent()
 
-        if isPlaying {
-            stop()
-        } else {
-            stopTestTone()
+        guard ensureOutputForAction(purpose) else {
+            restoreSourceAfterFailedDiagnosticStart()
+            return
         }
+
+        let monitorDownmix = purpose == .renderer && configureDiagnosticMonitorDownmix()
+        rendererDiagnosticsMonitorDownmixAvailable = monitorDownmix
 
         do {
             try engine.playTestTone(selectedTestTonePoint, monitorDownmix: monitorDownmix)
             isTestTonePlaying = true
-            testToneStatus = "Playing \(selectedTestTonePoint.rawValue) for 3 seconds."
-            statusMessage = monitorDownmix
-                ? "\(selectedTestTonePoint.pipelineDescription). Output 2 Renderer is \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)."
-                : "\(selectedTestTonePoint.pipelineDescription). Listen on \(routeDisplayName)."
+            testToneStatus = "Playing \(selectedTestTonePoint.rawValue) until stopped."
+            if monitorDownmix {
+                statusMessage = "\(selectedTestTonePoint.pipelineDescription). Output 2 Renderer is \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)."
+            } else if purpose == .renderer {
+                statusMessage = "\(selectedTestTonePoint.pipelineDescription). Listen on \(routeDisplayName). Output 1 Monitor downmix is unavailable."
+            } else {
+                statusMessage = "\(selectedTestTonePoint.pipelineDescription). Listen on \(routeDisplayName)."
+            }
 
             let channels = selectedTestTonePoint.meterChannels
             meterStore.configure(channels: channels)
@@ -5974,7 +6072,14 @@ final class OrbisonicViewModel: ObservableObject {
             let rendererTestLevels = Array(repeating: Float(0.82), count: rendererScene.matrix.inputCount)
             if monitorDownmix {
                 monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
-                monitorMeterStore.update(with: Array(repeating: Float(0.72), count: monitorChannelWalkCount))
+                monitorMeterStore.update(
+                    with: DiagnosticMonitorDownmixMeterModel.levels(
+                        from: [0.82],
+                        monitorChannelCount: monitorChannelWalkCount
+                    )
+                )
+            } else if purpose == .renderer {
+                monitorMeterStore.reset()
             } else {
                 updateMonitorMeters(from: rendererTestLevels.isEmpty ? [Float(0.82)] : rendererTestLevels)
             }
@@ -5984,24 +6089,11 @@ final class OrbisonicViewModel: ObservableObject {
                 category: "diagnostics",
                 "UI requested test tone point=\(selectedTestTonePoint.rawValue) output=\(outputRoute.deviceName)"
             )
-
-            testToneStopTask?.cancel()
-            testToneStopTask = Task { [weak self] in
-                do {
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
-                } catch {
-                    return
-                }
-
-                await MainActor.run {
-                    self?.stopTestTone(automatic: true)
-                }
-            }
         } catch {
             AppLogger.shared.error(category: "diagnostics", "Test tone failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
             lastDiagnosticFailure = DiagnosticEvent(message: error.localizedDescription, timestamp: Date())
-            testToneStatus = "Test tone failed."
+            restoreSourceAfterFailedDiagnosticStart(testToneStatus: "Test tone failed.")
         }
     }
 
@@ -6010,42 +6102,69 @@ final class OrbisonicViewModel: ObservableObject {
         rendererDiagnosticsUsingMonitorPreview = false
         rendererDiagnosticsMonitorDownmixAvailable = false
         try? engine.setDiagnosticMonitorOutputDevice(nil)
+        beginDiagnosticPlaybackReplacingCurrent()
 
         if rendererOutputSelection != .none {
-            guard ensureOutputForAction(.renderer) else { return }
+            guard ensureOutputForAction(.renderer) else {
+                restoreSourceAfterFailedDiagnosticStart()
+                return
+            }
             rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix()
         } else {
             rendererDiagnosticsUsingMonitorPreview = true
             if monitorOutputRoute.isAvailable {
-                guard applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName) else { return }
+                guard applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName) else {
+                    restoreSourceAfterFailedDiagnosticStart()
+                    return
+                }
+                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: monitorOutputRoute)
             } else if outputRoute.isAvailable || systemOutputRoute.isAvailable {
                 let fallbackRoute = outputRoute.isAvailable ? outputRoute : systemOutputRoute
                 guard fallbackRoute.isSelectableOutputTarget else {
                     let message = outputFeedbackMessage(for: fallbackRoute, purpose: .monitor)
                     statusMessage = message
                     lastError = message
+                    restoreSourceAfterFailedDiagnosticStart(
+                        diagnosticWalkStatus: message,
+                        testToneStatus: "Speaker test tone failed."
+                    )
                     return
                 }
                 outputRoute = fallbackRoute
                 syncRendererAudioRouting()
+                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: fallbackRoute)
+            } else {
+                let message = "Output 2 Renderer is not set and Output 1 Monitor is unavailable."
+                statusMessage = message
+                restoreSourceAfterFailedDiagnosticStart(
+                    diagnosticWalkStatus: message,
+                    testToneStatus: "Speaker test tone failed."
+                )
+                return
             }
         }
 
-        if isPlaying {
-            stop()
-        } else {
-            stopTestTone()
+        if rendererDiagnosticsUsingMonitorPreview && !rendererDiagnosticsMonitorDownmixAvailable {
+            let message = "Output 2 Renderer is not set and Output 1 Monitor downmix is unavailable."
+            statusMessage = message
+            restoreSourceAfterFailedDiagnosticStart(
+                diagnosticWalkStatus: message,
+                testToneStatus: "Speaker test tone failed."
+            )
+            return
         }
 
         let channel = clampedDiagnosticSpeakerChannel(selectedDiagnosticSpeakerChannel)
         selectDiagnosticSpeakerChannel(channel)
-        let monitorDownmix = !rendererDiagnosticsUsingMonitorPreview && rendererDiagnosticsMonitorDownmixAvailable
+        let monitorDownmix = rendererDiagnosticsMonitorDownmixAvailable
+        let primaryOutputEnabled = !rendererDiagnosticsUsingMonitorPreview
 
         do {
             try engine.playDiagnosticChannelTone(
                 channelIndex: channel - 1,
                 channelCount: Self.diagnosticSpeakerChannelCount,
-                monitorDownmix: monitorDownmix
+                monitorDownmix: monitorDownmix,
+                primaryOutputEnabled: primaryOutputEnabled
             )
             isTestTonePlaying = true
             activeDiagnosticPoint = nil
@@ -6059,15 +6178,7 @@ final class OrbisonicViewModel: ObservableObject {
                 ? "Output 2 Renderer is not set. Channel \(channel) is previewing through \(routeDisplayName)."
                 : (monitorDownmix ? "Channel \(channel) tone is active on \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)." : "Channel \(channel) tone is active on \(routeDisplayName).")
 
-            let channels = rendererMeterChannels()
-            rendererMeterStore.configureIfNeeded(channels: channels)
-            rendererMeterStore.update(with: activeLevel(index: channel - 1, count: channels.count))
-            if rendererDiagnosticsUsingMonitorPreview || monitorDownmix {
-                monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
-                monitorMeterStore.update(with: Array(repeating: Float(0.72), count: monitorChannelWalkCount))
-            } else {
-                monitorMeterStore.reset()
-            }
+            applyRendererDiagnosticMeterLevels(index: channel - 1, monitorDownmixActive: monitorDownmix)
 
             AppLogger.shared.notice(
                 category: "diagnostics",
@@ -6077,31 +6188,21 @@ final class OrbisonicViewModel: ObservableObject {
             AppLogger.shared.error(category: "diagnostics", "Speaker test tone failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
             lastDiagnosticFailure = DiagnosticEvent(message: error.localizedDescription, timestamp: Date())
-            testToneStatus = "Speaker test tone failed."
+            restoreSourceAfterFailedDiagnosticStart(testToneStatus: "Speaker test tone failed.")
         }
     }
 
     func stopTestTone(automatic: Bool = false) {
-        testToneStopTask?.cancel()
-        testToneStopTask = nil
-        engine.stopTestTone()
-
-        guard isTestTonePlaying else { return }
-
-        isTestTonePlaying = false
-        rendererDiagnosticsUsingMonitorPreview = false
-        rendererDiagnosticsMonitorDownmixAvailable = false
-        activeDiagnosticChannelIndex = nil
-        activeDiagnosticChannelCount = 0
-        activeDiagnosticWalkTitle = ""
-        meterStore.reset()
-        monitorMeterStore.reset()
-        rendererMeterStore.reset()
-        testToneStatus = automatic ? "Diagnostic tone finished." : "Diagnostic tone stopped."
+        guard isTestTonePlaying || isDiagnosticSequencePlaying else { return }
+        clearActiveDiagnosticPlaybackState(
+            diagnosticWalkStatus: automatic ? "Diagnostic channel walk finished." : "Diagnostic channel walk stopped.",
+            testToneStatus: automatic ? "Diagnostic tone finished." : "Diagnostic tone stopped."
+        )
 
         if automatic {
             statusMessage = "Diagnostic tone finished. If you heard it, \(routeDisplayName) is receiving app audio."
         }
+        restoreMusicAfterDiagnostics()
     }
 
     func scrubEditingChanged(_ editing: Bool) {
@@ -6576,6 +6677,30 @@ final class OrbisonicViewModel: ObservableObject {
         spotifyReceiverClient.configuration.receiverName
     }
 
+    var spotifyHasReceivingAudioForStatus: Bool {
+        liveAudioSignalState.isRecentlyReceiving ||
+            liveSignalStatus.localizedCaseInsensitiveContains("Signal present") ||
+            liveMonitorState == .monitoring
+    }
+
+    var spotifyNowPlayingForActiveStatus: SpotifyNowPlaying? {
+        if spotifyHasReceivingAudioForStatus {
+            return spotifyVisibleNowPlaying ?? spotifyNowPlaying
+        }
+
+        if spotifyVisibleNowPlaying?.hasActiveConnectSession == true {
+            return spotifyVisibleNowPlaying
+        }
+        if spotifyNowPlaying?.hasActiveConnectSession == true {
+            return spotifyNowPlaying
+        }
+        return nil
+    }
+
+    var spotifyHasActiveSessionForStatus: Bool {
+        spotifyNowPlayingForActiveStatus != nil || spotifyHasReceivingAudioForStatus
+    }
+
     var appLaunchContextText: String {
         if Bundle.main.bundleURL.pathExtension == "app" {
             return "Proper .app bundle"
@@ -6698,7 +6823,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .embeddedModuleUnavailable:
             serverStatus = "Error"
         case .waitingForConnection:
-            if let clientName = (spotifyVisibleNowPlaying ?? spotifyNowPlaying)?.clientName?.trimmedNilIfBlank {
+            if let clientName = spotifyNowPlayingForActiveStatus?.clientName?.trimmedNilIfBlank {
                 serverStatus = "Session from \(clientName)"
             } else {
                 serverStatus = "Advertising as \(spotifyReceiverClient.configuration.receiverName)"
@@ -8201,6 +8326,32 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func configureRendererMeters() {
         rendererMeterStore.configureIfNeeded(channels: rendererMeterChannels())
+    }
+
+    func applyLocalMonitorDiagnosticMeterLevels(index: Int) {
+        let channelCount = monitorChannelWalkCount
+        monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: channelCount).channels)
+        monitorMeterStore.update(with: activeLevel(index: index, count: channelCount))
+        rendererMeterStore.reset()
+    }
+
+    func applyRendererDiagnosticMeterLevels(index: Int, monitorDownmixActive: Bool) {
+        let channels = rendererMeterChannels()
+        let rendererLevels = activeLevel(index: index, count: channels.count)
+        rendererMeterStore.configureIfNeeded(channels: channels)
+        rendererMeterStore.update(with: rendererLevels)
+
+        if monitorDownmixActive {
+            monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
+            monitorMeterStore.update(
+                with: DiagnosticMonitorDownmixMeterModel.levels(
+                    from: rendererLevels,
+                    monitorChannelCount: monitorChannelWalkCount
+                )
+            )
+        } else {
+            monitorMeterStore.reset()
+        }
     }
 
     private func updateRendererMeters(from sourceLevels: [Float]) {

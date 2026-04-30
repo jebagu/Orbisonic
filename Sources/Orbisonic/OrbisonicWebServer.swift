@@ -671,7 +671,7 @@ extension OrbisonicViewModel {
         case .spotify:
             return liveAudioSignalState.isRecentlyReceiving ||
                 liveMonitorState == .monitoring ||
-                spotifyVisibleNowPlaying?.isPlaying == true
+                spotifyNowPlayingForActiveStatus?.isPlaying == true
         case .roon:
             return liveAudioSignalState.isRecentlyReceiving ||
                 liveMonitorState == .monitoring
@@ -693,7 +693,7 @@ extension OrbisonicViewModel {
         case .roon:
             return roonBridgeSnapshot.selectedZone?.nowPlaying != nil || roonNowPlaying != nil
         case .spotify:
-            return spotifyVisibleNowPlaying != nil
+            return spotifyNowPlayingForActiveStatus != nil
         case .aux:
             return webPlayerIsPlaying
         case .filePlayback:
@@ -1008,7 +1008,7 @@ extension OrbisonicViewModel {
         case .aux:
             return "Aux Cable"
         case .spotify:
-            return spotifyVisibleNowPlaying?.displayTitle ?? "Spotify"
+            return spotifyNowPlayingForActiveStatus?.displayTitle ?? "Spotify"
         case .filePlayback:
             if let track = visibleLocalPlaybackTrack {
                 return track.displayTitle
@@ -1037,7 +1037,7 @@ extension OrbisonicViewModel {
         case .aux:
             return "Controlled in the source app."
         case .spotify:
-            return spotifyVisibleNowPlaying?.artistText ?? "Controlled from Spotify Connect."
+            return spotifyNowPlayingForActiveStatus?.artistText ?? "Controlled from Spotify Connect."
         case .filePlayback:
             if let track = visibleLocalPlaybackTrack {
                 return track.displaySubtitle
@@ -1063,7 +1063,7 @@ extension OrbisonicViewModel {
             }
             return roonNowPlaying?.artist.trimmedNilIfBlank ?? ""
         case .spotify:
-            return webPublicMetadataText(spotifyVisibleNowPlaying?.artistText)
+            return webPublicMetadataText(spotifyNowPlayingForActiveStatus?.artistText)
         case .filePlayback:
             if let track = visibleLocalPlaybackTrack {
                 return webPublicMetadataText(track.displayArtist)
@@ -1081,7 +1081,7 @@ extension OrbisonicViewModel {
             }
             return ""
         case .spotify:
-            return webPublicMetadataText(spotifyVisibleNowPlaying?.albumText)
+            return webPublicMetadataText(spotifyNowPlayingForActiveStatus?.albumText)
         case .filePlayback:
             if let track = visibleLocalPlaybackTrack {
                 return webPublicMetadataText(track.displayAlbum)
@@ -1180,10 +1180,10 @@ extension OrbisonicViewModel {
         }
         if liveAudioSignalState.isRecentlyReceiving ||
             liveMonitorState == .monitoring ||
-            spotifyVisibleNowPlaying?.isPlaying == true {
+            spotifyNowPlayingForActiveStatus?.isPlaying == true {
             return "Spotify playing"
         }
-        return spotifyVisibleNowPlaying == nil ? "No Spotify track" : "Spotify paused"
+        return spotifyNowPlayingForActiveStatus == nil ? "No Spotify track" : "Spotify paused"
     }
 
     private var webPlayerCurrentTime: String {
@@ -1191,7 +1191,7 @@ extension OrbisonicViewModel {
         case .roon:
             return webTimeText(seconds: roonBridgeSnapshot.selectedZone?.nowPlaying?.seekPosition)
         case .spotify:
-            return spotifyVisibleNowPlaying?.positionText ?? "0:00"
+            return spotifyNowPlayingForActiveStatus?.positionText ?? "0:00"
         case .filePlayback:
             return visibleLocalSourceMetadata == nil ? "0:00" : formattedCurrentTime()
         case .off, .aux, .testTone:
@@ -1204,7 +1204,7 @@ extension OrbisonicViewModel {
         case .roon:
             return webTimeText(seconds: roonBridgeSnapshot.selectedZone?.nowPlaying?.length)
         case .spotify:
-            return spotifyVisibleNowPlaying?.durationText ?? "0:00"
+            return spotifyNowPlayingForActiveStatus?.durationText ?? "0:00"
         case .filePlayback:
             return visibleLocalSourceMetadata == nil ? "0:00" : formattedDuration()
         case .off, .aux, .testTone:
@@ -1222,8 +1222,8 @@ extension OrbisonicViewModel {
             else { return 0 }
             return min(max(position / length, 0), 1)
         case .spotify:
-            guard let position = spotifyVisibleNowPlaying?.positionMs,
-                  let duration = spotifyVisibleNowPlaying?.durationMs,
+            guard let position = spotifyNowPlayingForActiveStatus?.positionMs,
+                  let duration = spotifyNowPlayingForActiveStatus?.durationMs,
                   duration > 0
             else { return 0 }
             return min(max(Double(position) / Double(duration), 0), 1)
@@ -1266,7 +1266,7 @@ extension OrbisonicViewModel {
             }
             return roonNowPlayingStatus.trimmedNilIfBlank ?? liveSignalStatus
         case .spotify:
-            return spotifyVisibleNowPlaying == nil ? "Spotify Connect" : "Spotify Connect • stereo"
+            return spotifyNowPlayingForActiveStatus == nil ? "Spotify Connect" : "Spotify Connect • stereo"
         case .aux:
             return liveMonitorState.isCapturing ? "Aux live input active" : "Aux live input idle"
         case .testTone:

@@ -28,6 +28,7 @@ final class OrbisonicWebStateTests: XCTestCase {
     func testPublicAndControlStatesExposeCurrentSpotifyArtwork() {
         let model = OrbisonicViewModel()
         model.setSourceModeForTesting(.spotify)
+        model.setSpotifyReceiverStatusForTesting(Self.spotifyReceiverRunningStatus())
         model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
             title: "Artwork Track",
             isPlaying: true,
@@ -63,6 +64,7 @@ final class OrbisonicWebStateTests: XCTestCase {
     func testPublicPlayerSummaryUsesVisitorFacingFields() {
         let model = OrbisonicViewModel()
         model.setSourceModeForTesting(.spotify)
+        model.setSpotifyReceiverStatusForTesting(Self.spotifyReceiverRunningStatus())
         model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
             title: "The Lady",
             isPlaying: true
@@ -283,12 +285,79 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertTrue(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
 
-        try await Task.sleep(nanoseconds: 350_000_000)
+        let deadline = Date().addingTimeInterval(2.0)
+        repeat {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            state = model.webStateForTesting(controlEnabled: true)
+        } while state.player.status != "Spotify paused" && Date() < deadline
 
-        state = model.webStateForTesting(controlEnabled: true)
         XCTAssertEqual(state.player.status, "Spotify paused")
         XCTAssertFalse(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
+    }
+
+    @MainActor
+    func testStaleSpotifyMetadataDoesNotMarkConnectionActive() {
+        let model = OrbisonicViewModel()
+        let spotifyRoute = Self.inputRoute(for: .spotifyInput)
+        model.setSourceModeForTesting(.spotify)
+        model.setInputRouteForTesting(spotifyRoute, availableRoutes: [spotifyRoute])
+        model.setSpotifyReceiverStatusForTesting(SpotifyReceiverStatus(
+            state: .waitingForConnection,
+            message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
+        ))
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
+            title: "Stale Track",
+            isPlaying: false,
+            sessionActive: nil
+        ))
+        model.setLiveAudioSignalStateForTesting(.noSignal)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.status, "No Spotify track")
+        XCTAssertFalse(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.headline, "Open Spotify and choose Orbisonic")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Connection" }?.value,
+            "Choose Orbisonic in Spotify"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
+            "Waiting for audio"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Now playing" }?.value,
+            "Waiting for Spotify"
+        )
+    }
+
+    @MainActor
+    func testActiveSpotifySessionCanBePaused() {
+        let model = OrbisonicViewModel()
+        let spotifyRoute = Self.inputRoute(for: .spotifyInput)
+        model.setSourceModeForTesting(.spotify)
+        model.setInputRouteForTesting(spotifyRoute, availableRoutes: [spotifyRoute])
+        model.setSpotifyReceiverStatusForTesting(SpotifyReceiverStatus(
+            state: .waitingForConnection,
+            message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
+        ))
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
+            title: "Paused Track",
+            isPlaying: false,
+            sessionActive: true
+        ))
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.status, "Spotify paused")
+        XCTAssertEqual(state.input.sourcePanel.headline, "Spotify is paused")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Connection" }?.value,
+            "Connected to Orbisonic"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
+            "Paused or silent"
+        )
     }
 
     @MainActor
@@ -299,7 +368,11 @@ final class OrbisonicWebStateTests: XCTestCase {
             state: .waitingForConnection,
             message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
         ))
-        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(title: "Audible Track", isPlaying: false))
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
+            title: "Audible Track",
+            isPlaying: false,
+            sessionActive: nil
+        ))
         model.setLiveMonitorStateForTesting(.monitoring)
         model.setLiveAudioSignalStateForTesting(.receiving)
 
@@ -572,6 +645,13 @@ final class OrbisonicWebStateTests: XCTestCase {
         )
     }
 
+    private static func spotifyReceiverRunningStatus() -> SpotifyReceiverStatus {
+        SpotifyReceiverStatus(
+            state: .waitingForConnection,
+            message: "Spotify Connect receiver is advertising as Orbisonic Spotify."
+        )
+    }
+
     private static func localTrack(title: String, artworkPath: String?) -> LocalMusicTrack {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(title.replacingOccurrences(of: " ", with: "-")).flac", isDirectory: false)
@@ -594,7 +674,8 @@ final class OrbisonicWebStateTests: XCTestCase {
     private static func spotifyNowPlaying(
         title: String,
         isPlaying: Bool,
-        coverURL: String? = nil
+        coverURL: String? = nil,
+        sessionActive: Bool? = true
     ) -> SpotifyNowPlaying {
         SpotifyNowPlaying(
             title: title,
@@ -615,7 +696,8 @@ final class OrbisonicWebStateTests: XCTestCase {
             repeatContext: nil,
             repeatTrack: nil,
             autoPlay: nil,
-            clientName: "Spotify",
+            clientName: sessionActive == true ? "Spotify" : nil,
+            sessionActive: sessionActive,
             updatedAt: isPlaying ? "playing" : "paused"
         )
     }
