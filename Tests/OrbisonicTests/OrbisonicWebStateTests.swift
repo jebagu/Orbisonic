@@ -121,6 +121,22 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertEqual(state.player.details.first { $0.title == "Format" }?.value, "FLAC")
     }
 
+    func testRoonPlayerRowsUseChannelsInsteadOfSignalPath() {
+        let stereoRows = RoonPlayerRowsModel.rows(
+            nowPlaying: Self.roonNowPlaying(title: "Roon Stereo"),
+            signalPath: Self.roonSignalPath(sourceChannelCount: 2)
+        )
+        let surroundRows = RoonPlayerRowsModel.rows(
+            nowPlaying: Self.roonNowPlaying(title: "Roon Surround"),
+            signalPath: Self.roonSignalPath(sourceChannelCount: 6)
+        )
+
+        XCTAssertEqual(stereoRows.first { $0.title == "Channels" }?.value, "Stereo")
+        XCTAssertEqual(surroundRows.first { $0.title == "Channels" }?.value, "5.1")
+        XCTAssertFalse(stereoRows.contains { $0.title == "Signal path" })
+        XCTAssertFalse(surroundRows.contains { $0.title == "Signal path" })
+    }
+
     func testPublicPlayerScriptHidesOutputChannelsAndTechnicalNerdRows() {
         let script = OrbisonicWebServer.publicPageJSForTesting
 
@@ -491,6 +507,16 @@ final class OrbisonicWebStateTests: XCTestCase {
             artist: "Roon Artist",
             updatedText: "test",
             rawLine: "test"
+        )
+    }
+
+    private static func roonSignalPath(sourceChannelCount: Int?) -> RoonSignalPath {
+        RoonSignalPath(
+            sourceFormat: "Flac 96000/24/\(sourceChannelCount ?? 0) Quality=Lossless",
+            sourceChannelCount: sourceChannelCount,
+            channelMapping: sourceChannelCount == 2 ? "2.0 -> 2.0" : "\(sourceChannelCount ?? 0).0 -> \(sourceChannelCount ?? 0).0",
+            device: "Orbisonic Roon Input",
+            output: "BlackHole 64ch"
         )
     }
 

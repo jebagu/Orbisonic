@@ -235,6 +235,40 @@ enum LocalFilePlayerRowsModel {
     }
 }
 
+enum RoonPlayerRowsModel {
+    static func rows(nowPlaying: RoonNowPlaying?, signalPath: RoonSignalPath?) -> [PlayerDetailRowContent] {
+        guard let nowPlaying else { return [] }
+
+        var rows = [
+            PlayerDetailRowContent(title: "Format", value: nowPlaying.tidyFormatText)
+        ]
+        if let channelsText = channelsText(for: signalPath?.sourceChannelCount) {
+            rows.append(PlayerDetailRowContent(title: "Channels", value: channelsText))
+        }
+        rows.append(PlayerDetailRowContent(title: "Length", value: nowPlaying.durationText))
+        return rows
+    }
+
+    static func channelsText(for sourceChannelCount: Int?) -> String? {
+        guard let sourceChannelCount, sourceChannelCount > 0 else { return nil }
+
+        switch sourceChannelCount {
+        case 1:
+            return "Mono"
+        case 2:
+            return "Stereo"
+        case 4:
+            return "Quad"
+        case 6:
+            return "5.1"
+        case 8:
+            return "7.1"
+        default:
+            return "\(sourceChannelCount) ch"
+        }
+    }
+}
+
 private struct VUMeterAppearance {
     let visualGain: Double
     let activityCompression: Double
@@ -2395,13 +2429,10 @@ struct ContentView: View {
     private var roonPlayerRows: [PlayerDetailRow] {
         var rows: [PlayerDetailRow] = []
 
-        if let nowPlaying = model.roonNowPlaying {
-            rows.append(PlayerDetailRow(title: "Format", value: nowPlaying.tidyFormatText))
-            if let signalPathText = roonSignalPathDetailText {
-                rows.append(PlayerDetailRow(title: "Signal path", value: signalPathText))
-            }
-            rows.append(PlayerDetailRow(title: "Length", value: nowPlaying.durationText))
-        }
+        rows.append(contentsOf: RoonPlayerRowsModel.rows(
+            nowPlaying: model.roonNowPlaying,
+            signalPath: model.roonSignalPath
+        ).map(playerDetailRow))
 
         if let errorText = liveInputPlaybackErrorText {
             rows.append(PlayerDetailRow(title: "Error", value: errorText, hasTopDivider: !rows.isEmpty))
@@ -2523,26 +2554,6 @@ struct ContentView: View {
         case .unknown:
             return model.liveMonitorState == .monitoring ? "Receiving" : "Waiting"
         }
-    }
-
-    private var roonSignalPathDetailText: String? {
-        guard let signalPath = model.roonSignalPath else {
-            return nil
-        }
-
-        let mapText = signalPath.statusText
-            .replacingOccurrences(of: "BlackHole", with: "Orbisonic")
-        let hasMap = mapText != "-"
-
-        if signalPath.sourceChannelText != "-", hasMap {
-            return "\(signalPath.sourceChannelText) • \(mapText)"
-        }
-
-        if hasMap {
-            return mapText
-        }
-
-        return signalPath.sourceChannelText == "-" ? nil : signalPath.sourceChannelText
     }
 
     private func primaryNowPlayingAction() {
