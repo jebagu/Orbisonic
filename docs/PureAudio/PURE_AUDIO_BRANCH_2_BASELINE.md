@@ -131,6 +131,7 @@ Pure Audio layers added during this branch:
 - `Sources/AudioCore/RenderKernels.swift`
 - `Sources/AudioCore/SourceAdapters.swift`
 - `Sources/AudioCore/OutputAdapters.swift`
+- `Sources/AudioCore/MeteringTelemetry.swift`
 - `Sources/AudioImport/`
 
 Repo structure note:
@@ -198,6 +199,7 @@ Pure Audio tests added during this branch:
 - `Tests/AudioCoreTests/RenderKernelTests.swift`
 - `Tests/AudioCoreTests/SourceAdapterTests.swift`
 - `Tests/AudioCoreTests/OutputAdapterTests.swift`
+- `Tests/AudioCoreTests/MeteringTelemetryTests.swift`
 - `Tests/AudioImportTests/`
 - Architecture boundary tests under `Tests/OrbisonicTests/`
 
@@ -224,6 +226,15 @@ Prompt 10 adds the dual-output adapter architecture as validation/offline struct
 - Dante route failure is treated as production-output failure.
 - The offline adapters consume deterministic blocks and expose value-only status snapshots.
 - Live dual physical output is not implemented yet. The code must not claim Dante is audible until a real AudioCore-owned live Dante adapter is added and verified.
+
+Prompt 11 adds the Pure Audio copy-only metering telemetry path:
+
+- `MeterCopyBus` receives bounded, lossy copies from the source bus, desktop post-render/pre-output-gain bus, and Dante post-render/pre-output-gain bus.
+- `MeterAccumulator` calculates RMS, peak, VU, normalized level, and clipping from copied value data.
+- `PureAudioMeteringService` publishes `MeterSnapshot` values through `AudioTelemetry`.
+- `DualOutputRenderCoordinator` can publish deterministic offline meter snapshots without changing desktop or Dante output hashes.
+- Legacy UI Sonic Sphere metering is labeled `Sonic Sphere Analysis Meter`, not `Dante Output Meter`.
+- Legacy `Sources/Orbisonic/MeteringService.swift` remains temporarily for the existing Normal Monitor and analysis-meter surfaces; it is not the Pure Audio metering authority.
 
 ## Prompt 1 Non-Goals
 

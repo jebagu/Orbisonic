@@ -26,6 +26,14 @@ final class VURoutingViewTests: XCTestCase {
         XCTAssertEqual(VUMeterChannelLabel.text(for: SurroundChannel(index: 29, role: .discrete(29))), "30")
     }
 
+    func testLegacySonicSphereMeterUsesAnalysisLabelNotDanteOutputLabel() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/Orbisonic/ContentView.swift"))
+
+        XCTAssertTrue(source.contains("Sonic Sphere Analysis Meter"))
+        XCTAssertFalse(source.contains("Sonic Sphere VU meter"))
+        XCTAssertFalse(source.contains("Dante Output Meter"))
+    }
+
     func testRendererMeterDisplayAlwaysUsesFullThirtyOneChannelSurface() {
         let scene = RendererMatrixBuilder.sceneModel(
             for: SurroundLayoutDetector.fallbackLayout(for: 30),
@@ -248,5 +256,12 @@ final class VURoutingViewTests: XCTestCase {
         XCTAssertEqual(model.monitorMeterStore.channelMeters.map(\.level), [0, 0])
         XCTAssertEqual(model.rendererMeterStore.channelMeters.map(\.level), [0])
         XCTAssertEqual(model.testToneStatus, "Diagnostic tone stopped.")
+    }
+
+    private func packageRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

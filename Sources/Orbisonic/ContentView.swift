@@ -1395,7 +1395,7 @@ struct ContentView: View {
             }
 
             AudioMotionVUMeterPanel(
-                title: "Sonic Sphere VU meter",
+                title: "Sonic Sphere Analysis Meter",
                 subtitle: "",
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
@@ -1514,7 +1514,7 @@ struct ContentView: View {
             }
 
             AudioMotionVUMeterPanel(
-                title: "Sonic Sphere VU meter",
+                title: "Sonic Sphere Analysis Meter",
                 subtitle: "",
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
@@ -1641,9 +1641,9 @@ struct ContentView: View {
     private var rendererVUMeterSubtitle: String {
         let count = model.rendererMeterStore.channelMeters.count
         if !model.sonicSphereMeterActive {
-            return "\(model.rendererText) • no measured Sonic Sphere bus"
+            return "\(model.rendererText) • no measured Sonic Sphere analysis bus"
         }
-        return "\(model.rendererText) • \(count) renderer outputs"
+        return "\(model.rendererText) • \(count) analysis channels"
     }
 
     private var rendererTab: some View {

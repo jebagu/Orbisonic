@@ -153,6 +153,21 @@ As of Prompt 4, the initial read-only telemetry surface is `AudioTelemetry`. It 
 
 These methods return `AudioContracts` values or `AudioCore` snapshot values. They are polling-friendly and do not require UI framework imports.
 
+As of Prompt 11, new Pure Audio metering is owned by `Sources/AudioCore/MeteringTelemetry.swift`:
+
+- `MeterCopyBus` accepts copied source, desktop, and Dante render blocks only.
+- `MeterAccumulator` computes `ChannelMeter` values from those copies.
+- `PureAudioMeteringService` publishes value-only `MeterSnapshot` telemetry.
+- If the copy queue is full, meter data is dropped. Audio must never wait for meters.
+- Meter calibration may affect VU display values only. It must not affect desktop or Dante audible output hashes.
+
+`Sources/Orbisonic/MeteringService.swift` remains a legacy compatibility path for the existing Normal Monitor and analysis meters. It is not the Pure Audio authority and must not be expanded into new live graph ownership.
+
+Meter names must preserve source truth:
+
+- `Dante Output Meter` means the meter is based on the actual Dante render bus.
+- `Sonic Sphere Analysis Meter` means the meter is synthetic, legacy, or otherwise not proof of audible Dante output.
+
 ## Real-Time Callback Forbidden Operations
 
 Real-time render and capture callbacks must not perform operations that can block, allocate unpredictably, or call back into UI/application state. Forbidden operations include:
@@ -189,6 +204,7 @@ Rules for the plan layer:
 - Desktop and Dante outputs are sibling plan sections. Desktop gain and desktop downmix coefficients cannot mutate Dante render coefficients or Dante gain.
 - Meter calibration lives in `GainPlan` but is not an audible gain. It must not alter desktop or Dante output coefficients.
 - `MeterPlan` may define copy points only. It must not contain graph node references, tap handles, callbacks, raw buffer pointers, or route handles.
+- `MeterCopyBus` may receive only copied block data. It must not expose live source, desktop, or Dante render storage to UI.
 - Physical Dante channel 32, when present, is reserved and must be silent unless a future explicit assignment policy changes that rule.
 
 Current migration note: `PlanPublicationStore` is lock-protected because it is not yet read by the real-time callback. Before the live render path consumes it, the store must be replaced or wrapped by a real-time-safe atomic pointer/value swap at a render block boundary.

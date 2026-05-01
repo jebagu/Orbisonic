@@ -29,7 +29,7 @@ Meter copies:
 ```text
 Copies from source, desktop render, and Dante render
 -> MeterCopyBus
--> MeteringService
+-> PureAudioMeteringService / MeterAccumulator
 -> read-only UI snapshots
 ```
 
@@ -269,7 +269,28 @@ Failure isolation rules:
 Metering receives copies from defined copy points:
 
 - Source input after adaptation.
-- Desktop render output.
-- Dante render output.
+- Desktop post-render, pre-output-gain output.
+- Dante post-render, pre-output-gain output.
 
 Metering is lossy. It may drop updates. It must not block or mutate render state.
+
+Prompt 11 adds the first Pure Audio copy-only metering path in `AudioCore`:
+
+- `MeterCopyBus` receives copied source, desktop, and Dante blocks. It owns a bounded queue and drops meter frames when full instead of back-pressuring render.
+- `MeterCopiedBlock` stores value copies only: sample arrays, sample rate, layout, copy point, source ID, frame position, and session version. It does not expose graph nodes, output handles, or mutable live buffers.
+- `MeterAccumulator` consumes copied blocks off the render path and calculates RMS dBFS, peak dBFS, VU dB, normalized display level, and clipping.
+- `PureAudioMeteringService` drains the copy bus, builds `MeterSnapshot` values, and publishes them through `AudioTelemetry.latestMeterSnapshot()`.
+- `DualOutputRenderCoordinator` can now copy the input source bus, desktop render bus, and Dante render bus into `MeterCopyBus` during deterministic offline rendering.
+
+Pure Audio meter naming:
+
+- Actual post-render Dante bus meter: `Dante Output Meter`.
+- Synthetic or legacy meter-only Sonic Sphere projection: `Sonic Sphere Analysis Meter`.
+
+The current app UI still uses legacy analysis metering for the Sonic Sphere surface, so it must use `Sonic Sphere Analysis Meter`. It must not say `Dante Output Meter` until the meter source is the actual Dante render bus and a real live Dante output adapter has been implemented and verified.
+
+Legacy migration note:
+
+- `Sources/Orbisonic/MeteringService.swift` remains as the legacy Normal Monitor and analysis-meter compatibility service.
+- `Sources/AudioCore/MeteringTelemetry.swift` is authoritative for new Pure Audio metering.
+- Later prompts must move UI/VU display stores from legacy `ChannelMeterStore` updates to `MeterSnapshot`-derived view models.

@@ -461,10 +461,13 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
 
     private let frameCapacity: Int
     private let validator: PlanValidator
+    private let meteringService: PureAudioMeteringService?
     private var sourceBus: CanonicalSourceBus?
     private var sourceBlock: CanonicalAudioBlock?
     private var desktopBlock: CanonicalAudioBlock?
     private var danteBlock: CanonicalAudioBlock?
+    private var desktopMeterBlock: CanonicalAudioBlock?
+    private var danteMeterBlock: CanonicalAudioBlock?
     private var isPrepared = false
     private var isRunning = false
     private var latestStatusValue: DualOutputStatus?
@@ -475,7 +478,8 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
         desktopAdapter: any DesktopOutputAdapter,
         danteAdapter: any DanteOutputAdapter,
         frameCapacity: Int,
-        validator: PlanValidator = PlanValidator()
+        validator: PlanValidator = PlanValidator(),
+        meteringService: PureAudioMeteringService? = nil
     ) {
         self.plan = plan
         self.sourceAdapter = sourceAdapter
@@ -483,6 +487,7 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
         self.danteAdapter = danteAdapter
         self.frameCapacity = frameCapacity
         self.validator = validator
+        self.meteringService = meteringService
     }
 
     public func prepare() throws {
@@ -524,6 +529,22 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
                 layout: plan.danteRenderer.physicalOutputCount == 32 ? .discrete(count: 32) : .direct31
             )
         )
+        let desktopMeter = try CanonicalAudioBlock(
+            format: AudioBlockFormat(
+                sampleRate: plan.sessionFormat.sampleRate,
+                channelCount: 2,
+                frameCount: frameCapacity,
+                layout: .stereo
+            )
+        )
+        let danteMeter = try CanonicalAudioBlock(
+            format: AudioBlockFormat(
+                sampleRate: plan.sessionFormat.sampleRate,
+                channelCount: plan.danteRenderer.physicalOutputCount,
+                frameCount: frameCapacity,
+                layout: plan.danteRenderer.physicalOutputCount == 32 ? .discrete(count: 32) : .direct31
+            )
+        )
 
         do {
             try desktopAdapter.prepare(sessionFormat: plan.sessionFormat)
@@ -536,6 +557,8 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
         sourceBlock = source
         desktopBlock = desktop
         danteBlock = dante
+        desktopMeterBlock = desktopMeter
+        danteMeterBlock = danteMeter
         isPrepared = true
         latestStatusValue = makeStatus(sourceFrameIndex: 0)
     }
@@ -573,20 +596,52 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
         guard let sourceBus,
               let sourceBlock,
               let desktopBlock,
-              let danteBlock
+              let danteBlock,
+              let desktopMeterBlock,
+              let danteMeterBlock
         else {
             throw AudioError.invalidRenderGraphPlan("Coordinator is missing prepared blocks.")
         }
 
         try sourceAdapter.renderIntoCanonicalBus(sourceBus, frameCount: frameCount)
         try sourceBus.copyCurrentBlock(into: sourceBlock)
+        let sourceFrameIndex = sourceBus.frameIndex
+
+        meteringService?.copyBus.submit(
+            copyPoint: .inputSourceBus,
+            block: sourceBlock,
+            sessionVersion: plan.version,
+            sourceID: plan.source.id,
+            framePosition: sourceFrameIndex
+        )
+
+        try renderMeterBlocks(
+            sourceBlock: sourceBlock,
+            desktopMeterBlock: desktopMeterBlock,
+            danteMeterBlock: danteMeterBlock,
+            frameCount: frameCount
+        )
+
+        meteringService?.copyBus.submit(
+            copyPoint: .desktopPostRenderPreOutputGain,
+            block: desktopMeterBlock,
+            sessionVersion: plan.version,
+            sourceID: plan.source.id,
+            framePosition: sourceFrameIndex
+        )
+        meteringService?.copyBus.submit(
+            copyPoint: .dantePostRenderPreOutputGain,
+            block: danteMeterBlock,
+            sessionVersion: plan.version,
+            sourceID: plan.source.id,
+            framePosition: sourceFrameIndex
+        )
 
         try DesktopMonitorRenderer(plan: plan.desktopDownmix, gainPlan: plan.gainPlan)
             .process(source: sourceBlock, destination: desktopBlock, frameCount: frameCount)
         try DanteSonicSphereRenderer(plan: plan.danteRenderer, gainPlan: plan.gainPlan)
             .process(source: sourceBlock, destination: danteBlock, frameCount: frameCount)
 
-        let sourceFrameIndex = sourceBus.frameIndex
         do {
             try desktopAdapter.consume(desktopBlock, sourceFrameIndex: sourceFrameIndex)
         } catch {
@@ -602,6 +657,7 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
 
         let status = makeStatus(sourceFrameIndex: sourceFrameIndex)
         latestStatusValue = status
+        meteringService?.publishLatestSnapshot(meterCalibrationGain: plan.gainPlan.meterCalibrationGain)
         return status
     }
 
@@ -617,6 +673,25 @@ public final class DualOutputRenderCoordinator: @unchecked Sendable {
             renderPlanVersion: plan.version,
             validationMessages: plan.validationMessages
         )
+    }
+
+    private func renderMeterBlocks(
+        sourceBlock: CanonicalAudioBlock,
+        desktopMeterBlock: CanonicalAudioBlock,
+        danteMeterBlock: CanonicalAudioBlock,
+        frameCount: Int
+    ) throws {
+        let preOutputGainPlan = GainPlan(
+            sourceTrim: plan.gainPlan.sourceTrim,
+            desktopMonitorGain: .unity,
+            danteOutputGain: .unity,
+            meterCalibrationGain: plan.gainPlan.meterCalibrationGain,
+            testToneCalibrationGain: plan.gainPlan.testToneCalibrationGain
+        )
+        try DesktopMonitorRenderer(plan: plan.desktopDownmix, gainPlan: preOutputGainPlan)
+            .process(source: sourceBlock, destination: desktopMeterBlock, frameCount: frameCount)
+        try DanteSonicSphereRenderer(plan: plan.danteRenderer, gainPlan: preOutputGainPlan)
+            .process(source: sourceBlock, destination: danteMeterBlock, frameCount: frameCount)
     }
 }
 
