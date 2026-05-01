@@ -175,6 +175,24 @@ Real-time render and capture callbacks must not perform operations that can bloc
 
 The callback may read the current immutable render plan, read source buffers owned by `AudioCore`, write output buffers, update lock-free or bounded telemetry counters, and publish lossy meter copies through a non-blocking path.
 
+## Immutable Render Graph Plans
+
+As of Prompt 7, the production graph intent is represented by `RenderGraphPlan` in `AudioCore`.
+
+Rules for the plan layer:
+
+- `RenderGraphPlanner` creates plans off the real-time thread.
+- `PlanValidator` must validate a complete plan before publication.
+- `PlanPublicationStore` refuses invalid plans and stale versions.
+- Published plans are immutable values. Callers may inspect read-only fields and copy coefficient data for tests, but cannot mutate live render state.
+- `ImmutableMatrix` must not expose mutable storage, unsafe buffers, graph nodes, or output handles.
+- Desktop and Dante outputs are sibling plan sections. Desktop gain and desktop downmix coefficients cannot mutate Dante render coefficients or Dante gain.
+- Meter calibration lives in `GainPlan` but is not an audible gain. It must not alter desktop or Dante output coefficients.
+- `MeterPlan` may define copy points only. It must not contain graph node references, tap handles, callbacks, raw buffer pointers, or route handles.
+- Physical Dante channel 32, when present, is reserved and must be silent unless a future explicit assignment policy changes that rule.
+
+Current migration note: `PlanPublicationStore` is lock-protected because it is not yet read by the real-time callback. Before the live render path consumes it, the store must be replaced or wrapped by a real-time-safe atomic pointer/value swap at a render block boundary.
+
 ## No Hidden Production Sample-Rate Conversion
 
 There is one session sample rate.

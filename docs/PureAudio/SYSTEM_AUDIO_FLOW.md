@@ -42,10 +42,11 @@ UI/ViewModel
 -> AudioControl facade
 -> AudioCommandQueue
 -> AudioCoreShell
--> future GraphPlanner
--> future ContractValidator
+-> RenderGraphPlanner
+-> PlanValidator
 -> immutable RenderGraphPlan
--> atomic plan swap at block boundary
+-> PlanPublicationStore
+-> atomic plan swap at block boundary in the future real-time renderer
 -> real-time render callback
 ```
 
@@ -101,21 +102,46 @@ No source may enter the canonical source bus if its sample rate is unknown or mi
 
 ## Render Graph Plan Contract
 
-The render graph plan is immutable once validated. It describes:
+Prompt 7 introduces `RenderGraphPlan` in `AudioCore`. The plan is immutable once created and validated. It describes:
 
 - Session sample rate.
-- Source layout.
-- Desktop render path.
-- Dante render path.
+- Source descriptor and layout.
+- Desktop render path through `DesktopDownmixPlan`.
+- Dante render path through `DanteRenderPlan`.
 - Output route IDs.
 - Output channel counts.
 - Dante logical channel map.
-- Meter copy points.
+- Separate gain domains through `GainPlan`.
+- Meter copy points through `MeterPlan`.
 - Conversion ledger reference.
+
+`ImmutableMatrix` stores desktop and Dante coefficients in private immutable storage. It exposes gain accessors and explicit test copies, but it does not expose mutable storage or unsafe buffers.
+
+`PlanValidator` validates the complete plan before publication:
+
+- `AudioSessionFormat` must be valid.
+- Source sample rate must match the session sample rate.
+- Source channel count and layout count must match.
+- Desktop matrix output count must be stereo.
+- Dante output must be 31 logical channels, with 31 or 32 physical channels.
+- Physical Dante channel 32 must be reserved and silent when present.
+- Conversion ledger must not record production sample-rate conversion.
+- Metering must be copy-only.
+
+`PlanPublicationStore` currently uses a lock-protected validated snapshot store because it is not read by the real-time callback yet. Before live render integration, publication must become a real-time-safe atomic pointer/value swap at a block boundary.
 
 The real-time callback receives a complete plan. It must not ask UI, route monitors, import services, metadata parsers, or view models for more information.
 
-Prompt 4 does not create the final render graph planner. `AudioGraphAuditSnapshot` is the temporary value snapshot used to audit the shell state until `RenderGraphPlan` exists.
+`AudioGraphAuditSnapshot` remains the temporary shell audit snapshot while existing app call sites still bypass the new plan layer. Later prompts will connect `RenderGraphPlan` to the actual render and output adapters.
+
+## Prompt 7 Planning Behavior
+
+`RenderGraphPlanner` now builds validated plans off the real-time thread. Its current policies are intentionally conservative:
+
+- Desktop reference stereo downmix mirrors the existing Normal Monitor policy: LFE muted by default, equal-power center to left/right, surrounds folded to their side, top center folded equally, and multichannel headroom applied.
+- Dante `direct30` maps source channels 1-30 directly to full-range outputs 1-30 and keeps the LFE/sub output silent.
+- Dante `direct31` maps source channels 1-30 directly to full-range outputs 1-30 and maps source channel 31 to LFE/sub output 31.
+- For non-direct Dante beds, Prompt 7 creates deterministic placeholder matrices inside the immutable plan layer. The current legacy Sonic Sphere renderer is not yet wired into production audio; later prompts can replace those placeholder coefficients with copied immutable renderer coefficients without changing the plan boundary.
 
 ## Output Adapter Contract
 
