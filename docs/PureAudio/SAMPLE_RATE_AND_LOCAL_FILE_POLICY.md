@@ -46,6 +46,15 @@ The app must not silently convert the file on the production render path.
 - Mismatched local files are rejected with `localAssetRequiresManagedImport` unless they are represented as a managed imported asset already at the session rate.
 - A managed imported asset still must declare the session sample rate. A stale or mismatched managed descriptor is rejected.
 
+Prompt 9 adds source-adapter enforcement before audio reaches the canonical source bus:
+
+- `LiveLoopbackSourceAdapter` rejects a live capture route whose nominal sample rate does not match `AudioSessionFormat.sampleRate`.
+- `RoonSourceAdapter` may report Roon metadata/sample-rate disagreement, but metadata is diagnostic only. The live capture route sample rate controls production admission.
+- `SpotifySourceAdapter` always declares a 2-channel source and still requires the live route sample rate to match the session.
+- `AuxSourceAdapter` uses the discovered live input channel count and rejects sources outside the 1...64 source range.
+- `ManagedLocalAssetSourceAdapter` admits only managed assets whose managed sample rate equals the session sample rate.
+- `SourceAdapterFactory` returns typed errors such as `sampleRateMismatch`, `routeUnavailable`, `sourceChannelCountOutOfRange`, and `localAssetRequiresManagedImport` rather than returning graph objects or falling back to hidden conversion.
+
 ## No On-The-Fly Production SRC
 
 No on-the-fly sample-rate conversion is allowed in the production engine.

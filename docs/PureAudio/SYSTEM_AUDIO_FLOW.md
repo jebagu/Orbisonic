@@ -106,7 +106,19 @@ Prompt 8 introduces the first concrete `AudioCore` source-block types:
 - `CanonicalAudioBlock` owns preallocated non-interleaved Float32 channel storage for AudioCore render work. It exposes safe sample setters/getters and copies for tests, but it does not expose raw buffers to UI.
 - `CanonicalSourceBus` validates source descriptors against `AudioSessionFormat`, accepts deterministic fixture injection for tests, and tracks a monotonic frame index.
 
-The Prompt 8 source bus is not wired to live Roon, Spotify, Aux, or local playback yet. It is an offline/test harness for proving kernel correctness before live adapters use it.
+Prompt 9 adds the first concrete source adapter layer around this bus:
+
+- `AudioSourceAdapter` is the common source protocol. It exposes a `SourceDescriptor`, `prepare(sessionFormat:)`, `start()`, `stop()`, `renderIntoCanonicalBus(_:frameCount:)`, and `latestStatusSnapshot()`.
+- `LiveLoopbackSourceAdapter` is the shared validation wrapper for live Roon, Spotify, and Aux capture. It validates route availability, expected loopback identity, session sample-rate match, Float32 non-interleaved PCM format, and the 1...64 source channel limit.
+- `RoonSourceAdapter` treats Roon metadata as diagnostic only. The live capture route sample rate and channel count control production admission. If metadata and live route sample rate disagree, the adapter reports a diagnostic message without overriding HAL/live PCM truth.
+- `SpotifySourceAdapter` fixes Spotify to stereo by product policy even if the route reports more input channels.
+- `AuxSourceAdapter` uses the discovered live route input channel count and assigns a deterministic fallback layout.
+- `ManagedLocalAssetSourceAdapter` admits only managed/session-rate local assets and feeds prevalidated Float32 blocks into the canonical bus. It does not perform playback-time sample-rate conversion.
+- `TestToneSourceAdapter` generates deterministic source tones directly at the session sample rate for stereo ID and Dante channel ID tests.
+- `OffSourceAdapter` emits silence through the same bus contract.
+- `SourceAdapterFactory` maps typed `SourceSelection` values, live input route descriptors, managed asset descriptors, and test-tone modes to an adapter or a typed `AudioError`.
+
+The Prompt 9 adapters are still not wired to the live dual-output engine. They are a validated canonical-bus entry layer for deterministic tests and later output-adapter integration.
 
 ## Render Graph Plan Contract
 
