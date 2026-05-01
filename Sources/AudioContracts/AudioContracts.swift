@@ -733,6 +733,76 @@ public struct ConversionLedger: Equatable, Hashable, Sendable {
     }
 }
 
+public struct ManagedAssetDescriptor: Equatable, Hashable, Sendable {
+    public let id: String
+    public let originalPath: String
+    public let managedPath: String
+    public let originalSampleRate: AudioSampleRate
+    public let managedSampleRate: AudioSampleRate
+    public let channelCount: Int
+    public let layout: AudioChannelLayoutDescriptor
+    public let codecDescription: String?
+    public let containerDescription: String?
+    public let durationFrames: Int64?
+    public let conversionLedger: ConversionLedger
+    public let createdAtUnixTimeSeconds: Double?
+
+    public var sampleRate: AudioSampleRate {
+        managedSampleRate
+    }
+
+    public init(
+        id: String,
+        originalPath: String,
+        managedPath: String,
+        originalSampleRate: AudioSampleRate,
+        managedSampleRate: AudioSampleRate,
+        channelCount: Int,
+        layout: AudioChannelLayoutDescriptor,
+        codecDescription: String? = nil,
+        containerDescription: String? = nil,
+        durationFrames: Int64? = nil,
+        conversionLedger: ConversionLedger,
+        createdAtUnixTimeSeconds: Double? = nil
+    ) {
+        self.id = id
+        self.originalPath = originalPath
+        self.managedPath = managedPath
+        self.originalSampleRate = originalSampleRate
+        self.managedSampleRate = managedSampleRate
+        self.channelCount = channelCount
+        self.layout = layout
+        self.codecDescription = codecDescription
+        self.containerDescription = containerDescription
+        self.durationFrames = durationFrames
+        self.conversionLedger = conversionLedger
+        self.createdAtUnixTimeSeconds = createdAtUnixTimeSeconds
+    }
+}
+
+public enum AssetReadiness: Equatable, Hashable, Sendable {
+    case productionReady
+    case requiresOfflineImport(reason: String, targetSampleRate: AudioSampleRate)
+    case canRestartStoppedSessionAtFileRate(reason: String, fileSampleRate: AudioSampleRate)
+    case unsupported(reason: String)
+    case desktopPreviewOnly(reason: String)
+
+    public var reason: String? {
+        switch self {
+        case .productionReady:
+            nil
+        case .requiresOfflineImport(let reason, _):
+            reason
+        case .canRestartStoppedSessionAtFileRate(let reason, _):
+            reason
+        case .unsupported(let reason):
+            reason
+        case .desktopPreviewOnly(let reason):
+            reason
+        }
+    }
+}
+
 public enum AudioError: Error, Equatable, Hashable, Sendable, CustomStringConvertible {
     case sampleRateMismatch(expected: AudioSampleRate, actual: AudioSampleRate, context: String)
     case sourceChannelCountOutOfRange(count: Int, minimum: Int, maximum: Int)

@@ -1,5 +1,6 @@
 import AudioContracts
 import AudioCore
+import AVFoundation
 import Foundation
 import XCTest
 
@@ -125,32 +126,40 @@ final class AudioControlTests: XCTestCase {
             )
         )
 
-        guard case .requiresManagedImport(let sourceID, let sessionSampleRate, _) = readiness else {
-            return XCTFail("Expected managed import requirement for a mismatched local asset.")
+        guard case .requiresOfflineImport(let reason, let targetSampleRate) = readiness else {
+            return XCTFail("Expected offline import requirement for a mismatched local asset.")
         }
 
-        XCTAssertEqual(sourceID, "asset-1")
-        XCTAssertEqual(sessionSampleRate, .defaultProduction)
+        XCTAssertTrue(reason.contains("This file is 44.1 kHz"))
+        XCTAssertEqual(targetSampleRate, .defaultProduction)
     }
 
     func testImportLocalAssetPublishesConversionLedger() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("source.wav")
+        let managedURL = directory.appendingPathComponent("managed.caf")
+        try writeSilentAudioFile(to: sourceURL, sampleRate: 44_100, channels: 2, frames: 4_410)
+
         let control = AudioControl()
         let sessionFormat = Self.defaultSessionFormat()
 
         let descriptor = try await control.importLocalAssetToSessionRate(
             ImportLocalAssetRequest(
                 sourceID: "source-1",
-                originalPath: "source.wav",
+                originalPath: sourceURL.path,
                 sourceSampleRate: .rate44100,
                 sourceChannelCount: 2,
                 sourceLayout: .stereo,
                 targetSessionFormat: sessionFormat,
                 managedAssetID: "managed-1",
-                managedPath: "managed/source.wav"
+                managedPath: managedURL.path
             )
         )
 
         XCTAssertEqual(descriptor.sampleRate, .defaultProduction)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: managedURL.path))
         XCTAssertTrue(
             descriptor.conversionLedger.allowedConversions.contains(.offlineManagedSampleRateConversion)
         )
@@ -167,6 +176,31 @@ final class AudioControlTests: XCTestCase {
             ),
             desktop: DesktopOutputFormat(sampleRate: .defaultProduction)
         )
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("orbisonic-audio-control-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func writeSilentAudioFile(
+        to url: URL,
+        sampleRate: Double,
+        channels: AVAudioChannelCount,
+        frames: AVAudioFrameCount
+    ) throws {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)
+        else {
+            XCTFail("Could not create test audio format")
+            return
+        }
+
+        buffer.frameLength = frames
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
     }
 
     private struct SourceFile {

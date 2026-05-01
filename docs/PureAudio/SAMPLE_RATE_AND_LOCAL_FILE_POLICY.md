@@ -56,6 +56,32 @@ If conversion is needed for a production source, it must be performed offline by
 
 The planner records any required production sample-rate conversion as `ForbiddenAudioConversion.productionSampleRateConversion` in its conversion ledger draft and rejects the plan.
 
+## Prompt 6 Local Asset Gate
+
+Prompt 6 adds the first concrete local-file admission layer:
+
+- `LocalAssetProbeResult`
+- `AssetReadiness`
+- `ManagedAssetDescriptor`
+- `ManagedAssetImporter`
+- `ProductionLocalAssetGate`
+
+`ProductionLocalAssetGate` is the production source gate for local files. It returns:
+
+- `productionReady` when the file sample rate matches `AudioSessionFormat.sampleRate`.
+- `requiresOfflineImport(reason:targetSampleRate:)` when the file cannot enter the running production session without sample-rate conversion.
+- `canRestartStoppedSessionAtFileRate(reason:fileSampleRate:)` only when the current session is stopped and the selected Dante route supports 31-channel production at the file rate.
+- `unsupported(reason:)` for invalid shape, channel count, or descriptor data.
+- `desktopPreviewOnly(reason:)` is reserved for explicitly labeled non-production preview paths and is not currently wired to production playback.
+
+The user-facing mismatch message must make the production rule clear. For example:
+
+`This file is 44.1 kHz. Current Orbisonic Dante session is 48 kHz. Production playback requires matching sample rates. Convert a managed copy to 48 kHz, or restart the session at 44.1 kHz if the Dante route supports it.`
+
+`ManagedAssetImporter` writes managed assets as CAF Float32 PCM at the target session rate. CAF was chosen because Core Audio can write it directly for explicit offline import and it is less disruptive than introducing a new external container dependency at this stage. Managed assets preserve source channel count; layout conversion is not added in Prompt 6.
+
+The managed file is an import artifact, not the real-time production buffer. When the production render path later consumes managed assets, `AudioCore` still owns conversion into canonical non-interleaved Float32 buffers at the session sample rate.
+
 ## Optional Desktop-Only Preview
 
 Desktop-only preview may use non-production conversion only if:
@@ -121,4 +147,4 @@ A mismatched source is blocked or sent to offline import. It is never handled by
 
 ## Current Migration TODO
 
-The current `OrbisonicViewModel` and `OrbisonicEngine` path still bypasses `AudioSessionPlanner` for the legacy Normal Monitor flow. That is a migration exception. Later prompts must route session start, source selection, and output route selection through `AudioControl` and `AudioSessionPlanner` before they can affect production audio.
+The current `OrbisonicViewModel` and `OrbisonicEngine` path still bypasses `AudioSessionPlanner` and `ProductionLocalAssetGate` for the legacy Normal Monitor flow. That is a migration exception. Later prompts must route session start, source selection, local file admission, and output route selection through `AudioControl`, `AudioSessionPlanner`, and `ProductionLocalAssetGate` before they can affect production audio.

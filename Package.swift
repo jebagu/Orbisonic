@@ -16,6 +16,10 @@ let package = Package(
             targets: ["AudioContracts"]
         ),
         .library(
+            name: "AudioImport",
+            targets: ["AudioImport"]
+        ),
+        .library(
             name: "AudioCore",
             targets: ["AudioCore"]
         )
@@ -25,12 +29,16 @@ let package = Package(
             name: "AudioContracts"
         ),
         .target(
-            name: "AudioCore",
+            name: "AudioImport",
             dependencies: ["AudioContracts"]
+        ),
+        .target(
+            name: "AudioCore",
+            dependencies: ["AudioContracts", "AudioImport"]
         ),
         .executableTarget(
             name: "Orbisonic",
-            dependencies: ["AudioContracts", "AudioCore"],
+            dependencies: ["AudioContracts", "AudioImport", "AudioCore"],
             exclude: [
                 "Resources/AppLogos/README.md"
             ],
@@ -62,8 +70,12 @@ let package = Package(
             dependencies: ["AudioContracts"]
         ),
         .testTarget(
+            name: "AudioImportTests",
+            dependencies: ["AudioImport", "AudioContracts"]
+        ),
+        .testTarget(
             name: "AudioCoreTests",
-            dependencies: ["AudioCore", "AudioContracts"]
+            dependencies: ["AudioCore", "AudioContracts", "AudioImport"]
         )
     ]
 )

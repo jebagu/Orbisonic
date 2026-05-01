@@ -73,6 +73,35 @@ If a file requires sample-rate conversion, `AudioImport` must create a managed c
 
 Any ledger draft containing `productionSampleRateConversion` has invalid validation status and blocks the plan.
 
+## Prompt 6 Managed Import Ledgers
+
+Prompt 6 adds `ManagedAssetImporter` and `ManagedAssetDescriptor`.
+
+Every managed import returns a descriptor with:
+
+- Original path.
+- Managed path.
+- Original sample rate.
+- Managed sample rate.
+- Channel count.
+- Channel layout.
+- Codec description when known.
+- Container description when known.
+- Duration frames when known.
+- Conversion ledger.
+- Creation timestamp when produced by the importer.
+
+The managed asset format is CAF Float32 PCM at the target session sample rate. This is an offline import artifact. It does not authorize hidden sample-rate conversion in the production render path.
+
+When source sample rate differs from target session rate, the import ledger must include:
+
+- `AllowedAudioConversion.offlineManagedSampleRateConversion`
+- No `ForbiddenAudioConversion.productionSampleRateConversion`
+
+When source sample rate already equals target session rate, the importer may still create a managed CAF Float32 PCM copy for canonical storage, but the ledger must not claim offline sample-rate conversion occurred.
+
+`ProductionLocalAssetGate` blocks a mismatched local file before production playback. A running production session can admit only a file already at the session rate or a managed descriptor whose managed sample rate equals the session rate.
+
 ## Ledger Semantics
 
 The ledger must distinguish between:
@@ -102,4 +131,4 @@ If a command would change source format, sample rate, output route, or channel c
 
 ## Current Migration TODO
 
-The legacy Normal Monitor path still emits `NormalMonitorConversionLedger` independently. Later prompts must reconcile that legacy ledger with the `AudioSessionPlanner` ledger draft when the current playback path moves behind `AudioControl`.
+The legacy Normal Monitor path still emits `NormalMonitorConversionLedger` independently and can still load local files through `OrbisonicViewModel` / `OrbisonicEngine` without first consulting `ProductionLocalAssetGate`. Later prompts must reconcile that legacy ledger with the `AudioSessionPlanner` ledger draft and managed import ledger when the current playback path moves behind `AudioControl`.

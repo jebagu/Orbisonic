@@ -1,4 +1,5 @@
 import AudioContracts
+import AudioImport
 import Foundation
 
 public enum SourceSelection: Equatable, Hashable, Sendable {
@@ -109,6 +110,7 @@ public struct PrepareLocalAssetRequest: Equatable, Hashable, Sendable {
     public let layout: AudioChannelLayoutDescriptor?
     public let durationFrames: Int64?
     public let sessionFormat: AudioSessionFormat?
+    public let routeCapabilities: [DanteRouteCapability]
 
     public init(
         sourceID: String,
@@ -117,7 +119,8 @@ public struct PrepareLocalAssetRequest: Equatable, Hashable, Sendable {
         channelCount: Int? = nil,
         layout: AudioChannelLayoutDescriptor? = nil,
         durationFrames: Int64? = nil,
-        sessionFormat: AudioSessionFormat? = nil
+        sessionFormat: AudioSessionFormat? = nil,
+        routeCapabilities: [DanteRouteCapability] = []
     ) {
         self.sourceID = sourceID
         self.originalPath = originalPath
@@ -126,13 +129,8 @@ public struct PrepareLocalAssetRequest: Equatable, Hashable, Sendable {
         self.layout = layout
         self.durationFrames = durationFrames
         self.sessionFormat = sessionFormat
+        self.routeCapabilities = routeCapabilities
     }
-}
-
-public enum AssetReadiness: Equatable, Hashable, Sendable {
-    case ready(ManagedAssetDescriptor)
-    case requiresManagedImport(sourceID: String, sessionSampleRate: AudioSampleRate, reason: String)
-    case unavailable(sourceID: String, reason: String)
 }
 
 public struct ImportLocalAssetRequest: Equatable, Hashable, Sendable {
@@ -145,6 +143,8 @@ public struct ImportLocalAssetRequest: Equatable, Hashable, Sendable {
     public let targetSessionFormat: AudioSessionFormat
     public let managedAssetID: String
     public let managedPath: String
+    public let codecDescription: String?
+    public let containerDescription: String?
 
     public init(
         sourceID: String,
@@ -155,7 +155,9 @@ public struct ImportLocalAssetRequest: Equatable, Hashable, Sendable {
         durationFrames: Int64? = nil,
         targetSessionFormat: AudioSessionFormat,
         managedAssetID: String,
-        managedPath: String
+        managedPath: String,
+        codecDescription: String? = nil,
+        containerDescription: String? = nil
     ) {
         self.sourceID = sourceID
         self.originalPath = originalPath
@@ -166,37 +168,8 @@ public struct ImportLocalAssetRequest: Equatable, Hashable, Sendable {
         self.targetSessionFormat = targetSessionFormat
         self.managedAssetID = managedAssetID
         self.managedPath = managedPath
-    }
-}
-
-public struct ManagedAssetDescriptor: Equatable, Hashable, Sendable {
-    public let id: String
-    public let originalPath: String
-    public let managedPath: String
-    public let sampleRate: AudioSampleRate
-    public let channelCount: Int
-    public let layout: AudioChannelLayoutDescriptor
-    public let durationFrames: Int64?
-    public let conversionLedger: ConversionLedger
-
-    public init(
-        id: String,
-        originalPath: String,
-        managedPath: String,
-        sampleRate: AudioSampleRate,
-        channelCount: Int,
-        layout: AudioChannelLayoutDescriptor,
-        durationFrames: Int64? = nil,
-        conversionLedger: ConversionLedger
-    ) {
-        self.id = id
-        self.originalPath = originalPath
-        self.managedPath = managedPath
-        self.sampleRate = sampleRate
-        self.channelCount = channelCount
-        self.layout = layout
-        self.durationFrames = durationFrames
-        self.conversionLedger = conversionLedger
+        self.codecDescription = codecDescription
+        self.containerDescription = containerDescription
     }
 }
 
@@ -383,14 +356,20 @@ public final class AudioCoreShell: @unchecked Sendable {
     public let telemetry: AudioTelemetry
 
     private let compatibilityAdapter: AudioCoreCompatibilityAdapter
+    private let managedAssetImporter: ManagedAssetImporter
+    private let localAssetGate: ProductionLocalAssetGate
     private var state = AudioCoreShellState()
 
     public init(
         telemetry: AudioTelemetry = AudioTelemetry(),
-        compatibilityAdapter: AudioCoreCompatibilityAdapter = NoOpAudioCoreCompatibilityAdapter()
+        compatibilityAdapter: AudioCoreCompatibilityAdapter = NoOpAudioCoreCompatibilityAdapter(),
+        managedAssetImporter: ManagedAssetImporter = ManagedAssetImporter(),
+        localAssetGate: ProductionLocalAssetGate = ProductionLocalAssetGate()
     ) {
         self.telemetry = telemetry
         self.compatibilityAdapter = compatibilityAdapter
+        self.managedAssetImporter = managedAssetImporter
+        self.localAssetGate = localAssetGate
         publishSnapshots(routeRefreshedAt: nil)
     }
 
@@ -503,7 +482,7 @@ public final class AudioCoreShell: @unchecked Sendable {
             throw AudioError.invalidRenderGraphPlan("Local asset source ID is required.")
         }
         guard !request.originalPath.isEmpty else {
-            return .unavailable(sourceID: request.sourceID, reason: "Local asset path is empty.")
+            return .unsupported(reason: "Local asset path is empty.")
         }
         let sessionFormat = try request.sessionFormat ?? requiredSessionFormat()
         try validateLocalAssetShape(
@@ -512,33 +491,12 @@ public final class AudioCoreShell: @unchecked Sendable {
             durationFrames: request.durationFrames
         )
 
-        if let declaredSampleRate = request.declaredSampleRate,
-           !declaredSampleRate.matches(sessionFormat.sampleRate) {
-            return .requiresManagedImport(
-                sourceID: request.sourceID,
-                sessionSampleRate: sessionFormat.sampleRate,
-                reason: "Local asset sample rate does not match the active session."
-            )
-        }
-
-        let channelCount = request.channelCount ?? 2
-        let layout = request.layout ?? .fallbackLayout(channelCount: channelCount)
-        return .ready(
-            ManagedAssetDescriptor(
-                id: request.sourceID,
-                originalPath: request.originalPath,
-                managedPath: request.originalPath,
-                sampleRate: request.declaredSampleRate ?? sessionFormat.sampleRate,
-                channelCount: channelCount,
-                layout: layout,
-                durationFrames: request.durationFrames,
-                conversionLedger: ledger(
-                    sessionSampleRate: sessionFormat.sampleRate,
-                    sourceDescription: "local asset",
-                    canonicalDescription: "Float32 non-interleaved PCM",
-                    allowedConversions: [.codecDecodeToPCM, .integerPCMToFloat32, .interleavedToDeinterleaved]
-                )
-            )
+        let probe = try localAssetProbeResult(for: request)
+        return localAssetGate.readiness(
+            for: probe,
+            sessionFormat: sessionFormat,
+            routeCapabilities: request.routeCapabilities,
+            isSessionRunning: state.isSessionRunning
         )
     }
 
@@ -556,29 +514,47 @@ public final class AudioCoreShell: @unchecked Sendable {
             throw AudioError.invalidRenderGraphPlan("Managed local asset paths and ID are required.")
         }
 
-        var allowedConversions: [AllowedAudioConversion] = [
-            .codecDecodeToPCM,
-            .integerPCMToFloat32,
-            .interleavedToDeinterleaved,
-            .layoutMetadataNormalization
-        ]
-        if !request.sourceSampleRate.matches(request.targetSessionFormat.sampleRate) {
-            allowedConversions.append(.offlineManagedSampleRateConversion)
-        }
-
-        return ManagedAssetDescriptor(
-            id: request.managedAssetID,
+        return try managedAssetImporter.importAsset(
             originalPath: request.originalPath,
             managedPath: request.managedPath,
-            sampleRate: request.targetSessionFormat.sampleRate,
-            channelCount: request.sourceChannelCount,
-            layout: request.sourceLayout,
+            managedAssetID: request.managedAssetID,
+            targetSessionFormat: request.targetSessionFormat,
+            declaredSourceSampleRate: request.sourceSampleRate,
+            declaredSourceChannelCount: request.sourceChannelCount,
+            declaredSourceLayout: request.sourceLayout,
             durationFrames: request.durationFrames,
-            conversionLedger: ledger(
-                sessionSampleRate: request.targetSessionFormat.sampleRate,
-                sourceDescription: "local asset \(request.sourceSampleRate.hertz) Hz",
-                canonicalDescription: "managed asset \(request.targetSessionFormat.sampleRate.hertz) Hz",
-                allowedConversions: allowedConversions
+            codecDescription: request.codecDescription,
+            containerDescription: request.containerDescription
+        )
+    }
+
+    private func localAssetProbeResult(for request: PrepareLocalAssetRequest) throws -> LocalAssetProbeResult {
+        if FileManager.default.fileExists(atPath: request.originalPath) {
+            return try managedAssetImporter.probe(path: request.originalPath)
+        }
+
+        guard let declaredSampleRate = request.declaredSampleRate else {
+            return LocalAssetProbeResult(
+                path: request.originalPath,
+                sourceSampleRate: try AudioSampleRate(hertz: 1),
+                channelCount: request.channelCount ?? 0,
+                channelLayout: request.layout ?? .discrete(count: request.channelCount ?? 0)
+            )
+        }
+
+        let channelCount = request.channelCount ?? 2
+        return LocalAssetProbeResult(
+            path: request.originalPath,
+            durationFrames: request.durationFrames,
+            durationSeconds: request.durationFrames.map { Double($0) / declaredSampleRate.hertz },
+            sourceSampleRate: declaredSampleRate,
+            channelCount: channelCount,
+            codecDescription: nil,
+            channelLayout: request.layout ?? .fallbackLayout(channelCount: channelCount),
+            containerDescription: nil,
+            estimatedDecodedBytes: estimatedDecodedBytes(
+                durationFrames: request.durationFrames,
+                channelCount: channelCount
             )
         )
     }
@@ -607,6 +583,21 @@ public final class AudioCoreShell: @unchecked Sendable {
             throw AudioError.invalidRenderGraphPlan("A session format is required for this command.")
         }
         return sessionFormat
+    }
+
+    private func estimatedDecodedBytes(durationFrames: Int64?, channelCount: Int) -> Int64? {
+        guard let durationFrames,
+              durationFrames >= 0,
+              channelCount > 0
+        else { return nil }
+
+        let estimate = Double(durationFrames) * Double(channelCount) * Double(MemoryLayout<Float>.size)
+        guard estimate.isFinite,
+              estimate >= 0,
+              estimate <= Double(Int64.max)
+        else { return nil }
+
+        return Int64(estimate.rounded(.up))
     }
 
     private func publishSnapshots(routeRefreshedAt: UInt64?) {

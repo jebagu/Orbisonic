@@ -65,6 +65,7 @@ enum ArchitectureBoundaryAllowlist {
     ]
 
     static let audioImportCompatibilityFiles: Set<String> = [
+        "Sources/AudioImport/LocalAssetImport.swift",
         "Sources/Orbisonic/AudioFileLoader.swift",
         "Sources/Orbisonic/AudioFileProbe.swift",
         "Sources/Orbisonic/LocalMusicLibrary.swift",
@@ -85,6 +86,9 @@ enum ArchitectureBoundaryAllowlist {
     ]
 
     static let allowedForbiddenPatternIDsByFile: [String: Set<String>] = [
+        "Sources/AudioImport/LocalAssetImport.swift": [
+            "importAVFoundation", "AVAudioPCMBuffer", "AVAudioFile", "AVAudioConverter"
+        ],
         "Sources/Orbisonic/AudioFileLoader.swift": [
             "importAVFoundation", "importCoreAudio", "importCoreAudioTypes",
             "AVAudioPCMBuffer", "AVAudioFile", "AVAudioConverter"
