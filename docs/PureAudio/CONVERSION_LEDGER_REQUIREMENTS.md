@@ -2,6 +2,8 @@
 
 Every production session emits a conversion ledger. The ledger is a required artifact, not a diagnostic afterthought.
 
+As of Prompt 5, `AudioSessionPlanner` creates a ledger draft during planning. The draft is not the final render-session ledger, but it is already authoritative for sample-rate policy: if planning determines that production sample-rate conversion would be required, the plan is invalid.
+
 ## Required Ledger Fields
 
 The ledger must identify:
@@ -26,6 +28,16 @@ The ledger must identify:
 - Whether conversion was offline or production render-time.
 - Validation result.
 - Warnings and operator-facing explanation.
+
+Prompt 5 planner drafts record at minimum:
+
+- Session sample rate.
+- Source sample rate, if known.
+- Desktop route nominal sample rate, if known.
+- Dante route nominal sample rate, if known.
+- Whether production SRC would be required.
+- Allowed conversion categories.
+- Forbidden conversion categories observed or required.
 
 ## Allowed Conversions
 
@@ -54,6 +66,13 @@ Forbidden production render conversions include:
 
 If a file requires sample-rate conversion, `AudioImport` must create a managed converted asset before production playback.
 
+`AudioSessionPlanner` encodes this as:
+
+- `AllowedAudioConversion.offlineManagedSampleRateConversion` for managed assets converted before production.
+- `ForbiddenAudioConversion.productionSampleRateConversion` when a source, desktop route, or Dante route would require hidden production SRC.
+
+Any ledger draft containing `productionSampleRateConversion` has invalid validation status and blocks the plan.
+
 ## Ledger Semantics
 
 The ledger must distinguish between:
@@ -71,3 +90,16 @@ The ledger must be available through read-only snapshots and logs. UI may displa
 A production session starts only after the ledger is valid.
 
 If a command would change source format, sample rate, output route, or channel count, the current session must stop or atomically swap to a newly validated plan with a new ledger at a block boundary.
+
+`StopRebuildPolicy` now models the conservative Prompt 5 contract:
+
+- Session sample-rate changes require stop and rebuild.
+- Dante output route changes require stop and rebuild until live route swapping is proven safe.
+- Desktop output route changes are conservatively treated as rebuild events.
+- Gain changes do not require rebuild.
+- VU display changes do not require rebuild and must never change ledger truth.
+- Mismatched source changes are blocked or sent to offline import, not converted inside production rendering.
+
+## Current Migration TODO
+
+The legacy Normal Monitor path still emits `NormalMonitorConversionLedger` independently. Later prompts must reconcile that legacy ledger with the `AudioSessionPlanner` ledger draft when the current playback path moves behind `AudioControl`.

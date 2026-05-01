@@ -30,6 +30,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Orbisonic",
+            dependencies: ["AudioContracts", "AudioCore"],
             exclude: [
                 "Resources/AppLogos/README.md"
             ],
