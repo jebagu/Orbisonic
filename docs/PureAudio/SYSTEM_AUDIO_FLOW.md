@@ -39,14 +39,38 @@ The desktop and Dante production outputs are siblings. The desktop monitor is a 
 
 ```text
 UI/ViewModel
--> AudioControl API
--> CommandQueue
--> GraphPlanner
--> ContractValidator
+-> AudioControl facade
+-> AudioCommandQueue
+-> AudioCoreShell
+-> future GraphPlanner
+-> future ContractValidator
 -> immutable RenderGraphPlan
 -> atomic plan swap at block boundary
 -> real-time render callback
 ```
+
+Prompt 4 creates the initial command and snapshot boundary:
+
+```text
+UI/ViewModel
+-> AudioControl
+-> AudioCommandQueue
+-> AudioCoreShell
+-> AudioCoreCompatibilityAdapter where legacy engine bridging is still required
+```
+
+The current `AudioCoreShell` validates and records value state only. It does not connect Dante, replace the render kernel, or alter the existing Normal Monitor playback path.
+
+Read-only telemetry now has a named surface:
+
+```text
+AudioCoreShell
+-> AudioTelemetry
+-> latest MeterSnapshot / AudioRouteSnapshot / AudioGraphAuditSnapshot / ConversionLedger / AudioSessionFormat
+-> UI/VU value snapshots
+```
+
+During migration, `OrbisonicViewModel` still has direct legacy calls into `OrbisonicEngine`. Those calls are explicitly outside the target flow and must move behind `AudioControl` in later prompts.
 
 ## Source Adapter Contract
 
@@ -90,6 +114,8 @@ The render graph plan is immutable once validated. It describes:
 - Conversion ledger reference.
 
 The real-time callback receives a complete plan. It must not ask UI, route monitors, import services, metadata parsers, or view models for more information.
+
+Prompt 4 does not create the final render graph planner. `AudioGraphAuditSnapshot` is the temporary value snapshot used to audit the shell state until `RenderGraphPlan` exists.
 
 ## Output Adapter Contract
 

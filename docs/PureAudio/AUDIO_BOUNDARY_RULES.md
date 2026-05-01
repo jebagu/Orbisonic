@@ -105,7 +105,26 @@ All audio mutations must be expressed as typed commands:
 - Set renderer mode.
 - Start or stop diagnostic tone.
 
-Commands enter `AudioCore` through an `AudioControl` API and are serialized through a command queue. They are validated before changing real-time state.
+Commands enter `AudioCore` through the `AudioControl` facade and are serialized through `AudioCommandQueue`. They are validated before changing real-time state.
+
+As of Prompt 4, `AudioControl` is the only app-facing command surface for new Pure Audio work. It exposes typed value commands for:
+
+- `startSession(_:)`
+- `stopSession()`
+- `selectSource(_:)`
+- `setDesktopMonitorGain(_:)`
+- `setDanteOutputGain(_:)`
+- `setDanteOutputEnabled(_:)`
+- `setDesktopOutputEnabled(_:)`
+- `setRenderMode(_:)`
+- `prepareLocalAsset(_:)`
+- `importLocalAssetToSessionRate(_:)`
+- `requestRouteRefresh()`
+- `requestGraphAuditSnapshot()`
+
+The facade returns value results and snapshots only. It must never expose graph handles, output handles, mutable render state, or raw audio storage.
+
+Migration exception: `OrbisonicViewModel` still calls `OrbisonicEngine` directly for the existing Normal Monitor path. That direct path is legacy compatibility only and must shrink in later prompts as call sites move to `AudioControl`. New UI, VU, metadata, and route-picker work must not add new direct engine mutation calls.
 
 ## Read-Only Telemetry
 
@@ -123,6 +142,16 @@ All telemetry leaving `AudioCore` must be immutable:
 - Last validation error.
 
 Telemetry must be copy-only. Observers must not receive references that can affect rendering.
+
+As of Prompt 4, the initial read-only telemetry surface is `AudioTelemetry`. It provides:
+
+- `latestMeterSnapshot()`
+- `latestRouteSnapshot()`
+- `latestGraphAudit()`
+- `latestConversionLedger()`
+- `latestSessionFormat()`
+
+These methods return `AudioContracts` values or `AudioCore` snapshot values. They are polling-friendly and do not require UI framework imports.
 
 ## Real-Time Callback Forbidden Operations
 

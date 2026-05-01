@@ -10,11 +10,23 @@ let package = Package(
         .executable(
             name: "Orbisonic",
             targets: ["Orbisonic"]
+        ),
+        .library(
+            name: "AudioContracts",
+            targets: ["AudioContracts"]
+        ),
+        .library(
+            name: "AudioCore",
+            targets: ["AudioCore"]
         )
     ],
     targets: [
         .target(
             name: "AudioContracts"
+        ),
+        .target(
+            name: "AudioCore",
+            dependencies: ["AudioContracts"]
         ),
         .executableTarget(
             name: "Orbisonic",
@@ -47,6 +59,10 @@ let package = Package(
         .testTarget(
             name: "AudioContractsTests",
             dependencies: ["AudioContracts"]
+        ),
+        .testTarget(
+            name: "AudioCoreTests",
+            dependencies: ["AudioCore", "AudioContracts"]
         )
     ]
 )
