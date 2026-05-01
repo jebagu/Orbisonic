@@ -73,6 +73,33 @@ If a file requires sample-rate conversion, `AudioImport` must create a managed c
 
 Any ledger draft containing `productionSampleRateConversion` has invalid validation status and blocks the plan.
 
+## Prompt 8 Render Kernel Ledger Facts
+
+Prompt 8 adds pure offline render kernels:
+
+- `MatrixRenderKernel`
+- `DesktopMonitorRenderer`
+- `DanteSonicSphereRenderer`
+
+These kernels do not perform conversion. They accept only already-canonical `CanonicalAudioBlock` input and preallocated output blocks with matching sample rates.
+
+Kernel ledger/audit facts:
+
+- Source sample rate is read from the canonical source block.
+- Desktop output sample rate is read from the desktop block.
+- Dante output sample rate is read from the Dante block.
+- `sampleRateConversionOccurred` is always `false` in `RenderKernelAudit`.
+- A sample-rate mismatch is rejected before processing and must not be represented as a successful render.
+- Allocation measurement is currently not instrumented; `RenderKernelAudit` records that limitation explicitly.
+
+The render kernels must never add any of these ledger conversions:
+
+- `offlineManagedSampleRateConversion`
+- `productionSampleRateConversion`
+- `unknownGraphConversion`
+
+Offline managed import remains the only approved sample-rate conversion path before production playback. The render kernel may consume the resulting managed asset only after the managed descriptor and session format agree on sample rate.
+
 ## Prompt 6 Managed Import Ledgers
 
 Prompt 6 adds `ManagedAssetImporter` and `ManagedAssetDescriptor`.

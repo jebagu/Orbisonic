@@ -100,6 +100,14 @@ The canonical source bus carries only explicit production-ready audio:
 
 No source may enter the canonical source bus if its sample rate is unknown or mismatched, unless it is already an offline converted managed asset at the session sample rate.
 
+Prompt 8 introduces the first concrete `AudioCore` source-block types:
+
+- `AudioBlockFormat` describes Float32 non-interleaved PCM at one session sample rate, with explicit frame count, channel count, and layout.
+- `CanonicalAudioBlock` owns preallocated non-interleaved Float32 channel storage for AudioCore render work. It exposes safe sample setters/getters and copies for tests, but it does not expose raw buffers to UI.
+- `CanonicalSourceBus` validates source descriptors against `AudioSessionFormat`, accepts deterministic fixture injection for tests, and tracks a monotonic frame index.
+
+The Prompt 8 source bus is not wired to live Roon, Spotify, Aux, or local playback yet. It is an offline/test harness for proving kernel correctness before live adapters use it.
+
 ## Render Graph Plan Contract
 
 Prompt 7 introduces `RenderGraphPlan` in `AudioCore`. The plan is immutable once created and validated. It describes:
@@ -142,6 +150,57 @@ The real-time callback receives a complete plan. It must not ask UI, route monit
 - Dante `direct30` maps source channels 1-30 directly to full-range outputs 1-30 and keeps the LFE/sub output silent.
 - Dante `direct31` maps source channels 1-30 directly to full-range outputs 1-30 and maps source channel 31 to LFE/sub output 31.
 - For non-direct Dante beds, Prompt 7 creates deterministic placeholder matrices inside the immutable plan layer. The current legacy Sonic Sphere renderer is not yet wired into production audio; later prompts can replace those placeholder coefficients with copied immutable renderer coefficients without changing the plan boundary.
+
+## Prompt 8 Pure Render Kernels
+
+Prompt 8 adds deterministic offline render kernels in `AudioCore`:
+
+```text
+CanonicalAudioBlock source
+-> DesktopMonitorRenderer
+-> CanonicalAudioBlock desktop stereo output
+```
+
+```text
+CanonicalAudioBlock source
+-> DanteSonicSphereRenderer
+-> CanonicalAudioBlock Dante 31/32-channel output
+```
+
+Both renderers are backed by `MatrixRenderKernel`, which applies an immutable N-input to M-output matrix into a preallocated destination block. The process call:
+
+- Performs no sample-rate conversion.
+- Performs no file I/O.
+- Uses no locks.
+- Clears and writes only the preallocated destination block.
+- Silences extra destination outputs not addressed by the matrix.
+- Rejects channel-count, frame-count, processing-format, and sample-rate mismatches before rendering.
+
+Allocation measurement is not yet instrumented. `RenderKernelAudit` records this explicitly as "not instrumented" while the implementation keeps allocation outside the hot process call by requiring caller-owned destination blocks.
+
+Desktop render policy:
+
+- Reference stereo fold-down comes from `DesktopDownmixPlan`.
+- LFE is omitted by default.
+- Center folds equal-power to left/right.
+- Surrounds and rears fold to their side.
+- Top-center channels fold equally.
+- Discrete channels alternate left/right deterministically.
+- Multichannel sources receive the existing Normal Monitor headroom.
+- `desktopMonitorGain` applies only to desktop output.
+
+Dante render policy:
+
+- Dante is rendered from the same canonical source block as desktop, as a sibling output.
+- Dante never consumes desktop fold-down.
+- `danteOutputGain` applies only to Dante output.
+- Outputs 1-30 are full-range Sonic Sphere channels.
+- Output 31 is LFE/sub.
+- In 32-channel physical plans, channel 32 remains silent.
+- `direct30` maps source channels 1-30 bit-exactly to Dante outputs 1-30 and keeps LFE/sub silent.
+- `direct31` maps source channels 1-30 to Dante outputs 1-30 and source channel 31 to output 31.
+
+The kernels remain offline/test-only after Prompt 8. Existing live playback continues on the legacy Normal Monitor path until later prompts wire the canonical source bus and output adapters into the running engine.
 
 ## Output Adapter Contract
 
