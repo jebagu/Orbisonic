@@ -10,6 +10,17 @@ binary_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}"
 resource_bundle_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}_${app_name}.bundle"
 build_home="$repo_root/.build/dev-home"
 module_cache_path="$repo_root/.build/module-cache"
+plist_path="$bundle_path/Contents/Info.plist"
+plist_buddy="/usr/libexec/PlistBuddy"
+
+set_plist_string() {
+  local key="$1"
+  local value="$2"
+
+  if ! "$plist_buddy" -c "Set :$key $value" "$plist_path" >/dev/null 2>&1; then
+    "$plist_buddy" -c "Add :$key string $value" "$plist_path" >/dev/null
+  fi
+}
 
 if [ ! -d "$bundle_path" ]; then
   echo "Missing app bundle: $bundle_path" >&2
@@ -38,9 +49,25 @@ if [ -d "$resource_bundle_path" ]; then
   cp -R "$resource_bundle_path" "$bundle_path/Contents/Resources/"
 fi
 
+git_commit="$(git rev-parse --short HEAD 2>/dev/null || printf 'not-available')"
+if ! git diff --quiet --ignore-submodules -- 2>/dev/null || ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null; then
+  git_commit="${git_commit}-dirty"
+fi
+git_branch="$(git branch --show-current 2>/dev/null || true)"
+if [ -n "$git_branch" ]; then
+  set_plist_string "OrbisonicGitRefKind" "branch"
+  set_plist_string "OrbisonicGitRefName" "$git_branch"
+  set_plist_string "OrbisonicGitBranch" "$git_branch"
+else
+  set_plist_string "OrbisonicGitRefKind" "commit"
+  set_plist_string "OrbisonicGitRefName" "$git_commit"
+  set_plist_string "OrbisonicGitBranch" "detached"
+fi
+set_plist_string "OrbisonicGitCommit" "$git_commit"
+
 xattr -cr "$bundle_path"
 codesign --force --deep --sign - "$bundle_path"
 codesign --verify --deep --strict --verbose=2 "$bundle_path"
-plutil -lint "$bundle_path/Contents/Info.plist"
+plutil -lint "$plist_path"
 
 echo "Refreshed $bundle_path"

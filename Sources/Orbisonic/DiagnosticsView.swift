@@ -207,7 +207,7 @@ struct DiagnosticsView: View {
                 group: .orbisonic,
                 name: "App",
                 state: model.appLaunchContextText == "Raw executable" ? .fault : .ok,
-                status: "v\(AppBuildInfo.version) build \(AppBuildInfo.buildNumber)",
+                status: AppBuildInfo.buildStatusText,
                 monospace: true
             ),
             DiagnosticsSummaryRow(

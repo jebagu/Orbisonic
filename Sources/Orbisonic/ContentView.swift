@@ -55,16 +55,78 @@ private enum PlayerTransportKind: String, CaseIterable, Identifiable {
 }
 
 enum AppBuildInfo {
+    private static var infoDictionary: [String: Any] {
+        Bundle.main.infoDictionary ?? [:]
+    }
+
     static var version: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        infoDictionary["CFBundleShortVersionString"] as? String ?? "dev"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
+        infoDictionary["CFBundleVersion"] as? String ?? "dev"
     }
 
     static var gitCommit: String {
-        Bundle.main.infoDictionary?["OrbisonicGitCommit"] as? String ?? "not embedded"
+        infoDictionary["OrbisonicGitCommit"] as? String ?? "not embedded"
+    }
+
+    static var gitBranch: String {
+        infoDictionary["OrbisonicGitBranch"] as? String ?? ""
+    }
+
+    static var gitRefName: String {
+        if let refName = infoDictionary["OrbisonicGitRefName"] as? String,
+           !refName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return refName
+        }
+        if !gitBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return gitBranch
+        }
+        return "unknown"
+    }
+
+    static var gitRefKind: String {
+        if let refKind = infoDictionary["OrbisonicGitRefKind"] as? String,
+           !refKind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return refKind
+        }
+        if !gitBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "branch"
+        }
+        return "ref"
+    }
+
+    static var buildStatusText: String {
+        statusText(
+            version: version,
+            buildNumber: buildNumber,
+            gitRefKind: gitRefKind,
+            gitRefName: gitRefName,
+            gitCommit: gitCommit
+        )
+    }
+
+    static func statusText(
+        version: String,
+        buildNumber: String,
+        gitRefKind: String,
+        gitRefName: String,
+        gitCommit: String
+    ) -> String {
+        let refKind = gitRefKind.trimmingCharacters(in: .whitespacesAndNewlines)
+        let refName = gitRefName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let refText = refName.isEmpty ? "ref unknown" : "\(refKind.isEmpty ? "ref" : refKind) \(refName)"
+        return "v\(version) build \(buildNumber) · \(refText) · \(shortCommit(gitCommit))"
+    }
+
+    private static func shortCommit(_ gitCommit: String) -> String {
+        let trimmed = gitCommit.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 12 else { return trimmed.isEmpty ? "not embedded" : trimmed }
+
+        let dirtySuffix = trimmed.hasSuffix("-dirty") ? "-dirty" : ""
+        let hash = dirtySuffix.isEmpty ? trimmed : String(trimmed.dropLast(dirtySuffix.count))
+        return "\(hash.prefix(7))\(dirtySuffix)"
     }
 
     static var buildDate: String {

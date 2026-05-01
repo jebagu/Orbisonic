@@ -22,3 +22,4 @@ dist/
 # Local environment overrides
 .env
 .env.*
+.local/
