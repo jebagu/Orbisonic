@@ -1,3 +1,5 @@
+import AudioContracts
+import AudioCore
 import AppKit
 import AVFoundation
 import Foundation
@@ -582,6 +584,7 @@ final class OrbisonicViewModel: ObservableObject {
     private static let selectedInputDeviceUIDKey = "Orbisonic.selectedInputDeviceUID"
     private static let selectedMonitorOutputModeKey = "Orbisonic.selectedMonitorOutputMode"
     private static let selectedRendererOutputModeKey = "Orbisonic.selectedRendererOutputMode"
+    private static let appleSpatialHeadphonesEnabledKey = "Orbisonic.appleSpatialHeadphonesEnabled"
     private static let rendererRenderModeKey = "Orbisonic.rendererRenderMode"
     private static let rendererAlwaysMonoKey = "Orbisonic.rendererAlwaysMono"
     private static let rendererTwoChannelPreferenceKey = "Orbisonic.rendererTwoChannelPreference"
@@ -731,6 +734,17 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var rendererOutputRoute: OutputRouteInfo = .unavailable
     @Published private(set) var systemOutputRoute: OutputRouteInfo = .unavailable
     @Published private(set) var availableOutputRoutes: [OutputRouteInfo] = []
+    @Published var appleSpatialHeadphonesEnabled: Bool = OrbisonicViewModel.loadBool(
+        key: OrbisonicViewModel.appleSpatialHeadphonesEnabledKey,
+        defaultValue: false
+    ) {
+        didSet {
+            guard oldValue != appleSpatialHeadphonesEnabled else { return }
+            UserDefaults.standard.set(appleSpatialHeadphonesEnabled, forKey: Self.appleSpatialHeadphonesEnabledKey)
+            refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: true)
+        }
+    }
+    @Published private(set) var appleSpatialHeadphoneMonitorStatus = DesktopMonitorModeStatus.referenceStereo()
     @Published private(set) var inputRoute: InputRouteInfo = .unavailable
     @Published private(set) var systemInputRoute: InputRouteInfo = .unavailable
     @Published private(set) var availableInputRoutes: [InputRouteInfo] = []
@@ -823,6 +837,7 @@ final class OrbisonicViewModel: ObservableObject {
     private let roonArtworkCache = RoonArtworkCache()
     private let spotifyReceiverClient = SpotifyReceiverClient()
     private let diagnosticsLogStore = DiagnosticsLogStore()
+    private let appleSpatialHeadphoneMonitor = AppleSpatialHeadphoneMonitor()
     private var webServer: OrbisonicWebServer?
     private var webControlToken = OrbisonicViewModel.loadOrCreateWebControlToken()
     private var refreshTimer: Timer?
@@ -950,6 +965,7 @@ final class OrbisonicViewModel: ObservableObject {
         restorePersistedRendererOptions()
         loadLocalMusicDatabase()
         refreshRoutesIfNeeded(force: true)
+        refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: false)
         configureMonitorMeters()
         configureRendererMeters()
         refreshWebPageURLs()
@@ -7225,6 +7241,68 @@ final class OrbisonicViewModel: ObservableObject {
         )
     }
 
+    var appleSpatialHeadphonesToggleIsEnabled: Bool {
+        appleSpatialHeadphonesEnabled || appleSpatialHeadphoneMonitorStatus.capability.isUsable
+    }
+
+    var appleSpatialHeadphonesStatusText: String {
+        let status = appleSpatialHeadphoneMonitorStatus
+        if status.isActive {
+            return status.userVisibleMessage
+        }
+        if status.isPendingRestart {
+            return status.userVisibleMessage
+        }
+        return status.lastError ?? status.userVisibleMessage
+    }
+
+    var appleSpatialHeadphonesDetailText: String {
+        let status = appleSpatialHeadphoneMonitorStatus
+        switch status.mode {
+        case .referenceStereo:
+            return "Reference Stereo Monitor is selected. Dante output is unaffected."
+        case .appleSpatialHeadphones:
+            if status.isActive {
+                return status.headTrackingStatus.displayText
+            }
+            return "Monitor only, Dante unaffected."
+        }
+    }
+
+    func setAppleSpatialHeadphonesEnabled(_ enabled: Bool) {
+        guard appleSpatialHeadphonesEnabled != enabled else {
+            refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: true)
+            return
+        }
+        appleSpatialHeadphonesEnabled = enabled
+    }
+
+    private func refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: Bool) {
+        let routeDescriptor: AudioContracts.OutputRouteDescriptor? = monitorOutputRoute.isAvailable
+            ? RouteCapabilityValidator().outputRouteDescriptor(from: monitorOutputRoute)
+            : nil
+        let sessionRate: AudioSampleRate? = monitorOutputRoute.nominalSampleRate > 0
+            ? try? AudioSampleRate(hertz: monitorOutputRoute.nominalSampleRate)
+            : nil
+        let options = AppleSpatialHeadphoneOptions(isEnabled: appleSpatialHeadphonesEnabled)
+        let mode: DesktopMonitorMode = appleSpatialHeadphonesEnabled ? .appleSpatialHeadphones : .referenceStereo
+        let nextStatus = appleSpatialHeadphoneMonitor.status(
+            mode: mode,
+            options: options,
+            route: routeDescriptor,
+            sessionSampleRate: sessionRate,
+            liveDesktopBranchConnected: false
+        )
+        appleSpatialHeadphoneMonitorStatus = nextStatus
+
+        if updateStatusMessage {
+            statusMessage = nextStatus.userVisibleMessage
+            if !nextStatus.capability.isUsable && appleSpatialHeadphonesEnabled {
+                lastError = nextStatus.lastError ?? nextStatus.userVisibleMessage
+            }
+        }
+    }
+
     var rendererOutputStatusText: String {
         if rendererOutputSelection == .none {
             return "not set • Output 2 Renderer not selected"
@@ -8349,6 +8427,8 @@ final class OrbisonicViewModel: ObservableObject {
         if sourceMode.isLiveInput {
             logInputSourceStatusIfNeeded(reason: "route refresh")
         }
+
+        refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: false)
     }
 
     private func publishTuning() {

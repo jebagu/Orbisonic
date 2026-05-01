@@ -626,6 +626,186 @@ public enum RenderMode: String, CaseIterable, Equatable, Hashable, Sendable {
     }
 }
 
+public enum DesktopMonitorMode: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case referenceStereo
+    case appleSpatialHeadphones
+
+    public var displayName: String {
+        switch self {
+        case .referenceStereo:
+            "Reference Stereo Monitor"
+        case .appleSpatialHeadphones:
+            "Apple Spatial Headphones"
+        }
+    }
+}
+
+public enum AppleSpatialHeadphoneOutputTypePolicy: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case headphonesOrAuto
+    case headphonesOnly
+    case auto
+}
+
+public enum AppleSpatialHeadphoneRoomProfile: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case none
+    case smallStudio
+}
+
+public enum AppleSpatialHeadphoneLFEPolicy: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case omitReferenceLFE
+}
+
+public enum AppleSpatialHeadphoneSourceLayoutPolicy: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case useSourceLayoutFallbacks
+}
+
+public struct AppleSpatialHeadphoneOptions: Codable, Equatable, Hashable, Sendable {
+    public let isEnabled: Bool
+    public let preferHRTFHQ: Bool
+    public let enableHeadTrackingWhenAvailable: Bool
+    public let outputTypePolicy: AppleSpatialHeadphoneOutputTypePolicy
+    public let roomProfile: AppleSpatialHeadphoneRoomProfile
+    public let lfePolicy: AppleSpatialHeadphoneLFEPolicy
+    public let sourceLayoutPolicy: AppleSpatialHeadphoneSourceLayoutPolicy
+    public let requiresHeadphones: Bool
+
+    public static let disabled = AppleSpatialHeadphoneOptions()
+    public static let enabledDefault = AppleSpatialHeadphoneOptions(isEnabled: true)
+
+    public init(
+        isEnabled: Bool = false,
+        preferHRTFHQ: Bool = true,
+        enableHeadTrackingWhenAvailable: Bool = true,
+        outputTypePolicy: AppleSpatialHeadphoneOutputTypePolicy = .headphonesOrAuto,
+        roomProfile: AppleSpatialHeadphoneRoomProfile = .none,
+        lfePolicy: AppleSpatialHeadphoneLFEPolicy = .omitReferenceLFE,
+        sourceLayoutPolicy: AppleSpatialHeadphoneSourceLayoutPolicy = .useSourceLayoutFallbacks,
+        requiresHeadphones: Bool = true
+    ) {
+        self.isEnabled = isEnabled
+        self.preferHRTFHQ = preferHRTFHQ
+        self.enableHeadTrackingWhenAvailable = enableHeadTrackingWhenAvailable
+        self.outputTypePolicy = outputTypePolicy
+        self.roomProfile = roomProfile
+        self.lfePolicy = lfePolicy
+        self.sourceLayoutPolicy = sourceLayoutPolicy
+        self.requiresHeadphones = requiresHeadphones
+    }
+}
+
+public enum AppleSpatialHeadTrackingStatus: Equatable, Hashable, Sendable {
+    case notRequested
+    case enabled
+    case unavailable(reason: String)
+
+    public var displayText: String {
+        switch self {
+        case .notRequested:
+            "Head tracking not requested."
+        case .enabled:
+            "Head tracking enabled."
+        case .unavailable(let reason):
+            "Head tracking unavailable: \(reason)"
+        }
+    }
+}
+
+public enum AppleSpatialHeadphoneCapability: Equatable, Hashable, Sendable {
+    case supported
+    case supportedWithoutHeadTracking(reason: String)
+    case unsupportedRoute(reason: String)
+    case unsupportedSDK(reason: String)
+    case unsupportedBecauseDanteRoute
+    case unsupportedBecauseBuiltInSpeakers
+    case unsupportedBecauseNoDesktopRoute
+    case unsupportedBecauseSessionSampleRateMismatch
+    case validationOnly
+
+    public var isUsable: Bool {
+        switch self {
+        case .supported, .supportedWithoutHeadTracking:
+            true
+        case .unsupportedRoute, .unsupportedSDK, .unsupportedBecauseDanteRoute,
+             .unsupportedBecauseBuiltInSpeakers, .unsupportedBecauseNoDesktopRoute,
+             .unsupportedBecauseSessionSampleRateMismatch, .validationOnly:
+            false
+        }
+    }
+
+    public var userVisibleMessage: String {
+        switch self {
+        case .supported:
+            "Apple Spatial Headphones is available for this desktop route."
+        case .supportedWithoutHeadTracking(let reason):
+            "Apple Spatial Headphones is available. \(reason)"
+        case .unsupportedRoute(let reason):
+            reason
+        case .unsupportedSDK(let reason):
+            reason
+        case .unsupportedBecauseDanteRoute:
+            "Unavailable for Dante output."
+        case .unsupportedBecauseBuiltInSpeakers:
+            "Unavailable on built-in speakers."
+        case .unsupportedBecauseNoDesktopRoute:
+            "Requires a headphone desktop monitor route."
+        case .unsupportedBecauseSessionSampleRateMismatch:
+            "Session sample rate must match the desktop monitor route."
+        case .validationOnly:
+            "Apple Spatial Headphones is validation-only in this build."
+        }
+    }
+}
+
+public struct DesktopMonitorModeStatus: Equatable, Hashable, Sendable {
+    public let mode: DesktopMonitorMode
+    public let isActive: Bool
+    public let isPendingRestart: Bool
+    public let capability: AppleSpatialHeadphoneCapability
+    public let userVisibleMessage: String
+    public let headTrackingStatus: AppleSpatialHeadTrackingStatus
+    public let effectiveOutputRouteName: String?
+    public let sessionSampleRate: AudioSampleRate?
+    public let lastError: String?
+
+    public init(
+        mode: DesktopMonitorMode,
+        isActive: Bool,
+        isPendingRestart: Bool,
+        capability: AppleSpatialHeadphoneCapability,
+        userVisibleMessage: String,
+        headTrackingStatus: AppleSpatialHeadTrackingStatus = .notRequested,
+        effectiveOutputRouteName: String? = nil,
+        sessionSampleRate: AudioSampleRate? = nil,
+        lastError: String? = nil
+    ) {
+        self.mode = mode
+        self.isActive = isActive
+        self.isPendingRestart = isPendingRestart
+        self.capability = capability
+        self.userVisibleMessage = userVisibleMessage
+        self.headTrackingStatus = headTrackingStatus
+        self.effectiveOutputRouteName = effectiveOutputRouteName
+        self.sessionSampleRate = sessionSampleRate
+        self.lastError = lastError
+    }
+
+    public static func referenceStereo(
+        routeName: String? = nil,
+        sessionSampleRate: AudioSampleRate? = nil
+    ) -> DesktopMonitorModeStatus {
+        DesktopMonitorModeStatus(
+            mode: .referenceStereo,
+            isActive: true,
+            isPendingRestart: false,
+            capability: .validationOnly,
+            userVisibleMessage: routeName.map { "Reference Stereo Monitor active on \($0)." }
+                ?? "Reference Stereo Monitor active.",
+            effectiveOutputRouteName: routeName,
+            sessionSampleRate: sessionSampleRate
+        )
+    }
+}
+
 public struct ChannelMeter: Equatable, Hashable, Sendable {
     public let rmsDBFS: Float
     public let peakDBFS: Float

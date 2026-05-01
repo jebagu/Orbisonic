@@ -232,3 +232,23 @@ There is one session sample rate.
 Production playback and production live capture must not insert hidden sample-rate conversion. If an input file or route does not match the session rate, the session must stop for an explicit rate switch or the file must be converted offline into a managed asset before production playback.
 
 Desktop-only preview may use non-production conversion only when clearly labeled and kept out of Dante.
+
+## Apple Spatial Headphones Boundary
+
+`AppleSpatialHeadphoneMonitor` is an AudioCore/audio-implementation-only module.
+
+Allowed ownership:
+
+- It may own Apple-native spatial monitor implementation details for the desktop monitor path.
+- It may validate `AVAudioEnvironmentNode` capability and configure virtual source positioning inside AudioCore.
+- It may publish value-only `DesktopMonitorModeStatus` snapshots.
+
+Forbidden ownership:
+
+- UI toggle code may not import AVFAudio or CoreAudio for this feature.
+- UI toggle code may not receive graph objects, raw buffers, route handles, or output handles.
+- UI toggle code sends a command or view-model request only.
+- The Apple spatial monitor may not mutate Dante gain, Dante route, Dante output adapter state, Sonic Sphere renderer matrices, or the session sample rate.
+- The Apple spatial monitor may not be used as hidden sample-rate conversion for production playback.
+
+`Apple Spatial Headphones` is desktop-monitor-only. Dante remains the production output, and the Sonic Sphere 31-channel renderer remains the production renderer.

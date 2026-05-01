@@ -252,6 +252,7 @@ public enum AudioControlCommand: Equatable, Hashable, Sendable {
     case setDanteOutputEnabled(Bool)
     case setDesktopOutputEnabled(Bool)
     case setRenderMode(RenderMode)
+    case setDesktopMonitorMode(DesktopMonitorMode, AppleSpatialHeadphoneOptions)
     case prepareLocalAsset(PrepareLocalAssetRequest)
     case importLocalAssetToSessionRate(ImportLocalAssetRequest)
     case requestRouteRefresh
@@ -265,6 +266,7 @@ public enum AudioControlCommandResult: Equatable, Hashable, Sendable {
     case gainChanged(AudioOutputKind, LinearGain)
     case outputEnabled(AudioOutputKind, Bool)
     case renderModeChanged(RenderMode)
+    case desktopMonitorModeChanged(DesktopMonitorModeStatus)
     case assetReadiness(AssetReadiness)
     case assetImported(ManagedAssetDescriptor)
     case routeSnapshot(AudioRouteSnapshot)
@@ -302,6 +304,7 @@ public final class AudioTelemetry: @unchecked Sendable {
     private var graphAudit: AudioGraphAuditSnapshot?
     private var conversionLedger: ConversionLedger?
     private var sessionFormat: AudioSessionFormat?
+    private var desktopMonitorModeStatus: DesktopMonitorModeStatus?
 
     public init() {}
 
@@ -325,6 +328,10 @@ public final class AudioTelemetry: @unchecked Sendable {
         locked { sessionFormat }
     }
 
+    public func latestDesktopMonitorModeStatus() -> DesktopMonitorModeStatus? {
+        locked { desktopMonitorModeStatus }
+    }
+
     func updateMeterSnapshot(_ snapshot: MeterSnapshot?) {
         locked { meterSnapshot = snapshot }
     }
@@ -345,6 +352,10 @@ public final class AudioTelemetry: @unchecked Sendable {
         locked { sessionFormat = format }
     }
 
+    func updateDesktopMonitorModeStatus(_ status: DesktopMonitorModeStatus?) {
+        locked { desktopMonitorModeStatus = status }
+    }
+
     private func locked<T>(_ body: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
@@ -358,18 +369,21 @@ public final class AudioCoreShell: @unchecked Sendable {
     private let compatibilityAdapter: AudioCoreCompatibilityAdapter
     private let managedAssetImporter: ManagedAssetImporter
     private let localAssetGate: ProductionLocalAssetGate
+    private let appleSpatialHeadphoneMonitor: AppleSpatialHeadphoneMonitor
     private var state = AudioCoreShellState()
 
     public init(
         telemetry: AudioTelemetry = AudioTelemetry(),
         compatibilityAdapter: AudioCoreCompatibilityAdapter = NoOpAudioCoreCompatibilityAdapter(),
         managedAssetImporter: ManagedAssetImporter = ManagedAssetImporter(),
-        localAssetGate: ProductionLocalAssetGate = ProductionLocalAssetGate()
+        localAssetGate: ProductionLocalAssetGate = ProductionLocalAssetGate(),
+        appleSpatialHeadphoneMonitor: AppleSpatialHeadphoneMonitor = AppleSpatialHeadphoneMonitor()
     ) {
         self.telemetry = telemetry
         self.compatibilityAdapter = compatibilityAdapter
         self.managedAssetImporter = managedAssetImporter
         self.localAssetGate = localAssetGate
+        self.appleSpatialHeadphoneMonitor = appleSpatialHeadphoneMonitor
         publishSnapshots(routeRefreshedAt: nil)
     }
 
@@ -407,6 +421,12 @@ public final class AudioCoreShell: @unchecked Sendable {
             state.renderMode = mode
             publishSnapshots(routeRefreshedAt: nil)
             return .renderModeChanged(mode)
+        case .setDesktopMonitorMode(let mode, let options):
+            state.desktopMonitorMode = mode
+            state.appleSpatialHeadphoneOptions = options
+            let status = desktopMonitorModeStatus()
+            publishSnapshots(routeRefreshedAt: nil)
+            return .desktopMonitorModeChanged(status)
         case .prepareLocalAsset(let request):
             return try .assetReadiness(prepareLocalAsset(request))
         case .importLocalAssetToSessionRate(let request):
@@ -604,6 +624,20 @@ public final class AudioCoreShell: @unchecked Sendable {
         telemetry.updateSessionFormat(state.sessionFormat)
         telemetry.updateGraphAudit(auditSnapshot())
         telemetry.updateRouteSnapshot(routeSnapshot(refreshedAt: routeRefreshedAt))
+        telemetry.updateDesktopMonitorModeStatus(desktopMonitorModeStatus())
+    }
+
+    private func desktopMonitorModeStatus() -> DesktopMonitorModeStatus {
+        let route = state.desktopRouteID.flatMap { routeID in
+            state.availableRoutes.first { $0.id == routeID }
+        }
+        return appleSpatialHeadphoneMonitor.status(
+            mode: state.desktopMonitorMode,
+            options: state.appleSpatialHeadphoneOptions,
+            route: route,
+            sessionSampleRate: state.sessionFormat?.sampleRate,
+            liveDesktopBranchConnected: false
+        )
     }
 
     private func auditSnapshot() -> AudioGraphAuditSnapshot {
@@ -717,6 +751,16 @@ public final class AudioControl: @unchecked Sendable {
         _ = try await submit(.setRenderMode(mode))
     }
 
+    public func setDesktopMonitorMode(
+        _ mode: DesktopMonitorMode,
+        options: AppleSpatialHeadphoneOptions = .enabledDefault
+    ) async throws -> DesktopMonitorModeStatus {
+        guard case .desktopMonitorModeChanged(let status) = try await submit(.setDesktopMonitorMode(mode, options)) else {
+            throw AudioError.invalidRenderGraphPlan("Unexpected result for desktop monitor mode command.")
+        }
+        return status
+    }
+
     public func prepareLocalAsset(_ request: PrepareLocalAssetRequest) async throws -> AssetReadiness {
         guard case .assetReadiness(let readiness) = try await submit(.prepareLocalAsset(request)) else {
             throw AudioError.invalidRenderGraphPlan("Unexpected result for prepare local asset command.")
@@ -766,6 +810,10 @@ public final class AudioControl: @unchecked Sendable {
     public func latestSessionFormat() -> AudioSessionFormat? {
         telemetry.latestSessionFormat()
     }
+
+    public func latestDesktopMonitorModeStatus() -> DesktopMonitorModeStatus? {
+        telemetry.latestDesktopMonitorModeStatus()
+    }
 }
 
 private struct AudioCoreShellState {
@@ -782,4 +830,6 @@ private struct AudioCoreShellState {
     var danteRouteID: String?
     var availableRoutes: [OutputRouteDescriptor] = []
     var validationMessages: [String] = []
+    var desktopMonitorMode: DesktopMonitorMode = .referenceStereo
+    var appleSpatialHeadphoneOptions: AppleSpatialHeadphoneOptions = .disabled
 }

@@ -326,3 +326,44 @@ Legacy OrbisonicEngine Normal Monitor path
 ```
 
 for current audible playback. The Pure Audio source bus, render plan, render kernels, output adapters, and metering path are implemented as validation/offline architecture and tests. A later prompt must replace the live output execution path with the Pure Audio coordinator and real output adapters before Dante can be described as audible.
+
+## Apple Spatial Headphones Desktop Monitor Branch
+
+Prompt 13 adds `Apple Spatial Headphones` as an optional desktop confidence-monitor mode.
+
+It adds an optional branch under the desktop monitor only:
+
+```text
+Desktop Monitor Renderer
+-> Reference Stereo Monitor
+-> Desktop output adapter
+```
+
+or:
+
+```text
+Desktop Monitor Renderer
+-> Apple Spatial Headphones Monitor
+-> Desktop output adapter
+```
+
+The Dante path remains a sibling and is unaffected:
+
+```text
+Source adapters
+-> CanonicalSourceBus
+-> immutable RenderGraphPlan
+-> DanteSonicSphereRenderer
+-> Dante output adapter
+```
+
+Control flow for the toggle is:
+
+```text
+Output Monitor UI
+-> OrbisonicViewModel.setAppleSpatialHeadphonesEnabled(_:)
+-> DesktopMonitorMode / DesktopMonitorModeStatus value state
+-> AppleSpatialHeadphoneMonitor inside AudioCore
+```
+
+The current Prompt 13 integration publishes capability and pending/active status. It does not claim live Dante output, and it does not claim a live Apple spatial desktop graph is active until AudioCore safely rebuilds the desktop monitor branch.

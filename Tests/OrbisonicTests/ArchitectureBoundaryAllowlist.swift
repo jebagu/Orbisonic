@@ -89,6 +89,9 @@ enum ArchitectureBoundaryAllowlist {
         "Sources/AudioImport/LocalAssetImport.swift": [
             "importAVFoundation", "AVAudioPCMBuffer", "AVAudioFile", "AVAudioConverter"
         ],
+        "Sources/AudioCore/Monitors/AppleSpatialHeadphoneMonitor.swift": [
+            "importAVFAudio", "AVAudioEnvironmentNode"
+        ],
         "Sources/Orbisonic/AudioFileLoader.swift": [
             "importAVFoundation", "importCoreAudio", "importCoreAudioTypes",
             "AVAudioPCMBuffer", "AVAudioFile", "AVAudioConverter"
@@ -171,6 +174,8 @@ enum ArchitectureBoundaryAllowlist {
         "Sources/Orbisonic/OutputRouteMonitor.swift":
             "Legacy Core Audio route discovery until AudioCore route adapters exist.",
         "Sources/Orbisonic/BlackHoleRouteRepair.swift":
-            "Legacy Core Audio route repair until route mutation is moved behind AudioCore."
+            "Legacy Core Audio route repair until route mutation is moved behind AudioCore.",
+        "Sources/AudioCore/Monitors/AppleSpatialHeadphoneMonitor.swift":
+            "AudioCore-owned desktop monitor implementation; UI receives only value status and commands."
     ]
 }

@@ -204,6 +204,8 @@ private enum AudioMotionVUStyle: String, CaseIterable, Identifiable {
     case classicSpectrum = "Classic Spectrum"
     case ledBars = "LED Bars"
     case prismGlow = "Prism Glow"
+    case sparkles = "Sparkles"
+    case blockyPixelSparkles = "Blocky Pixel Sparkles"
     case radial = "Radial"
     case mirror = "Mirror"
 
@@ -913,7 +915,7 @@ struct ContentView: View {
     }
 
     private var analyzerVUStylePicker: some View {
-        HStack(spacing: 10) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 124), spacing: 10)], spacing: 10) {
             ForEach(AudioMotionVUStyle.allCases) { style in
                 Button {
                     selectedAudioMotionVUStyle = style
@@ -925,7 +927,9 @@ struct ContentView: View {
                         Text(style.rawValue)
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(LabTheme.text)
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.82)
+                            .frame(minHeight: 28, alignment: .topLeading)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 3)
@@ -1419,6 +1423,7 @@ struct ContentView: View {
                         if let warning = model.monitorOutputWarningText {
                             outputLaneWarningText(warning)
                         }
+                        appleSpatialHeadphonesMonitorToggle
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1439,6 +1444,42 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var appleSpatialHeadphonesMonitorToggle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                isOn: Binding(
+                    get: { model.appleSpatialHeadphonesEnabled },
+                    set: { model.setAppleSpatialHeadphonesEnabled($0) }
+                )
+            ) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Apple Spatial Headphones")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(LabTheme.text)
+                    Text("Use Apple's headphone spatial renderer for the desktop monitor path. Dante output is unaffected.")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .disabled(!model.appleSpatialHeadphonesToggleIsEnabled)
+            .accessibilityLabel("Apple Spatial Headphones")
+            .accessibilityHint("Toggles Apple's headphone spatial renderer for Output 1 only.")
+
+            Text(model.appleSpatialHeadphonesStatusText)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(model.appleSpatialHeadphoneMonitorStatus.capability.isUsable ? LabTheme.textSoft : LabTheme.amber)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(model.appleSpatialHeadphonesDetailText)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(LabTheme.textSoft)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 2)
     }
 
     private var monitorOutputMenu: some View {
@@ -4534,6 +4575,28 @@ private enum AudioMotionVUMeterRenderer {
                 bounds: bounds,
                 showLabels: showLabels
             )
+        case .sparkles:
+            drawSparkleBars(
+                meters: meters,
+                levels: levels,
+                time: time,
+                context: &context,
+                bounds: bounds,
+                appearance: appearance,
+                showLabels: showLabels,
+                pixelated: false
+            )
+        case .blockyPixelSparkles:
+            drawSparkleBars(
+                meters: meters,
+                levels: levels,
+                time: time,
+                context: &context,
+                bounds: bounds,
+                appearance: appearance,
+                showLabels: showLabels,
+                pixelated: true
+            )
         }
     }
 
@@ -4718,6 +4781,263 @@ private enum AudioMotionVUMeterRenderer {
         }
     }
 
+    private static func drawSparkleBars(
+        meters: [ChannelMeter],
+        levels: [Float],
+        time: TimeInterval,
+        context: inout GraphicsContext,
+        bounds: CGRect,
+        appearance: VUMeterAppearance,
+        showLabels: Bool,
+        pixelated: Bool
+    ) {
+        let content = bounds.insetBy(dx: max(18, bounds.width * 0.026), dy: max(18, bounds.height * 0.045))
+        let labelGapScale = showLabels ? appearance.resolvedLabelGapScale : 1
+        let labelHeight: CGFloat = showLabels ? 28 * labelGapScale : 8
+        let reflectionHeight = content.height * (pixelated ? 0.10 : 0.14) * labelGapScale
+        let labelSpacer = 10 * labelGapScale
+        let meterRect = CGRect(
+            x: content.minX,
+            y: content.minY,
+            width: content.width,
+            height: max(1, content.height - reflectionHeight - labelHeight - labelSpacer)
+        )
+        let bars = VUMeterVerticalBarLayout.frames(count: levels.count, rect: meterRect)
+
+        for index in 0..<min(levels.count, bars.count, meters.count) {
+            let level = clampedLevel(levels[index])
+            let barRect = bars[index]
+            drawBarShell(rect: barRect, context: &context)
+            drawSparkleColumn(
+                level: level,
+                index: index,
+                rect: barRect,
+                time: time,
+                pixelated: pixelated,
+                appearance: appearance,
+                context: &context
+            )
+            drawSparklePeak(level: level, index: index, rect: barRect, time: time, pixelated: pixelated, context: &context)
+            drawSparkleReflection(
+                level: level,
+                index: index,
+                rect: barRect,
+                time: time,
+                labelGapScale: labelGapScale,
+                pixelated: pixelated,
+                context: &context
+            )
+
+            if showLabels, shouldShowLabel(index: index, count: meters.count) {
+                context.draw(
+                    Text(VUMeterChannelLabel.text(for: meters[index].channel))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(LabTheme.textSoft),
+                    at: CGPoint(x: barRect.midX, y: content.maxY - 6),
+                    anchor: .bottom
+                )
+            }
+        }
+    }
+
+    private static func drawSparkleColumn(
+        level: Float,
+        index: Int,
+        rect: CGRect,
+        time: TimeInterval,
+        pixelated: Bool,
+        appearance: VUMeterAppearance,
+        context: inout GraphicsContext
+    ) {
+        guard level > 0.001 else { return }
+
+        let energy = CGFloat(level)
+        let scale = appearance.resolvedPanelFillScale
+        let fillHeight = min(rect.height, max(rect.width * (pixelated ? 1.0 : 1.4), rect.height * (0.10 + energy * 0.90)))
+        let activeRect = CGRect(x: rect.minX, y: rect.maxY - fillHeight, width: rect.width, height: fillHeight)
+        let color = sparkleColor(level: level, index: index, seed: 0.24, time: time)
+        var glow = context
+        glow.addFilter(.shadow(color: color.opacity(pixelated ? 0.24 : 0.38), radius: pixelated ? 5 : 13, x: 0, y: 0))
+        glow.fill(
+            Path(roundedRect: activeRect.insetBy(dx: -rect.width * 0.05, dy: 0), cornerRadius: pixelated ? 1 : min(4, rect.width * 0.24)),
+            with: .linearGradient(
+                Gradient(colors: [
+                    color.opacity(0.03 + Double(level) * 0.10),
+                    color.opacity(0.08 + Double(level) * 0.20),
+                    Color.white.opacity(0.03 + Double(level) * 0.12)
+                ]),
+                startPoint: CGPoint(x: activeRect.midX, y: activeRect.maxY),
+                endPoint: CGPoint(x: activeRect.midX, y: activeRect.minY)
+            )
+        )
+
+        var clipped = context
+        clipped.clip(to: Path(rect.insetBy(dx: -1, dy: -1)))
+        let baseCount = pixelated ? 2 : 3
+        let maxCount = pixelated ? 14 : 19
+        let sparkleCount = max(1, Int(CGFloat(baseCount) + energy * CGFloat(maxCount) * scale))
+        let frame = floor(CGFloat(time) * (pixelated ? 8 : 18))
+
+        for sparkle in 0..<sparkleCount {
+            let seed = CGFloat(index) * 41.731 + CGFloat(sparkle) * 12.989
+            let motion = frame + CGFloat(sparkle) * 0.37
+            let x = activeRect.minX + noise(seed + motion * 0.113) * activeRect.width
+            let y = activeRect.maxY - pow(noise(seed * 0.73 + motion * 0.091), 0.68) * activeRect.height
+            let twinkle = noise(seed * 1.91 + frame * 1.37)
+            let alpha = min(CGFloat(0.96), (0.16 + energy * 0.72) * (0.45 + twinkle * 0.75))
+            let particleColor = sparkleColor(level: level, index: index, seed: noise(seed * 0.41 + frame), time: time)
+
+            if pixelated {
+                let block = max(CGFloat(2), floor(min(rect.width * 0.46, 2 + energy * 5 + scale * 2)))
+                drawPixelSparkle(
+                    center: CGPoint(x: x, y: y),
+                    block: block,
+                    color: particleColor,
+                    alpha: Double(alpha),
+                    context: &clipped
+                )
+            } else {
+                let radius = max(CGFloat(1.5), min(rect.width * 0.44, (2.0 + twinkle * 3.2 + energy * 2.4) * scale))
+                drawSparkle(
+                    center: CGPoint(x: x, y: y),
+                    radius: radius,
+                    color: particleColor,
+                    alpha: Double(alpha),
+                    context: &clipped
+                )
+            }
+        }
+    }
+
+    private static func drawSparklePeak(
+        level: Float,
+        index: Int,
+        rect: CGRect,
+        time: TimeInterval,
+        pixelated: Bool,
+        context: inout GraphicsContext
+    ) {
+        guard level > 0.01 else { return }
+
+        let y = max(rect.minY, rect.maxY - rect.height * CGFloat(level))
+        let color = level > 0.92 ? LabTheme.red : sparkleColor(level: level, index: index, seed: 0.72, time: time)
+        if pixelated {
+            let block = max(CGFloat(2), min(6, rect.width * 0.38))
+            let capRect = CGRect(
+                x: floor((rect.minX - block * 0.5) / block) * block,
+                y: floor(y / block) * block,
+                width: rect.width + block,
+                height: block
+            )
+            context.fill(Path(capRect), with: .color(color.opacity(0.94)))
+        } else {
+            drawSparkle(
+                center: CGPoint(x: rect.midX, y: y),
+                radius: max(2.4, min(6, rect.width * 0.42)),
+                color: color,
+                alpha: 0.95,
+                context: &context
+            )
+        }
+    }
+
+    private static func drawSparkleReflection(
+        level: Float,
+        index: Int,
+        rect: CGRect,
+        time: TimeInterval,
+        labelGapScale: CGFloat,
+        pixelated: Bool,
+        context: inout GraphicsContext
+    ) {
+        guard level > 0.02 else { return }
+
+        let height = min(rect.height * 0.22, rect.height * CGFloat(level) * 0.30) * labelGapScale
+        guard height > 1 else { return }
+
+        let reflection = CGRect(x: rect.minX, y: rect.maxY + 6 * labelGapScale, width: rect.width, height: height)
+        let color = sparkleColor(level: level, index: index, seed: 0.38, time: time)
+        context.fill(
+            Path(roundedRect: reflection, cornerRadius: pixelated ? 1 : min(4, rect.width * 0.2)),
+            with: .linearGradient(
+                Gradient(colors: [color.opacity(pixelated ? 0.14 : 0.18), color.opacity(0.0)]),
+                startPoint: CGPoint(x: reflection.midX, y: reflection.minY),
+                endPoint: CGPoint(x: reflection.midX, y: reflection.maxY)
+            )
+        )
+
+        var clipped = context
+        clipped.clip(to: Path(reflection))
+        let count = max(1, Int(1 + CGFloat(level) * (pixelated ? 4 : 6)))
+        let frame = floor(CGFloat(time) * (pixelated ? 5 : 10))
+        for sparkle in 0..<count {
+            let seed = CGFloat(index) * 19.19 + CGFloat(sparkle) * 7.77
+            let x = reflection.minX + noise(seed + frame * 0.17) * reflection.width
+            let y = reflection.minY + noise(seed * 0.67 + frame * 0.13) * reflection.height
+            let alpha = Double((1 - ((y - reflection.minY) / max(reflection.height, 1))) * 0.26 * CGFloat(level))
+            if pixelated {
+                drawPixelSparkle(center: CGPoint(x: x, y: y), block: max(2, floor(rect.width * 0.28)), color: color, alpha: alpha, context: &clipped)
+            } else {
+                drawSparkle(center: CGPoint(x: x, y: y), radius: max(1.2, rect.width * 0.22), color: color, alpha: alpha, context: &clipped)
+            }
+        }
+    }
+
+    private static func drawSparkle(
+        center: CGPoint,
+        radius: CGFloat,
+        color: Color,
+        alpha: Double,
+        context: inout GraphicsContext
+    ) {
+        let lineWidth = max(CGFloat(1), radius * 0.18)
+        var star = Path()
+        star.move(to: CGPoint(x: center.x, y: center.y - radius))
+        star.addLine(to: CGPoint(x: center.x, y: center.y + radius))
+        star.move(to: CGPoint(x: center.x - radius, y: center.y))
+        star.addLine(to: CGPoint(x: center.x + radius, y: center.y))
+        star.move(to: CGPoint(x: center.x - radius * 0.58, y: center.y - radius * 0.58))
+        star.addLine(to: CGPoint(x: center.x + radius * 0.58, y: center.y + radius * 0.58))
+        star.move(to: CGPoint(x: center.x + radius * 0.58, y: center.y - radius * 0.58))
+        star.addLine(to: CGPoint(x: center.x - radius * 0.58, y: center.y + radius * 0.58))
+
+        var glow = context
+        glow.addFilter(.shadow(color: color.opacity(alpha * 0.42), radius: radius * 1.8, x: 0, y: 0))
+        glow.stroke(
+            star,
+            with: .color(color.opacity(alpha)),
+            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+        )
+        context.fill(
+            Path(ellipseIn: CGRect(x: center.x - lineWidth, y: center.y - lineWidth, width: lineWidth * 2, height: lineWidth * 2)),
+            with: .color(Color.white.opacity(min(0.9, alpha + 0.12)))
+        )
+    }
+
+    private static func drawPixelSparkle(
+        center: CGPoint,
+        block: CGFloat,
+        color: Color,
+        alpha: Double,
+        context: inout GraphicsContext
+    ) {
+        let snapped = CGPoint(x: floor(center.x / block) * block, y: floor(center.y / block) * block)
+        let core = CGRect(x: snapped.x, y: snapped.y, width: block, height: block)
+        context.fill(Path(core), with: .color(color.opacity(alpha)))
+        guard alpha > 0.32 else { return }
+
+        let armAlpha = alpha * 0.42
+        let arms = [
+            CGRect(x: core.minX - block, y: core.minY, width: block, height: block),
+            CGRect(x: core.maxX, y: core.minY, width: block, height: block),
+            CGRect(x: core.minX, y: core.minY - block, width: block, height: block),
+            CGRect(x: core.minX, y: core.maxY, width: block, height: block)
+        ]
+        for rect in arms {
+            context.fill(Path(rect), with: .color(color.opacity(armAlpha)))
+        }
+    }
+
     private static func drawBarShell(rect: CGRect, context: inout GraphicsContext) {
         let radius = min(4, rect.width * 0.24)
         let shell = Path(roundedRect: rect, cornerRadius: radius)
@@ -4866,6 +5186,13 @@ private enum AudioMotionVUMeterRenderer {
                 Color(hue: shiftedHue(index: index, time: time) + 0.08, saturation: 0.78, brightness: 1),
                 level > 0.94 ? LabTheme.red : Color.white.opacity(0.92)
             ]
+        case .sparkles, .blockyPixelSparkles:
+            let base = sparkleColor(level: level, index: index, seed: 0.4, time: time)
+            return [
+                base.opacity(0.62),
+                sparkleColor(level: level, index: index, seed: 0.7, time: time).opacity(0.9),
+                level > 0.94 ? LabTheme.red : Color.white.opacity(0.92)
+            ]
         }
     }
 
@@ -4882,6 +5209,8 @@ private enum AudioMotionVUMeterRenderer {
             return LabTheme.cyan
         case .prismGlow, .radial:
             return prismColor(index: index, time: time)
+        case .sparkles, .blockyPixelSparkles:
+            return sparkleColor(level: level, index: index, seed: 0.42, time: time)
         }
     }
 
@@ -4898,12 +5227,29 @@ private enum AudioMotionVUMeterRenderer {
         return raw - floor(raw)
     }
 
+    private static func sparkleColor(level: Float, index: Int, seed: CGFloat, time: TimeInterval) -> Color {
+        if level > 0.96, seed > 0.74 { return LabTheme.red }
+        if level > 0.80, seed > 0.58 { return LabTheme.amber }
+        let raw = Double(index) * 0.071 + Double(seed) * 0.41 + time * 0.052 + Double(level) * 0.12
+        let hue = raw - floor(raw)
+        return Color(
+            hue: hue,
+            saturation: 0.64 + Double(level) * 0.24,
+            brightness: 0.78 + Double(level) * 0.22
+        )
+    }
+
     private static func point(center: CGPoint, radius: CGFloat, angle: CGFloat) -> CGPoint {
         CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
     }
 
     private static func clampedLevel(_ level: Float) -> Float {
         min(max(level, 0), 1)
+    }
+
+    private static func noise(_ value: CGFloat) -> CGFloat {
+        let raw = sin(value * 127.1 + 311.7) * 43_758.5453
+        return raw - floor(raw)
     }
 }
 
