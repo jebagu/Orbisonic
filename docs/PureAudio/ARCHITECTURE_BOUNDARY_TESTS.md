@@ -74,6 +74,13 @@ Current migration exceptions include:
 - `AudioFileLoader.swift`, `AudioFileProbe.swift`, `StreamingAudioFileSource.swift`, `MatroskaFLACSupport.swift`, `LocalMusicLibrary.swift`, `SurroundSupport.swift`, and `TestToneSupport.swift`: current file probing, decoding, layout, and diagnostic asset support. These are treated as `AudioImport` compatibility files.
 - `OrbisonicViewModel.swift`: legacy view model still imports `AVFoundation` for audio permission status and observes legacy pipe status. This must be removed in a later migration.
 
+Prompt 12 tightened the allowlist:
+
+- The `OrbisonicViewModel.swift` `AVAudioEngine` symbol exception was removed.
+- The view model still has a temporary `AVFoundation` import exception.
+- The view model still has a temporary legacy live pipe status exception.
+- New local-file production gating lives in `LegacyLocalFileProductionGate.swift`, which does not require graph-handle allowlist entries.
+
 ## How To Add A Legitimate Allowlist Entry
 
 Only add an allowlist entry when all of these are true:
@@ -100,6 +107,8 @@ Never allowlist:
 - Hidden production sample-rate conversion.
 
 If one of these appears, treat it as an architecture violation, not a migration exception.
+
+Prompt 12 adds one more hard rule: feedback-loop risk routes must never be allowlisted as valid production routes. They must be blocked by planning or route validation.
 
 ## AudioImport Rule
 

@@ -3945,6 +3945,16 @@ final class OrbisonicViewModel: ObservableObject {
                     }
                 }
                 self.logStreamingLocalPlaybackDecision(localDescriptor, request: request)
+                if let descriptor = localDescriptor,
+                   let gateError = self.blockLocalFileProductionIfNeeded(
+                    descriptor.legacyLocalFileSourceDescription,
+                    debugTiming: request.debugTiming,
+                    fileURL: request.url,
+                    isSessionRunning: true
+                   ) {
+                    self.completeLocalFileLoad(request: request, result: .failure(gateError))
+                    return
+                }
 
                 guard self.activeLocalFileLoadRequest?.id == request.id,
                       self.isCurrentLocalPlaybackGeneration(request.generation)
@@ -4085,6 +4095,54 @@ final class OrbisonicViewModel: ObservableObject {
                 }
                 self.completeLocalFileLoad(request: request, result: .failure(error))
             }
+        }
+    }
+
+    private func currentLocalSourceDescriptionForGate() -> LegacyLocalFileSourceDescription? {
+        guard let currentFileURL, let sourceMetadata else { return nil }
+        return sourceMetadata.legacyLocalFileSourceDescription(path: currentFileURL.path)
+    }
+
+    @discardableResult
+    private func blockLocalFileProductionIfNeeded(
+        _ source: LegacyLocalFileSourceDescription,
+        debugTiming: DebugTimingContext?,
+        fileURL: URL?,
+        isSessionRunning: Bool
+    ) -> LegacyLocalFileProductionGateError? {
+        let admission = LegacyLocalFileProductionGate.admission(
+            for: source,
+            monitorRoute: monitorOutputRoute,
+            systemOutputRoute: systemOutputRoute,
+            rendererRoute: rendererOutputRoute,
+            rendererOutputSelected: rendererOutputSelection != .none,
+            isSessionRunning: isSessionRunning
+        )
+
+        switch admission {
+        case .allowed(let reason):
+            if rendererOutputSelection != .none {
+                AppLogger.shared.notice(category: "local-file", reason)
+            }
+            return nil
+        case .blocked(let reason):
+            let message = reason
+            statusMessage = message
+            lastError = message
+            AppLogger.shared.error(category: "local-file", message)
+            logLocalTransportTiming(
+                debugTiming,
+                "production gate blocked",
+                targetQueueIndex: nil,
+                track: nil,
+                fileURL: fileURL,
+                extra: [
+                    "file=\"\(source.displayName)\"",
+                    "sampleRate=\"\(source.sampleRateText)\"",
+                    "reason=\"\(message)\""
+                ]
+            )
+            return LegacyLocalFileProductionGateError(message: message)
         }
     }
 
@@ -4235,6 +4293,25 @@ final class OrbisonicViewModel: ObservableObject {
                 fileURL: loaded.url,
                 extra: ["reason=\"\(validationFailure)\""]
             )
+            return
+        }
+
+        if let gateError = blockLocalFileProductionIfNeeded(
+            loaded.legacyLocalFileSourceDescription,
+            debugTiming: debugTiming,
+            fileURL: loaded.url,
+            isSessionRunning: autoplay || isPlaying
+        ) {
+            clearPendingLocalPresentation(generation: localPlayNowRequest?.generation)
+            if let localPlayNowRequest {
+                logLocalPlayNowDebug(
+                    "completed",
+                    request: localPlayNowRequest,
+                    loadStarted: true,
+                    loadCompleted: false,
+                    error: gateError.localizedDescription
+                )
+            }
             return
         }
 
@@ -4405,6 +4482,15 @@ final class OrbisonicViewModel: ObservableObject {
                 extra: ["reason=\"\(validationFailure)\""]
             )
             throw CancellationError()
+        }
+
+        if let gateError = blockLocalFileProductionIfNeeded(
+            descriptor.legacyLocalFileSourceDescription,
+            debugTiming: request.debugTiming,
+            fileURL: descriptor.url,
+            isSessionRunning: true
+        ) {
+            throw gateError
         }
 
         cancelDiagnosticsForMusicAction()
@@ -5517,6 +5603,17 @@ final class OrbisonicViewModel: ObservableObject {
                 reevaluateAutomaticRendererMode(reason: "pause")
                 statusMessage = "Paused."
             } else {
+                if let source = currentLocalSourceDescriptionForGate(),
+                   let gateError = blockLocalFileProductionIfNeeded(
+                    source,
+                    debugTiming: nil,
+                    fileURL: currentFileURL,
+                    isSessionRunning: true
+                   ) {
+                    commandAllowed = false
+                    commandError = gateError.localizedDescription
+                    return
+                }
                 guard prepareOutputForMusicPlayback() else { return }
                 reevaluateAutomaticRendererMode(reason: "play")
                 try engine.play()
@@ -7826,7 +7923,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         AppLogger.shared.notice(
             category: "route",
-            "Music playback starting without an explicit renderer output; using the current AVAudioEngine output route."
+            "Music playback starting without an explicit renderer output; using the current legacy output route."
         )
         return true
     }

@@ -184,6 +184,21 @@ If a command would change source format, sample rate, output route, or channel c
 - VU display changes do not require rebuild and must never change ledger truth.
 - Mismatched source changes are blocked or sent to offline import, not converted inside production rendering.
 
-## Current Migration TODO
+## Prompt 12 Integration Status
 
-The legacy Normal Monitor path still emits `NormalMonitorConversionLedger` independently and can still load local files through `OrbisonicViewModel` / `OrbisonicEngine` without first consulting `ProductionLocalAssetGate`. Later prompts must reconcile that legacy ledger with the `AudioSessionPlanner` ledger draft and managed import ledger when the current playback path moves behind `AudioControl`.
+The legacy local-file path now consults `LegacyLocalFileProductionGate` before renderer-selected playback can reach `OrbisonicEngine`.
+
+That gate uses:
+
+- `RouteCapabilityValidator` for route descriptors and Dante capability.
+- `AudioSessionPlanner` for planned production session format and conversion policy.
+- `ProductionLocalAssetGate` for local-file admission.
+
+If a local file would require production sample-rate conversion, playback is blocked before the legacy engine commit and the user-facing message points to offline managed import or a stopped-session rate rebuild.
+
+Remaining ledger TODOs:
+
+- `NormalMonitorConversionLedger` still exists independently for the legacy Normal Monitor graph.
+- `AudioSessionPlanner` produces a ledger draft, not a full running session ledger attached to live playback.
+- The UI does not yet display or persist the Pure Audio ledger for each session.
+- Managed import ledgers are produced by `AudioImport`, but the UI does not yet connect them to a complete production retry flow.

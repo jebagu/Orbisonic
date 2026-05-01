@@ -154,6 +154,22 @@ These changes do not require rebuild:
 
 A mismatched source is blocked or sent to offline import. It is never handled by hidden production SRC.
 
-## Current Migration TODO
+## Prompt 12 Integration Status
 
-The current `OrbisonicViewModel` and `OrbisonicEngine` path still bypasses `AudioSessionPlanner` and `ProductionLocalAssetGate` for the legacy Normal Monitor flow. That is a migration exception. Later prompts must route session start, source selection, local file admission, and output route selection through `AudioControl`, `AudioSessionPlanner`, and `ProductionLocalAssetGate` before they can affect production audio.
+The current `OrbisonicViewModel` local-file path now consults `LegacyLocalFileProductionGate` before the legacy engine can stream or commit a local file when Output 2 Renderer is selected.
+
+Production gate behavior:
+
+- Matching file sample rate and planned Dante session sample rate: allow playback.
+- Mismatched file sample rate and renderer output selected: block playback with the explicit managed-import/restart message.
+- Source channel count above 64: block playback.
+- Feedback-loop output route risk: block production planning.
+
+The legacy Normal Monitor desktop-only path remains available when no renderer output is selected. This is a migration exception, not Pure Audio Dante production.
+
+Remaining TODOs:
+
+- `AudioControl.prepareLocalAsset(_:)` and `importLocalAssetToSessionRate(_:)` are not yet wired into the UI workflow.
+- Managed import can create CAF Float32 PCM assets, but the app does not yet offer a complete user-facing convert-and-retry flow.
+- Live source start still needs to move fully behind `AudioSessionPlanner` and source adapters.
+- Output route selection still uses the legacy view model and engine path for current audible playback.

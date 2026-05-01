@@ -264,6 +264,67 @@ final class AudioSessionPlannerTests: XCTestCase {
         XCTAssertEqual(virtual.risk, .virtualOutputRisk)
     }
 
+    func testPlannerBlocksFeedbackLoopRiskRoutes() {
+        let desktopFeedbackRoute = OutputRouteDescriptor(
+            id: "blackhole-desktop",
+            uid: "blackhole-desktop",
+            name: "BlackHole 64ch",
+            manufacturer: "Existential Audio",
+            transportName: "Virtual",
+            outputChannelCount: 64,
+            nominalSampleRate: .rate48000,
+            isAvailable: true,
+            risk: .feedbackLoopRisk
+        )
+        let desktopPlan = planner.plan(
+            AudioSessionPlanRequest(
+                desiredDesktopRoute: desktopFeedbackRoute,
+                desiredDanteRoute: danteCapability(rate: .rate48000, channels: 31)
+            )
+        )
+        XCTAssertFalse(desktopPlan.isAccepted)
+        XCTAssertTrue(
+            desktopPlan.validationErrors.contains {
+                if case .invalidRenderGraphPlan(let message) = $0 {
+                    return message.contains("feedback-loop risk")
+                }
+                return false
+            }
+        )
+
+        let danteFeedbackRoute = OutputRouteDescriptor(
+            id: "blackhole-dante",
+            uid: "blackhole-dante",
+            name: "BlackHole 64ch",
+            manufacturer: "Existential Audio",
+            transportName: "Virtual",
+            outputChannelCount: 64,
+            nominalSampleRate: .rate48000,
+            isAvailable: true,
+            risk: .feedbackLoopRisk
+        )
+        let dantePlan = planner.plan(
+            AudioSessionPlanRequest(
+                desiredDesktopRoute: desktopRoute(rate: .rate48000),
+                desiredDanteRoute: DanteRouteCapability(
+                    route: danteFeedbackRoute,
+                    supportedSampleRates: [.rate48000],
+                    currentNominalSampleRate: .rate48000,
+                    outputChannelCount: 64
+                )
+            )
+        )
+        XCTAssertFalse(dantePlan.isAccepted)
+        XCTAssertTrue(
+            dantePlan.validationErrors.contains {
+                if case .invalidRenderGraphPlan(let message) = $0 {
+                    return message.contains("feedback-loop risk")
+                }
+                return false
+            }
+        )
+    }
+
     private let planner = AudioSessionPlanner()
 
     private func desktopRoute(

@@ -168,6 +168,22 @@ Meter names must preserve source truth:
 - `Dante Output Meter` means the meter is based on the actual Dante render bus.
 - `Sonic Sphere Analysis Meter` means the meter is synthetic, legacy, or otherwise not proof of audible Dante output.
 
+## Prompt 12 Hardening Rules
+
+Prompt 12 adds a narrow legacy bridge:
+
+- `Sources/Orbisonic/LegacyLocalFileProductionGate.swift`
+
+This file may depend on `AudioContracts`, `AudioCore`, and `AudioImport` value-layer policies, but it must not own graph objects, buffers, taps, or output handles. Its job is to prevent the current view model from feeding a mismatched local file into the legacy playback engine when a renderer output is selected.
+
+The remaining view-model exception is narrower after Prompt 12:
+
+- `OrbisonicViewModel.swift` may temporarily import `AVFoundation` for permission/status behavior.
+- `OrbisonicViewModel.swift` may temporarily observe legacy live pipe status.
+- `OrbisonicViewModel.swift` must not gain an `AVAudioEngine` symbol exception again.
+
+Route planning now treats feedback-loop risk as a hard production failure. BlackHole, Orbisonic loopback outputs, and other routes classified as `feedbackLoopRisk` must not be allowed as desktop or Dante production routes.
+
 ## Real-Time Callback Forbidden Operations
 
 Real-time render and capture callbacks must not perform operations that can block, allocate unpredictably, or call back into UI/application state. Forbidden operations include:

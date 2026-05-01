@@ -483,6 +483,10 @@ public struct AudioSessionPlanner: Sendable {
             errors.append(.routeUnavailable(route.id))
             return nil
         }
+        if let routeRiskError = routeRiskError(for: route, role: "Desktop route") {
+            errors.append(routeRiskError)
+            return nil
+        }
         if route.outputChannelCount < 2 {
             errors.append(.desktopRouteInsufficientChannels(required: 2, actual: route.outputChannelCount))
         }
@@ -512,6 +516,10 @@ public struct AudioSessionPlanner: Sendable {
                 ? DanteOutputFormat(physicalChannelCount: 31, sampleRate: sampleRate)
                 : nil
         }
+        if let routeRiskError = routeRiskError(for: capability.route, role: "Dante route") {
+            errors.append(routeRiskError)
+            return nil
+        }
 
         let danteErrors = ProductionSampleRatePolicy.validationErrors(
             sampleRate: sampleRate,
@@ -532,6 +540,17 @@ public struct AudioSessionPlanner: Sendable {
             messages.append("Dante physical channel 32 is reserved and silent in this plan.")
         }
         return format
+    }
+
+    private func routeRiskError(for route: OutputRouteDescriptor, role: String) -> AudioError? {
+        switch route.risk {
+        case .feedbackLoopRisk:
+            return .invalidRenderGraphPlan("\(role) \(route.name) is blocked because it is a feedback-loop risk.")
+        case .unavailable:
+            return .routeUnavailable(route.id)
+        case .safe, .preferredDante, .virtualOutputRisk, .unknown:
+            return nil
+        }
     }
 
     private func validateSource(

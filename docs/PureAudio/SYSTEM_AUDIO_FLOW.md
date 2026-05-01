@@ -294,3 +294,35 @@ Legacy migration note:
 - `Sources/Orbisonic/MeteringService.swift` remains as the legacy Normal Monitor and analysis-meter compatibility service.
 - `Sources/AudioCore/MeteringTelemetry.swift` is authoritative for new Pure Audio metering.
 - Later prompts must move UI/VU display stores from legacy `ChannelMeterStore` updates to `MeterSnapshot`-derived view models.
+
+## Prompt 12 Integration Gate
+
+Prompt 12 closes the most important current production bypass in the app-facing local-file path:
+
+```text
+OrbisonicViewModel local file request
+-> AudioFileProbe descriptor
+-> LegacyLocalFileProductionGate
+-> RouteCapabilityValidator
+-> AudioSessionPlanner
+-> ProductionLocalAssetGate
+-> allow legacy engine commit only when production rules pass
+```
+
+When Output 2 Renderer is selected, a local file is treated as a production candidate. It must match the planned Dante session sample rate before the legacy playback engine can stream or commit it. If it does not match, the app returns the explicit managed-import/restart message from the local asset policy.
+
+When Output 2 Renderer is not selected, the current path is labeled as legacy desktop-only Normal Monitor playback. It is not Pure Audio Dante production and must not be represented as such in UI or diagnostics.
+
+Prompt 12 also tightens route planning:
+
+- `AudioSessionPlanner` rejects `feedbackLoopRisk` desktop routes.
+- `AudioSessionPlanner` rejects `feedbackLoopRisk` Dante routes.
+- BlackHole and Orbisonic loopback outputs remain blocked from production planning.
+
+The live signal path is still:
+
+```text
+Legacy OrbisonicEngine Normal Monitor path
+```
+
+for current audible playback. The Pure Audio source bus, render plan, render kernels, output adapters, and metering path are implemented as validation/offline architecture and tests. A later prompt must replace the live output execution path with the Pure Audio coordinator and real output adapters before Dante can be described as audible.

@@ -130,7 +130,7 @@ enum ArchitectureBoundaryAllowlist {
             "outputNode"
         ],
         "Sources/Orbisonic/OrbisonicViewModel.swift": [
-            "importAVFoundation", "AVAudioEngine", "LiveAudioPipe"
+            "importAVFoundation", "LiveAudioPipe"
         ],
         "Sources/Orbisonic/OutputRouteMonitor.swift": [
             "importCoreAudio", "AudioDeviceID", "AudioBufferList"

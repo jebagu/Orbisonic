@@ -236,6 +236,18 @@ Prompt 11 adds the Pure Audio copy-only metering telemetry path:
 - Legacy UI Sonic Sphere metering is labeled `Sonic Sphere Analysis Meter`, not `Dante Output Meter`.
 - Legacy `Sources/Orbisonic/MeteringService.swift` remains temporarily for the existing Normal Monitor and analysis-meter surfaces; it is not the Pure Audio metering authority.
 
+Prompt 12 integrates the safest parts of the architecture into the current app without claiming live Dante output:
+
+- `Sources/Orbisonic/LegacyLocalFileProductionGate.swift` bridges the legacy local-file view model path to `AudioSessionPlanner`, `RouteCapabilityValidator`, and `ProductionLocalAssetGate`.
+- Local file production playback is blocked before streaming or prepared-file engine commit when a renderer output is selected and the file sample rate does not match the Dante session route rate.
+- Matching local files can still enter the legacy renderer-selected path.
+- Renderer-unselected Normal Monitor playback remains an explicit `Legacy Normal Monitor desktop-only playback` compatibility path, not Pure Audio Dante production.
+- `AudioSessionPlanner` now rejects `feedbackLoopRisk` desktop or Dante route descriptors.
+- The `OrbisonicViewModel` boundary allowlist no longer needs an `AVAudioEngine` symbol exception; it still has a temporary `AVFoundation` permission/status exception and observes legacy pipe status.
+- `docs/PureAudio/PURE_AUDIO_BRANCH_2_STATUS.md` is the branch status ledger for implemented work, remaining bypasses, test commands, manual verification, and next prompt scope.
+
+Live dual physical output remains incomplete after Prompt 12. The Dante path is validation/offline render architecture only until a real `AudioCore`-owned live output adapter is implemented and verified.
+
 ## Prompt 1 Non-Goals
 
 Prompt 1 does not:
