@@ -7,7 +7,6 @@ final class VURoutingViewTests: XCTestCase {
             StageTab.allCases.map(\.rawValue),
             [
                 "Input",
-                "Routing",
                 "Renderer",
                 "Output",
                 "VU",
@@ -110,7 +109,7 @@ final class VURoutingViewTests: XCTestCase {
         let options = DiagnosticChannelPlaybackPolicy.options(
             targetsRenderer: false,
             rendererMonitorDownmixAvailable: true,
-            rendererMonitorPreview: true
+            rendererUsesNormalMonitor: true
         )
 
         XCTAssertEqual(
@@ -122,17 +121,17 @@ final class VURoutingViewTests: XCTestCase {
         )
     }
 
-    func testRendererDiagnosticPlaybackKeepsMonitorDownmixWhenAvailable() {
+    func testRendererDiagnosticPlaybackUsesSingleNormalMonitorPath() {
         let options = DiagnosticChannelPlaybackPolicy.options(
             targetsRenderer: true,
             rendererMonitorDownmixAvailable: true,
-            rendererMonitorPreview: false
+            rendererUsesNormalMonitor: false
         )
 
         XCTAssertEqual(
             options,
             DiagnosticChannelPlaybackOptions(
-                monitorDownmix: true,
+                monitorDownmix: false,
                 primaryOutputEnabled: true
             )
         )

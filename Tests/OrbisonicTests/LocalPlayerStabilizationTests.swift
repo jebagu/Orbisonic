@@ -69,6 +69,156 @@ final class LocalPlayerStabilizationTests: XCTestCase {
         XCTAssertEqual(loaded.playlists[0].trackPaths, [existingURL.path])
     }
 
+    func testAppManagedPlaylistMutationsPersistM3U() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let firstURL = fixture.directory.appendingPathComponent("first.wav")
+        let secondURL = fixture.directory.appendingPathComponent("second.wav")
+        try Self.writeSilentAudioFile(to: firstURL)
+        try Self.writeSilentAudioFile(to: secondURL)
+
+        let first = Self.track(url: firstURL)
+        let second = Self.track(url: secondURL)
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+
+        let playlist = try library.createPlaylist(name: "Favorites", tracks: [first])
+        XCTAssertTrue(library.isEditablePlaylist(playlist))
+
+        let appended = try library.appendTrack(second, to: playlist, knownTracks: [first, second])
+        XCTAssertEqual(appended.trackPaths, [first.path, second.path])
+        XCTAssertThrowsError(try library.appendTrack(first, to: appended, knownTracks: [first, second])) { error in
+            XCTAssertEqual(error as? LocalMusicPlaylistMutationError, .duplicateTrack)
+        }
+
+        let reordered = try library.updateEditablePlaylist(
+            appended,
+            trackPaths: [second.path, first.path],
+            knownTracks: [first, second]
+        )
+        XCTAssertEqual(reordered.trackPaths, [second.path, first.path])
+
+        let removed = try library.updateEditablePlaylist(
+            reordered,
+            trackPaths: [first.path],
+            knownTracks: [first, second]
+        )
+        XCTAssertEqual(removed.trackPaths, [first.path])
+
+        let renamed = try library.renameEditablePlaylist(removed, to: "Renamed")
+        XCTAssertEqual(renamed.name, "Renamed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: removed.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.path))
+
+        let contents = try String(contentsOf: URL(fileURLWithPath: renamed.path), encoding: .utf8)
+        XCTAssertTrue(contents.contains("#EXTM3U"))
+        XCTAssertTrue(contents.contains(first.path))
+        XCTAssertFalse(contents.contains(second.path))
+    }
+
+    func testImportedPlaylistIsReadOnlyAndRenameConflictsAreBlocked() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let audioURL = fixture.directory.appendingPathComponent("track.wav")
+        try Self.writeSilentAudioFile(to: audioURL)
+        let track = Self.track(url: audioURL)
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+
+        let importedURL = fixture.directory.appendingPathComponent("imported.m3u")
+        try ["#EXTM3U", track.path].joined(separator: "\n").write(to: importedURL, atomically: true, encoding: .utf8)
+        let imported = LocalMusicPlaylist(name: "Imported", path: importedURL.path, trackPaths: [track.path])
+
+        XCTAssertFalse(library.isEditablePlaylist(imported))
+        XCTAssertThrowsError(try library.appendTrack(track, to: imported, knownTracks: [track])) { error in
+            XCTAssertEqual(error as? LocalMusicPlaylistMutationError, .readOnly)
+        }
+
+        let first = try library.createPlaylist(name: "Existing", tracks: [track])
+        let second = try library.createPlaylist(name: "Other", tracks: [track])
+        XCTAssertThrowsError(try library.renameEditablePlaylist(second, to: first.name)) { error in
+            XCTAssertEqual(error as? LocalMusicPlaylistMutationError, .nameConflict(first.name))
+        }
+    }
+
+    @MainActor
+    func testViewModelAddsTracksToNewAndExistingPlaylists() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let firstURL = fixture.directory.appendingPathComponent("first.wav")
+        let secondURL = fixture.directory.appendingPathComponent("second.wav")
+        try Self.writeSilentAudioFile(to: firstURL)
+        try Self.writeSilentAudioFile(to: secondURL)
+
+        let first = Self.track(url: firstURL)
+        let second = Self.track(url: secondURL)
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(),
+            tracks: [first, second],
+            playlists: []
+        ))
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library
+        )
+
+        model.addLocalMusicTrackToNewPlaylist(first, named: "Road")
+        model.addLocalMusicTrackToNewPlaylist(second, named: "Road")
+
+        XCTAssertEqual(model.localMusicPlaylists.map(\.name), ["Road"])
+        XCTAssertEqual(model.selectedLocalMusicPlaylist?.trackPaths, [first.path, second.path])
+        XCTAssertEqual(model.localMusicSettings.m3uPlaylistPaths.count, 1)
+
+        let playlist = try XCTUnwrap(model.selectedLocalMusicPlaylist)
+        model.addLocalMusicTrackToPlaylist(first, playlist)
+
+        XCTAssertEqual(model.selectedLocalMusicPlaylist?.trackPaths, [first.path, second.path])
+        XCTAssertTrue(model.statusMessage.localizedCaseInsensitiveContains("already"))
+    }
+
+    @MainActor
+    func testViewModelReordersRemovesAndRenamesEditablePlaylistTracks() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let firstURL = fixture.directory.appendingPathComponent("first.wav")
+        let secondURL = fixture.directory.appendingPathComponent("second.wav")
+        try Self.writeSilentAudioFile(to: firstURL)
+        try Self.writeSilentAudioFile(to: secondURL)
+
+        let first = Self.track(url: firstURL)
+        let second = Self.track(url: secondURL)
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        let playlist = try library.createPlaylist(name: "Editable", tracks: [first, second])
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(m3uPlaylistPaths: [playlist.path]),
+            tracks: [first, second],
+            playlists: [playlist]
+        ))
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library
+        )
+
+        let loaded = try XCTUnwrap(model.localMusicPlaylists.first)
+        model.moveLocalMusicPlaylistTrackUp(loaded, index: 1)
+        XCTAssertEqual(model.selectedLocalMusicPlaylist?.trackPaths, [second.path, first.path])
+
+        let reordered = try XCTUnwrap(model.selectedLocalMusicPlaylist)
+        model.removeLocalMusicPlaylistTrack(reordered, index: 0)
+        XCTAssertEqual(model.selectedLocalMusicPlaylist?.trackPaths, [first.path])
+
+        let edited = try XCTUnwrap(model.selectedLocalMusicPlaylist)
+        let oldPath = edited.path
+        model.renameLocalMusicPlaylist(edited, named: "Renamed Editable")
+
+        XCTAssertEqual(model.selectedLocalMusicPlaylist?.name, "Renamed Editable")
+        XCTAssertNotEqual(model.selectedLocalMusicPlaylist?.path, oldPath)
+        XCTAssertEqual(model.localMusicSettings.m3uPlaylistPaths, [model.selectedLocalMusicPlaylist?.path].compactMap { $0 })
+    }
+
     @MainActor
     func testStartupPreloadsFirstLibraryTrackPaused() async throws {
         let fixture = try TemporaryLocalMusicFixture()
@@ -471,7 +621,7 @@ final class LocalPlayerStabilizationTests: XCTestCase {
         XCTAssertEqual(engine.state, .paused)
         let graphBuildCountAfterPause = engine.debugPlaybackGraphBuildCount
 
-        engine.updateRenderer(mode: scene.renderMode, scene: scene, directRendererAudioEnabled: false)
+        engine.updateRenderer(mode: scene.renderMode, scene: scene)
         XCTAssertEqual(engine.debugPlaybackGraphBuildCount, graphBuildCountAfterPause)
 
         engine.seek(toProgress: 0.5)

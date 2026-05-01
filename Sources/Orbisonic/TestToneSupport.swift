@@ -30,23 +30,23 @@ enum TestTonePipelinePoint: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .directOutput:
-            "Sends a stereo tone straight to the macOS output route, bypassing spatial rendering."
+            "Sends a stereo tone to the Normal Monitor path."
         case .rendererCenter:
-            "Sends a mono tone through the spatial renderer at the center position."
+            "Sends a diagnostic tone through the Normal Monitor path."
         case .rendererFrontLeft:
-            "Sends a mono tone through the spatial renderer at front left."
+            "Sends a diagnostic tone through the Normal Monitor path."
         case .rendererFrontRight:
-            "Sends a mono tone through the spatial renderer at front right."
+            "Sends a diagnostic tone through the Normal Monitor path."
         case .rendererSideLeft:
-            "Sends a mono tone through the spatial renderer at side left."
+            "Sends a diagnostic tone through the Normal Monitor path."
         case .rendererSideRight:
-            "Sends a mono tone through the spatial renderer at side right."
+            "Sends a diagnostic tone through the Normal Monitor path."
         case .rendererRearLeft:
-            "Sends a mono tone through the spatial renderer behind you on the left."
+            "Sends a diagnostic tone through the Normal Monitor path."
         case .rendererRearRight:
-            "Sends a mono tone through the spatial renderer behind you on the right."
+            "Sends a diagnostic tone through the Normal Monitor path."
         case .rendererLFE:
-            "Sends a low tone through the renderer's LFE path."
+            "Sends a low diagnostic tone through the Normal Monitor path."
         }
     }
 
@@ -77,26 +77,7 @@ enum TestTonePipelinePoint: String, CaseIterable, Identifiable {
     }
 
     var spatialChannel: SurroundChannel? {
-        switch self {
-        case .directOutput:
-            nil
-        case .rendererCenter:
-            SurroundChannel(index: 0, role: .center)
-        case .rendererFrontLeft:
-            SurroundChannel(index: 0, role: .frontLeft)
-        case .rendererFrontRight:
-            SurroundChannel(index: 0, role: .frontRight)
-        case .rendererSideLeft:
-            SurroundChannel(index: 0, role: .sideLeft)
-        case .rendererSideRight:
-            SurroundChannel(index: 0, role: .sideRight)
-        case .rendererRearLeft:
-            SurroundChannel(index: 0, role: .rearLeft)
-        case .rendererRearRight:
-            SurroundChannel(index: 0, role: .rearRight)
-        case .rendererLFE:
-            SurroundChannel(index: 0, role: .lfe)
-        }
+        nil
     }
 
     var meterChannels: [SurroundChannel] {
@@ -111,12 +92,7 @@ enum TestTonePipelinePoint: String, CaseIterable, Identifiable {
     }
 
     var pipelineDescription: String {
-        switch self {
-        case .directOutput:
-            "Synth tone -> main mixer -> macOS output"
-        default:
-            "Synth tone -> AVAudioEnvironmentNode -> main mixer -> macOS output"
-        }
+        "Synth tone -> Normal Monitor stereo downmix -> macOS output"
     }
 }
 

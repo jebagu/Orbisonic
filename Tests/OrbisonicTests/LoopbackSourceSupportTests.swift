@@ -305,10 +305,10 @@ final class LoopbackSourceSupportTests: XCTestCase {
         ))
     }
 
-    func testFeyRendererUsesDirectRendererAudioOnExplicitRendererRoute() {
+    func testFeyRendererNeverUsesDirectRendererAudioOnExplicitRendererRoute() {
         let renderer = outputRoute(uid: "dante-vsc", name: "Dante Virtual Soundcard", manufacturer: "Audinate", transport: "Virtual", channels: 64)
 
-        XCTAssertTrue(RendererAudioRoutingPolicy.usesDirectRendererAudio(
+        XCTAssertFalse(RendererAudioRoutingPolicy.usesDirectRendererAudio(
             renderMode: .quad,
             activeOutputRoute: renderer,
             rendererOutputRoute: renderer,

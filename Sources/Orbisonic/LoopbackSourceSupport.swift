@@ -165,18 +165,11 @@ enum RendererAudioRoutingPolicy {
         rendererOutputRoute: OutputRouteInfo,
         requiredOutputChannelCount: Int
     ) -> Bool {
-        guard renderMode.usesDirectRendererAudio,
-              requiredOutputChannelCount > 0,
-              activeOutputRoute.isAvailable,
-              rendererOutputRoute.isAvailable,
-              rendererOutputRoute.isRendererCapableOutput,
-              rendererOutputRoute.outputChannelCount >= requiredOutputChannelCount
-        else {
-            return false
-        }
-
-        return activeOutputRoute.uid == rendererOutputRoute.uid
-            || activeOutputRoute.deviceID == rendererOutputRoute.deviceID
+        _ = renderMode
+        _ = activeOutputRoute
+        _ = rendererOutputRoute
+        _ = requiredOutputChannelCount
+        return false
     }
 }
 

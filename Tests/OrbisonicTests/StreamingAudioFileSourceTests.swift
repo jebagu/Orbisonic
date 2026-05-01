@@ -81,7 +81,7 @@ final class StreamingAudioFileSourceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let audioURL = directory.appendingPathComponent("engine-stream.wav")
-        try Self.writeSilentAudioFile(to: audioURL, frames: 96_000)
+        try Self.writeAudioFile(to: audioURL, frames: 96_000, amplitude: Self.amplitude(dbFS: -18))
 
         let descriptor = try await AudioFileProbe().probe(url: audioURL)
         let configuration = StreamingAudioFileSource.Configuration(
@@ -93,6 +93,12 @@ final class StreamingAudioFileSourceTests: XCTestCase {
         let source = StreamingAudioFileSource(url: audioURL, configuration: configuration)
         let engine = OrbisonicEngine()
         defer { engine.stop() }
+        let scene = RendererMatrixBuilder.sceneModel(
+            for: descriptor.channelLayout,
+            preset: .sonicSphere30Point1,
+            renderMode: .stereo
+        )
+        engine.updateRenderer(mode: scene.renderMode, scene: scene)
 
         try await engine.startStreaming(source: source, descriptor: descriptor)
 
@@ -100,6 +106,27 @@ final class StreamingAudioFileSourceTests: XCTestCase {
         XCTAssertEqual(engine.duration(), descriptor.durationSeconds ?? 0, accuracy: 0.001)
         XCTAssertEqual(engine.channelMeterLevels().count, descriptor.channelCount)
         XCTAssertGreaterThanOrEqual(engine.currentTime(), 0)
+
+        let sonicBeforeVolumeChange = engine.sonicSphereMeterLevels(channelCount: scene.matrix.outputCount)
+        XCTAssertTrue(engine.sonicSphereMeterIsActive())
+        XCTAssertTrue(sonicBeforeVolumeChange.contains { $0.peakDbFS > -96 })
+
+        let beforeVolumeChange = engine.inputMeterLevels()
+        engine.setOutputVolume(0)
+        let mutedOutput = engine.inputMeterLevels()
+        engine.setOutputVolume(1)
+        let fullOutput = engine.inputMeterLevels()
+
+        XCTAssertEqual(beforeVolumeChange[0].rawRMSDbFS, -18, accuracy: 0.1)
+        XCTAssertEqual(mutedOutput[0].rawRMSDbFS, beforeVolumeChange[0].rawRMSDbFS, accuracy: 0.001)
+        XCTAssertEqual(fullOutput[0].rawRMSDbFS, beforeVolumeChange[0].rawRMSDbFS, accuracy: 0.001)
+
+        engine.setOutputVolume(0)
+        let sonicMutedOutput = engine.sonicSphereMeterLevels(channelCount: scene.matrix.outputCount)
+
+        for (muted, before) in zip(sonicMutedOutput, sonicBeforeVolumeChange) {
+            XCTAssertEqual(muted.rawRMSDbFS, before.rawRMSDbFS, accuracy: 0.001)
+        }
     }
 
     private static func makeTemporaryDirectory() throws -> URL {
@@ -110,6 +137,10 @@ final class StreamingAudioFileSourceTests: XCTestCase {
     }
 
     private static func writeSilentAudioFile(to url: URL, frames: AVAudioFrameCount) throws {
+        try writeAudioFile(to: url, frames: frames, amplitude: 0)
+    }
+
+    private static func writeAudioFile(to url: URL, frames: AVAudioFrameCount, amplitude: Float) throws {
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2),
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)
         else {
@@ -118,7 +149,18 @@ final class StreamingAudioFileSourceTests: XCTestCase {
         }
 
         buffer.frameLength = frames
+        if let channelData = buffer.floatChannelData {
+            for channel in 0..<Int(format.channelCount) {
+                for frame in 0..<Int(frames) {
+                    channelData[channel][frame] = channel.isMultiple(of: 2) ? amplitude : -amplitude
+                }
+            }
+        }
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         try file.write(from: buffer)
+    }
+
+    private static func amplitude(dbFS: Float) -> Float {
+        powf(10, dbFS / 20)
     }
 }

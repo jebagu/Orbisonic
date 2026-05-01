@@ -6,8 +6,39 @@ import UniformTypeIdentifiers
 struct ChannelMeter: Identifiable {
     let channel: SurroundChannel
     var level: Float
+    var rawRMSDbFS: Float
+    var peakDbFS: Float
+    var vuDb: Float
+    var isMeasured: Bool
 
     var id: String { channel.id }
+
+    init(
+        channel: SurroundChannel,
+        level: Float,
+        rawRMSDbFS: Float = MeterChannelLevel.silenceDbFS,
+        peakDbFS: Float = MeterChannelLevel.silenceDbFS,
+        vuDb: Float = MeterChannelLevel.silenceDbFS,
+        isMeasured: Bool = true
+    ) {
+        self.channel = channel
+        self.level = level
+        self.rawRMSDbFS = rawRMSDbFS
+        self.peakDbFS = peakDbFS
+        self.vuDb = vuDb
+        self.isMeasured = isMeasured
+    }
+
+    init(channel: SurroundChannel, meterLevel: MeterChannelLevel, isMeasured: Bool = true) {
+        self.init(
+            channel: channel,
+            level: meterLevel.displayLevel,
+            rawRMSDbFS: meterLevel.rawRMSDbFS,
+            peakDbFS: meterLevel.peakDbFS,
+            vuDb: meterLevel.vuDb,
+            isMeasured: isMeasured
+        )
+    }
 }
 
 enum PlaylistSortMode: String, CaseIterable, Identifiable {
@@ -442,8 +473,10 @@ struct DiagnosticToneActivitySummary: Equatable {
 @MainActor
 final class ChannelMeterStore: ObservableObject {
     @Published private(set) var channelMeters: [ChannelMeter] = []
+    @Published private(set) var isActive = false
 
     func configure(channels: [SurroundChannel]) {
+        isActive = false
         channelMeters = channels.map { ChannelMeter(channel: $0, level: 0) }
     }
 
@@ -456,11 +489,13 @@ final class ChannelMeterStore: ObservableObject {
     }
 
     func reset() {
+        isActive = false
         channelMeters = channelMeters.map { ChannelMeter(channel: $0.channel, level: 0) }
     }
 
     func update(with nextLevels: [Float]) {
         guard nextLevels.count == channelMeters.count else { return }
+        isActive = nextLevels.contains { $0 > 0 }
 
         let updated = zip(channelMeters, nextLevels).map { current, next in
             ChannelMeter(channel: current.channel, level: next)
@@ -468,6 +503,25 @@ final class ChannelMeterStore: ObservableObject {
 
         let shouldPublish = zip(channelMeters, updated).contains {
             abs($0.level - $1.level) >= 0.003
+        }
+
+        if shouldPublish {
+            channelMeters = updated
+        }
+    }
+
+    func update(with meterLevels: [MeterChannelLevel], isActive: Bool) {
+        guard meterLevels.count == channelMeters.count else { return }
+        self.isActive = isActive
+
+        let updated = zip(channelMeters, meterLevels).map { current, next in
+            ChannelMeter(channel: current.channel, meterLevel: next, isMeasured: isActive)
+        }
+
+        let shouldPublish = zip(channelMeters, updated).contains {
+            abs($0.level - $1.level) >= 0.003
+                || abs($0.rawRMSDbFS - $1.rawRMSDbFS) >= 0.1
+                || $0.isMeasured != $1.isMeasured
         }
 
         if shouldPublish {
@@ -493,18 +547,14 @@ enum DiagnosticChannelPlaybackPolicy {
     static func options(
         targetsRenderer: Bool,
         rendererMonitorDownmixAvailable: Bool,
-        rendererMonitorPreview: Bool
+        rendererUsesNormalMonitor: Bool
     ) -> DiagnosticChannelPlaybackOptions {
-        guard targetsRenderer else {
-            return DiagnosticChannelPlaybackOptions(
-                monitorDownmix: false,
-                primaryOutputEnabled: true
-            )
-        }
-
+        _ = targetsRenderer
+        _ = rendererMonitorDownmixAvailable
+        _ = rendererUsesNormalMonitor
         return DiagnosticChannelPlaybackOptions(
-            monitorDownmix: rendererMonitorDownmixAvailable,
-            primaryOutputEnabled: !rendererMonitorPreview
+            monitorDownmix: false,
+            primaryOutputEnabled: true
         )
     }
 }
@@ -758,6 +808,7 @@ final class OrbisonicViewModel: ObservableObject {
     let meterStore = ChannelMeterStore()
     let monitorMeterStore = ChannelMeterStore()
     let rendererMeterStore = ChannelMeterStore()
+    @Published private(set) var sonicSphereMeterActive = false
 
     private let engine = OrbisonicEngine()
     private let localAudioLoader: @Sendable (URL, DebugTimingContext?) throws -> LoadedAudioFile
@@ -790,7 +841,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var sourceSwitchRequests = SourceSwitchRequestState()
     private var transitionOutputGain: Float = 1
     private var diagnosticReturnContext: DiagnosticReturnContext?
-    private var rendererDiagnosticsUsingMonitorPreview = false
+    private var rendererDiagnosticsUsingNormalMonitor = false
     private var rendererDiagnosticsMonitorDownmixAvailable = false
     private var localMusicScanTask: Task<Void, Never>?
     private var localPlayNowTask: Task<Void, Never>?
@@ -949,6 +1000,13 @@ final class OrbisonicViewModel: ObservableObject {
               let mode = RendererRenderMode(rawValue: storedValue)
         else {
             return .automatic
+        }
+
+        switch mode {
+        case .direct30, .direct31:
+            return .automatic
+        default:
+            break
         }
 
         return mode
@@ -1141,6 +1199,10 @@ final class OrbisonicViewModel: ObservableObject {
 
     func setSphereOutputVolume(_ value: Double) {
         sphereOutputVolumePercent = Self.clampedPercent(value)
+    }
+
+    func updateVUMeterCalibration(_ calibration: VUMeterCalibrationSettings) {
+        engine.updateMeterCalibration(calibration)
     }
 
     private func applyEffectiveOutputVolume(log: Bool) {
@@ -2650,6 +2712,114 @@ final class OrbisonicViewModel: ObservableObject {
         statusMessage = "Added \(track.displayTitle) to the session queue."
     }
 
+    func createLocalMusicPlaylist(named rawName: String) {
+        do {
+            let name = try validatedPlaylistName(rawName)
+            if let existingPlaylist = editableLocalMusicPlaylist(named: name) {
+                selectedLocalMusicPlaylistID = existingPlaylist.id
+                statusMessage = "\(existingPlaylist.name) already exists."
+                return
+            }
+
+            let playlist = try localMusicLibrary.createPlaylist(name: name, tracks: [])
+            registerLocalMusicPlaylist(playlist)
+            selectedLocalMusicPlaylistID = playlist.id
+            persistLocalMusicDatabase()
+            statusMessage = "Created playlist \(playlist.name)."
+            AppLogger.shared.notice(category: "local-music", "Created playlist path=\(playlist.path)")
+        } catch {
+            handleLocalMusicPlaylistMutationError(error, logPrefix: "Could not create playlist")
+        }
+    }
+
+    func addLocalMusicTrackToNewPlaylist(_ track: LocalMusicTrack, named rawName: String) {
+        do {
+            let name = try validatedPlaylistName(rawName)
+            if let existingPlaylist = editableLocalMusicPlaylist(named: name) {
+                addLocalMusicTrackToPlaylist(track, existingPlaylist)
+                return
+            }
+
+            let playlist = try localMusicLibrary.createPlaylist(name: name, tracks: [track])
+            registerLocalMusicPlaylist(playlist)
+            selectedLibraryTrackID = track.id
+            selectedLocalMusicPlaylistID = playlist.id
+            persistLocalMusicDatabase()
+            statusMessage = "Added \(track.displayTitle) to new playlist \(playlist.name)."
+            AppLogger.shared.notice(category: "local-music", "Created playlist from track path=\(playlist.path) track=\(track.fileName)")
+        } catch {
+            handleLocalMusicPlaylistMutationError(error, logPrefix: "Could not add track to new playlist")
+        }
+    }
+
+    func addLocalMusicTrackToPlaylist(_ track: LocalMusicTrack, _ playlist: LocalMusicPlaylist) {
+        do {
+            let updated = try localMusicLibrary.appendTrack(
+                track,
+                to: playlist,
+                knownTracks: localMusicTracks
+            )
+            replaceLocalMusicPlaylist(playlist.id, with: updated)
+            selectedLibraryTrackID = track.id
+            selectedLocalMusicPlaylistID = updated.id
+            persistLocalMusicDatabase()
+            statusMessage = "Added \(track.displayTitle) to \(updated.name)."
+            AppLogger.shared.notice(category: "local-music", "Added track to playlist path=\(updated.path) track=\(track.fileName)")
+        } catch {
+            handleLocalMusicPlaylistMutationError(error, logPrefix: "Could not add track to playlist")
+        }
+    }
+
+    func moveLocalMusicPlaylistTrackUp(_ playlist: LocalMusicPlaylist, index: Int) {
+        moveLocalMusicPlaylistTrack(in: playlist, from: index, to: index - 1)
+    }
+
+    func moveLocalMusicPlaylistTrackDown(_ playlist: LocalMusicPlaylist, index: Int) {
+        moveLocalMusicPlaylistTrack(in: playlist, from: index, to: index + 1)
+    }
+
+    func removeLocalMusicPlaylistTrack(_ playlist: LocalMusicPlaylist, index: Int) {
+        guard playlist.trackPaths.indices.contains(index) else { return }
+        var trackPaths = playlist.trackPaths
+        let removedPath = trackPaths.remove(at: index)
+        let removedTitle = localMusicTracks.first { $0.path == removedPath }?.displayTitle ??
+            URL(fileURLWithPath: removedPath).deletingPathExtension().lastPathComponent
+
+        do {
+            let updated = try localMusicLibrary.updateEditablePlaylist(
+                playlist,
+                trackPaths: trackPaths,
+                knownTracks: localMusicTracks
+            )
+            replaceLocalMusicPlaylist(playlist.id, with: updated)
+            selectedLocalMusicPlaylistID = updated.id
+            persistLocalMusicDatabase()
+            statusMessage = "Removed \(removedTitle) from \(updated.name)."
+        } catch {
+            handleLocalMusicPlaylistMutationError(error, logPrefix: "Could not remove playlist track")
+        }
+    }
+
+    func renameLocalMusicPlaylist(_ playlist: LocalMusicPlaylist, named rawName: String) {
+        do {
+            let name = try validatedPlaylistName(rawName)
+            if let existingPlaylist = editableLocalMusicPlaylist(named: name),
+               existingPlaylist.id != playlist.id {
+                throw LocalMusicPlaylistMutationError.nameConflict(existingPlaylist.name)
+            }
+
+            let renamed = try localMusicLibrary.renameEditablePlaylist(playlist, to: name)
+            replaceRegisteredPlaylistPath(oldPath: playlist.path, newPath: renamed.path)
+            replaceLocalMusicPlaylist(playlist.id, with: renamed)
+            selectedLocalMusicPlaylistID = renamed.id
+            persistLocalMusicDatabase()
+            statusMessage = "Renamed playlist to \(renamed.name)."
+            AppLogger.shared.notice(category: "local-music", "Renamed playlist oldPath=\(playlist.path) newPath=\(renamed.path)")
+        } catch {
+            handleLocalMusicPlaylistMutationError(error, logPrefix: "Could not rename playlist")
+        }
+    }
+
     func addSelectedLocalMusicPlaylistToQueue(shuffle: Bool = false) {
         guard let playlist = selectedLocalMusicPlaylist ?? localMusicPlaylists.first else {
             statusMessage = "No M3U playlists are available. Add one in Settings or scan a folder that contains playlists."
@@ -2716,6 +2886,75 @@ final class OrbisonicViewModel: ObservableObject {
             lastError = message
             AppLogger.shared.error(category: "local-music", message)
         }
+    }
+
+    private func moveLocalMusicPlaylistTrack(in playlist: LocalMusicPlaylist, from sourceIndex: Int, to destinationIndex: Int) {
+        guard playlist.trackPaths.indices.contains(sourceIndex),
+              playlist.trackPaths.indices.contains(destinationIndex),
+              sourceIndex != destinationIndex
+        else { return }
+
+        var trackPaths = playlist.trackPaths
+        trackPaths.swapAt(sourceIndex, destinationIndex)
+
+        do {
+            let updated = try localMusicLibrary.updateEditablePlaylist(
+                playlist,
+                trackPaths: trackPaths,
+                knownTracks: localMusicTracks
+            )
+            replaceLocalMusicPlaylist(playlist.id, with: updated)
+            selectedLocalMusicPlaylistID = updated.id
+            persistLocalMusicDatabase()
+            statusMessage = "Reordered \(updated.name)."
+        } catch {
+            handleLocalMusicPlaylistMutationError(error, logPrefix: "Could not reorder playlist")
+        }
+    }
+
+    private func validatedPlaylistName(_ rawName: String) throws -> String {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw LocalMusicPlaylistMutationError.invalidName
+        }
+        return name
+    }
+
+    private func editableLocalMusicPlaylist(named name: String) -> LocalMusicPlaylist? {
+        localMusicPlaylists.first { playlist in
+            isEditableLocalMusicPlaylist(playlist) &&
+                playlist.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
+    private func registerLocalMusicPlaylist(_ playlist: LocalMusicPlaylist) {
+        if !localMusicSettings.m3uPlaylistPaths.contains(playlist.path) {
+            localMusicSettings.m3uPlaylistPaths.append(playlist.path)
+        }
+        replaceLocalMusicPlaylist(playlist.id, with: playlist)
+    }
+
+    private func replaceRegisteredPlaylistPath(oldPath: String, newPath: String) {
+        if let index = localMusicSettings.m3uPlaylistPaths.firstIndex(of: oldPath) {
+            localMusicSettings.m3uPlaylistPaths[index] = newPath
+        } else if !localMusicSettings.m3uPlaylistPaths.contains(newPath) {
+            localMusicSettings.m3uPlaylistPaths.append(newPath)
+        }
+    }
+
+    private func replaceLocalMusicPlaylist(_ oldID: String, with playlist: LocalMusicPlaylist) {
+        localMusicPlaylists.removeAll { $0.id == oldID || $0.id == playlist.id }
+        localMusicPlaylists.append(playlist)
+        localMusicPlaylists.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private func handleLocalMusicPlaylistMutationError(_ error: Error, logPrefix: String) {
+        let message = error.localizedDescription
+        statusMessage = message
+        if (error as? LocalMusicPlaylistMutationError) != .duplicateTrack {
+            lastError = message
+        }
+        AppLogger.shared.error(category: "local-music", "\(logPrefix): \(message)")
     }
 
     func clearSessionQueue() {
@@ -2872,6 +3111,14 @@ final class OrbisonicViewModel: ObservableObject {
         return localMusicPlaylists.first { $0.id == selectedLocalMusicPlaylistID }
     }
 
+    var editableLocalMusicPlaylists: [LocalMusicPlaylist] {
+        localMusicPlaylists.filter(isEditableLocalMusicPlaylist)
+    }
+
+    func isEditableLocalMusicPlaylist(_ playlist: LocalMusicPlaylist) -> Bool {
+        localMusicLibrary.isEditablePlaylist(playlist)
+    }
+
     var currentQueueTrack: LocalMusicTrack? {
         guard let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex) else { return nil }
         return sessionQueue[sessionQueueIndex]
@@ -2980,6 +3227,11 @@ final class OrbisonicViewModel: ObservableObject {
     func applySpotifyNowPlayingForTesting(_ nowPlaying: SpotifyNowPlaying?) {
         lastSpotifyNowPlayingRefreshTime = .distantFuture
         updateSpotifyNowPlaying(nowPlaying, reason: "test")
+    }
+
+    func waitForSpotifyPlaybackStatusDebounceForTesting() async {
+        let task = spotifyPlaybackStatusDebounceTask
+        await task?.value
     }
 
     func setRoonNowPlayingForTesting(_ nowPlaying: RoonNowPlaying?) {
@@ -5100,8 +5352,7 @@ final class OrbisonicViewModel: ObservableObject {
                 inputRoute: inputRoute,
                 sourceName: liveInputSourceName,
                 rendererMode: liveRendererMode,
-                rendererPreset: rendererPreset,
-                directRendererAudioEnabled: shouldUseDirectRendererAudio(scene: rendererScene)
+                rendererPreset: rendererPreset
             )
             loadedFileName = liveSource.metadata.fileName
             sourceMetadata = liveSource.metadata
@@ -5545,7 +5796,7 @@ final class OrbisonicViewModel: ObservableObject {
         activeDiagnosticChannelIndex = nil
         activeDiagnosticChannelCount = 0
         activeDiagnosticWalkTitle = ""
-        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsUsingNormalMonitor = false
         rendererDiagnosticsMonitorDownmixAvailable = false
         diagnosticSequencePosition = 0
         currentTime = 0
@@ -5627,8 +5878,8 @@ final class OrbisonicViewModel: ObservableObject {
             details.append(status)
         }
 
-        if rendererDiagnosticsUsingMonitorPreview {
-            details.append("Output 2 is previewing through Output 1 Monitor.")
+        if rendererDiagnosticsUsingNormalMonitor {
+            details.append("Output 2 diagnostics are routed through Normal Monitor.")
         } else if rendererDiagnosticsMonitorDownmixAvailable {
             details.append("Output 1 Monitor downmix is active.")
         }
@@ -5701,7 +5952,7 @@ final class OrbisonicViewModel: ObservableObject {
         activeDiagnosticChannelIndex = nil
         activeDiagnosticChannelCount = 0
         activeDiagnosticWalkTitle = ""
-        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsUsingNormalMonitor = false
         rendererDiagnosticsMonitorDownmixAvailable = false
         diagnosticSequencePosition = 0
         meterStore.reset()
@@ -5753,9 +6004,9 @@ final class OrbisonicViewModel: ObservableObject {
         activeDiagnosticChannelCount = kind == .monitor ? monitorChannelWalkCount : rendererOutputChannelWalkCount
         diagnosticSequencePosition = 0
         testToneStatus = ""
-        if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
-            diagnosticWalkStatus = "Starting Output 2 Renderer channel walk as preview."
-            statusMessage = "Output 2 Renderer is not set. Previewing Output 2 Renderer channel walk through \(routeDisplayName)."
+        if rendererDiagnosticsUsingNormalMonitor, kind == .renderer {
+            diagnosticWalkStatus = "Starting Output 2 Renderer channel walk through Normal Monitor."
+            statusMessage = "Output 2 Renderer is not set. Routing Output 2 Renderer channel walk through Normal Monitor on \(routeDisplayName)."
         } else if kind == .monitor {
             diagnosticWalkStatus = "Starting Output 1 Local speakers direct stereo channel walk."
             statusMessage = "Running direct stereo Output 1 Local speakers channel walk through \(routeDisplayName)."
@@ -5766,7 +6017,7 @@ final class OrbisonicViewModel: ObservableObject {
 
         AppLogger.shared.notice(
             category: "diagnostics",
-            "Started \(kind.title) output=\(outputRoute.deviceName) channels=\(activeDiagnosticChannelCount) localPreview=\(rendererDiagnosticsUsingMonitorPreview) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
+            "Started \(kind.title) output=\(outputRoute.deviceName) channels=\(activeDiagnosticChannelCount) normalMonitor=\(rendererDiagnosticsUsingNormalMonitor) returnSource=\(diagnosticReturnContext?.sourceMode.rawValue ?? "none") wasPlaying=\(diagnosticReturnContext?.wasPlaying ?? false)"
         )
 
         diagnosticSequenceTask = Task { [weak self] in
@@ -5808,7 +6059,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func prepareDiagnosticOutput(for kind: DiagnosticChannelWalkKind) -> Bool {
-        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsUsingNormalMonitor = false
         rendererDiagnosticsMonitorDownmixAvailable = false
         try? engine.setDiagnosticMonitorOutputDevice(nil)
 
@@ -5816,46 +6067,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .monitor:
             return ensureOutputForAction(.monitor)
         case .renderer:
-            if rendererOutputSelection != .none {
-                guard ensureOutputForAction(.renderer) else { return false }
-                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix()
-                return true
-            }
-
-            rendererDiagnosticsUsingMonitorPreview = true
-            if monitorOutputRoute.isAvailable {
-                guard applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName) else { return false }
-                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: monitorOutputRoute)
-                guard rendererDiagnosticsMonitorDownmixAvailable else {
-                    statusMessage = "Output 1 Monitor downmix is unavailable."
-                    return false
-                }
-                return rendererDiagnosticsMonitorDownmixAvailable
-            }
-
-            let fallbackRoute = outputRoute.isAvailable ? outputRoute : systemOutputRoute
-            if fallbackRoute.isAvailable {
-                guard fallbackRoute.isSelectableOutputTarget else {
-                    let message = outputFeedbackMessage(for: fallbackRoute, purpose: .monitor)
-                    statusMessage = message
-                    lastError = message
-                    return false
-                }
-                outputRoute = fallbackRoute
-                syncRendererAudioRouting()
-                statusMessage = "Output 2 Renderer is not set; using \(fallbackRoute.deviceName) for Output 1 Monitor."
-                AppLogger.shared.notice(category: "diagnostics", "Output 2 Renderer diagnostic preview using fallback output=\(fallbackRoute.deviceName)")
-                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: fallbackRoute)
-                guard rendererDiagnosticsMonitorDownmixAvailable else {
-                    statusMessage = "Output 1 Monitor downmix is unavailable."
-                    return false
-                }
-                return rendererDiagnosticsMonitorDownmixAvailable
-            }
-
-            statusMessage = "Output 2 Renderer is not set and Output 1 Monitor is unavailable."
-            AppLogger.shared.notice(category: "diagnostics", "Renderer diagnostic preview unavailable; no explicit monitor output route.")
-            return false
+            return ensureOutputForAction(.monitor)
         }
     }
 
@@ -5895,7 +6107,7 @@ final class OrbisonicViewModel: ObservableObject {
             let playbackOptions = DiagnosticChannelPlaybackPolicy.options(
                 targetsRenderer: kind == .renderer,
                 rendererMonitorDownmixAvailable: rendererDiagnosticsMonitorDownmixAvailable,
-                rendererMonitorPreview: rendererDiagnosticsUsingMonitorPreview
+                rendererUsesNormalMonitor: rendererDiagnosticsUsingNormalMonitor
             )
             try engine.playDiagnosticChannelTone(
                 channelIndex: index,
@@ -5908,9 +6120,9 @@ final class OrbisonicViewModel: ObservableObject {
             activeDiagnosticChannelCount = total
             activeDiagnosticWalkTitle = kind.title
             diagnosticSequencePosition = index + 1
-            if rendererDiagnosticsUsingMonitorPreview, kind == .renderer {
+            if rendererDiagnosticsUsingNormalMonitor, kind == .renderer {
                 diagnosticWalkStatus = "Playing Output 2 Renderer channel \(index + 1) of \(total) as Output 1 Monitor downmix."
-                statusMessage = "Output 2 Renderer channel \(index + 1) preview is active on \(routeDisplayName)."
+                statusMessage = "Output 2 Renderer channel \(index + 1) is routed through Normal Monitor on \(routeDisplayName)."
             } else if playbackOptions.monitorDownmix {
                 diagnosticWalkStatus = "Playing Output 2 Renderer channel \(index + 1) of \(total) with Output 1 Monitor downmix."
                 statusMessage = "Output 2 Renderer channel \(index + 1) is active on \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)."
@@ -6099,65 +6311,20 @@ final class OrbisonicViewModel: ObservableObject {
 
     func playSelectedDiagnosticSpeakerTone() {
         refreshRoutesIfNeeded(force: true)
-        rendererDiagnosticsUsingMonitorPreview = false
+        rendererDiagnosticsUsingNormalMonitor = false
         rendererDiagnosticsMonitorDownmixAvailable = false
         try? engine.setDiagnosticMonitorOutputDevice(nil)
         beginDiagnosticPlaybackReplacingCurrent()
 
-        if rendererOutputSelection != .none {
-            guard ensureOutputForAction(.renderer) else {
-                restoreSourceAfterFailedDiagnosticStart()
-                return
-            }
-            rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix()
-        } else {
-            rendererDiagnosticsUsingMonitorPreview = true
-            if monitorOutputRoute.isAvailable {
-                guard applyOutputRouteIfAvailable(monitorOutputRoute, purpose: .monitor, label: monitorOutputRoute.deviceName) else {
-                    restoreSourceAfterFailedDiagnosticStart()
-                    return
-                }
-                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: monitorOutputRoute)
-            } else if outputRoute.isAvailable || systemOutputRoute.isAvailable {
-                let fallbackRoute = outputRoute.isAvailable ? outputRoute : systemOutputRoute
-                guard fallbackRoute.isSelectableOutputTarget else {
-                    let message = outputFeedbackMessage(for: fallbackRoute, purpose: .monitor)
-                    statusMessage = message
-                    lastError = message
-                    restoreSourceAfterFailedDiagnosticStart(
-                        diagnosticWalkStatus: message,
-                        testToneStatus: "Speaker test tone failed."
-                    )
-                    return
-                }
-                outputRoute = fallbackRoute
-                syncRendererAudioRouting()
-                rendererDiagnosticsMonitorDownmixAvailable = configureDiagnosticMonitorDownmix(on: fallbackRoute)
-            } else {
-                let message = "Output 2 Renderer is not set and Output 1 Monitor is unavailable."
-                statusMessage = message
-                restoreSourceAfterFailedDiagnosticStart(
-                    diagnosticWalkStatus: message,
-                    testToneStatus: "Speaker test tone failed."
-                )
-                return
-            }
-        }
-
-        if rendererDiagnosticsUsingMonitorPreview && !rendererDiagnosticsMonitorDownmixAvailable {
-            let message = "Output 2 Renderer is not set and Output 1 Monitor downmix is unavailable."
-            statusMessage = message
-            restoreSourceAfterFailedDiagnosticStart(
-                diagnosticWalkStatus: message,
-                testToneStatus: "Speaker test tone failed."
-            )
+        guard ensureOutputForAction(.monitor) else {
+            restoreSourceAfterFailedDiagnosticStart()
             return
         }
 
         let channel = clampedDiagnosticSpeakerChannel(selectedDiagnosticSpeakerChannel)
         selectDiagnosticSpeakerChannel(channel)
-        let monitorDownmix = rendererDiagnosticsMonitorDownmixAvailable
-        let primaryOutputEnabled = !rendererDiagnosticsUsingMonitorPreview
+        let monitorDownmix = false
+        let primaryOutputEnabled = true
 
         do {
             try engine.playDiagnosticChannelTone(
@@ -6171,18 +6338,14 @@ final class OrbisonicViewModel: ObservableObject {
             activeDiagnosticChannelIndex = channel - 1
             activeDiagnosticChannelCount = Self.diagnosticSpeakerChannelCount
             activeDiagnosticWalkTitle = "Test Tone"
-            testToneStatus = rendererDiagnosticsUsingMonitorPreview
-                ? "Playing channel \(channel) as Output 1 Monitor downmix."
-                : (monitorDownmix ? "Playing channel \(channel) on Output 2 Renderer with Output 1 Monitor downmix." : "Playing channel \(channel) on Output 2 Renderer.")
-            statusMessage = rendererDiagnosticsUsingMonitorPreview
-                ? "Output 2 Renderer is not set. Channel \(channel) is previewing through \(routeDisplayName)."
-                : (monitorDownmix ? "Channel \(channel) tone is active on \(routeDisplayName); Output 1 Monitor downmix is on \(monitorOutputRoute.deviceName)." : "Channel \(channel) tone is active on \(routeDisplayName).")
+            testToneStatus = "Playing channel \(channel) through Normal Monitor."
+            statusMessage = "Channel \(channel) tone is active through Normal Monitor on \(routeDisplayName)."
 
             applyRendererDiagnosticMeterLevels(index: channel - 1, monitorDownmixActive: monitorDownmix)
 
             AppLogger.shared.notice(
                 category: "diagnostics",
-                "Started speaker test tone channel=\(channel)/\(Self.diagnosticSpeakerChannelCount) localPreview=\(rendererDiagnosticsUsingMonitorPreview) output=\(outputRoute.deviceName)"
+                "Started speaker test tone channel=\(channel)/\(Self.diagnosticSpeakerChannelCount) normalMonitor=\(rendererDiagnosticsUsingNormalMonitor) output=\(outputRoute.deviceName)"
             )
         } catch {
             AppLogger.shared.error(category: "diagnostics", "Speaker test tone failed: \(error.localizedDescription)")
@@ -6256,58 +6419,29 @@ final class OrbisonicViewModel: ObservableObject {
         reason: String,
         persistRequestedMode: Bool = true
     ) {
-        let nextScene = rendererScene(forRequestedMode: nextMode)
-        guard rendererRenderMode != nextMode || rendererScene != nextScene else { return }
-
-        let wasUsingDirectRendererAudio = shouldUseDirectRendererAudio(scene: rendererScene)
-        let willUseDirectRendererAudio = shouldUseDirectRendererAudio(scene: nextScene)
-        let changesActiveAudioGraph = wasUsingDirectRendererAudio || willUseDirectRendererAudio
-        let shouldResumeFilePlayback = sourceMode == .filePlayback && isPlaying && changesActiveAudioGraph
-        let shouldRestartLiveInput = sourceMode.isLiveInput && isPlaying && changesActiveAudioGraph
-        let wasLiveMuted = liveMonitorState.isMuted
-        let playbackProgress = duration > 0 ? currentTime / duration : scrubProgress
-
-        if shouldResumeFilePlayback || shouldRestartLiveInput {
-            engine.stop()
-            isPlaying = false
-            if shouldRestartLiveInput {
-                liveMonitorState = .stopped
-            }
+        let requestedMode: RendererRenderMode
+        switch nextMode {
+        case .direct30, .direct31:
+            requestedMode = .automatic
+        default:
+            requestedMode = nextMode
         }
 
-        rendererRenderMode = nextMode
+        let nextScene = rendererScene(forRequestedMode: requestedMode)
+        guard rendererRenderMode != requestedMode || rendererScene != nextScene else { return }
+
+        rendererRenderMode = requestedMode
         if persistRequestedMode {
             persistRendererRenderMode()
         }
         rendererScene = nextScene
         syncRendererAudioRouting()
         configureRendererMeters()
-        statusMessage = rendererModeStatusMessage(requestedMode: nextMode)
+        statusMessage = rendererModeStatusMessage(requestedMode: requestedMode)
         AppLogger.shared.notice(
             category: "renderer",
-            "Renderer mode changed reason=\(reason) requested=\(nextMode.rawValue) effective=\(nextScene.requestedRenderMode.rawValue) resolved=\(nextScene.renderMode.rawValue)"
+            "Renderer mode changed reason=\(reason) requested=\(requestedMode.rawValue) effective=\(nextScene.requestedRenderMode.rawValue) resolved=\(nextScene.renderMode.rawValue)"
         )
-
-        if shouldRestartLiveInput {
-            startLiveInputForCurrentRoute(reason: "renderer mode changed", resetRendererMode: false)
-            if wasLiveMuted {
-                muteLiveMonitor()
-            }
-            return
-        }
-
-        if shouldResumeFilePlayback {
-            do {
-                engine.seek(toProgress: playbackProgress)
-                guard prepareOutputForMusicPlayback() else { return }
-                try engine.play()
-                isPlaying = true
-                statusMessage = "Playing through \(routeDisplayName) with \(rendererScene.renderMode.displayName)."
-            } catch {
-                AppLogger.shared.error(category: "ui", "Renderer mode resume failed: \(error.localizedDescription)")
-                lastError = error.localizedDescription
-            }
-        }
     }
 
     func resetRendererTuning() {
@@ -6426,7 +6560,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     var renderFlowTitle: String {
         if sourceMode == .testTone {
-            return "Test tone -> selected renderer path"
+            return "Test tone -> Normal Monitor"
         }
 
         guard let metadata = visibleLocalSourceMetadata else {
@@ -6434,16 +6568,16 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         if sourceMode == .roon {
-            return "\(metadata.layoutName) live -> binaural spatial render"
+            return "\(metadata.layoutName) live -> Normal Monitor stereo downmix"
         }
 
         switch metadata.channelCount {
         case 1:
-            return "Mono -> centered object render"
+            return "Mono -> Normal Monitor stereo downmix"
         case 2:
-            return "Stereo -> widened headphone field"
+            return "Stereo -> Normal Monitor"
         default:
-            return "\(metadata.layoutName) -> binaural spatial fold-down"
+            return "\(metadata.layoutName) -> Normal Monitor stereo downmix"
         }
     }
 
@@ -6455,10 +6589,10 @@ final class OrbisonicViewModel: ObservableObject {
             return sourceMode.isLiveInput ? liveInputReadinessText : "No source loaded."
         }
 
-        let objectText = metadata.channelCount == 1
-            ? "1 placed source"
-            : "\(metadata.channelCount) placed sources"
-        return sourceMode.isLiveInput ? "\(objectText) • live capture" : "\(objectText) • local player"
+        let sourceText = metadata.channelCount == 1
+            ? "1 decoded channel"
+            : "\(metadata.channelCount) decoded channels"
+        return sourceMode.isLiveInput ? "\(sourceText) • live capture" : "\(sourceText) • local player"
     }
 
     var routeFlowTitle: String {
@@ -6638,8 +6772,8 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var diagnosticOutput2PathText: String {
-        if rendererDiagnosticsUsingMonitorPreview {
-            return "Monitor preview"
+        if rendererDiagnosticsUsingNormalMonitor {
+            return "Normal Monitor"
         }
         if rendererOutputRoute.isAvailable {
             return "Real renderer output"
@@ -6652,7 +6786,7 @@ final class OrbisonicViewModel: ObservableObject {
             return "Available on \(monitorOutputRoute.deviceName)"
         }
         if monitorOutputRoute.isAvailable {
-            return "Available when Output 2 diagnostics need monitor preview"
+            return "Available when Output 2 diagnostics use Normal Monitor"
         }
         return "Unavailable"
     }
@@ -7878,11 +8012,11 @@ final class OrbisonicViewModel: ObservableObject {
                 currentTime = nextTime
             }
 
-            let levels = engine.channelMeterLevels()
-            let audibleLevels = liveMonitorState.isMuted ? [] : levels
-            meterStore.update(with: levels)
-            updateMonitorMeters(from: audibleLevels)
-            updateRendererMeters(from: audibleLevels)
+            let inputLevels = engine.inputMeterLevels()
+            let levels = inputLevels.map(\.displayLevel)
+            meterStore.update(with: inputLevels, isActive: inputLevels.contains { $0.peakDbFS > -96 })
+            updateMonitorMeters()
+            updateRendererMeters()
 
             let wholeSecond = Int(nextTime.rounded(.down))
             updateLiveBufferStatus(elapsedSecond: wholeSecond)
@@ -7928,10 +8062,10 @@ final class OrbisonicViewModel: ObservableObject {
             }
         }
 
-        let levels = engine.channelMeterLevels()
-        meterStore.update(with: levels)
-        updateMonitorMeters(from: levels)
-        updateRendererMeters(from: levels)
+        let inputLevels = engine.inputMeterLevels()
+        meterStore.update(with: inputLevels, isActive: inputLevels.contains { $0.peakDbFS > -96 })
+        updateMonitorMeters()
+        updateRendererMeters()
     }
 
     private func refreshRoutesIfNeeded(force: Bool = false) {
@@ -8272,19 +8406,6 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
-    private var shouldUseDirectRendererAudio: Bool {
-        shouldUseDirectRendererAudio(scene: rendererScene)
-    }
-
-    private func shouldUseDirectRendererAudio(scene: RendererSceneModel) -> Bool {
-        RendererAudioRoutingPolicy.usesDirectRendererAudio(
-            renderMode: scene.renderMode,
-            activeOutputRoute: outputRoute,
-            rendererOutputRoute: rendererOutputRoute,
-            requiredOutputChannelCount: rendererOutputChannelRequirement(for: scene)
-        )
-    }
-
     private var rendererOutputChannelRequirement: Int {
         rendererOutputChannelRequirement(for: rendererScene)
     }
@@ -8304,8 +8425,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func syncRendererAudioRouting() {
         engine.updateRenderer(
             mode: rendererScene.renderMode,
-            scene: rendererScene,
-            directRendererAudioEnabled: shouldUseDirectRendererAudio
+            scene: rendererScene
         )
     }
 
@@ -8313,15 +8433,12 @@ final class OrbisonicViewModel: ObservableObject {
         monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: monitorChannelWalkCount).channels)
     }
 
-    private func updateMonitorMeters(from sourceLevels: [Float]) {
+    private func updateMonitorMeters(from sourceLevels: [Float] = []) {
+        _ = sourceLevels
         let channelCount = monitorChannelWalkCount
-        let paddedLevels = MonitorMeterDisplayModel.levels(
-            tappedLevels: engine.monitorMeterLevels(),
-            sourceLevels: sourceLevels,
-            channelCount: channelCount
-        )
+        let meterLevels = engine.monitorMeterChannelLevels(channelCount: channelCount)
         monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: channelCount).channels)
-        monitorMeterStore.update(with: paddedLevels)
+        monitorMeterStore.update(with: meterLevels, isActive: meterLevels.contains { $0.peakDbFS > -96 })
     }
 
     private func configureRendererMeters() {
@@ -8354,16 +8471,16 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
-    private func updateRendererMeters(from sourceLevels: [Float]) {
+    private func updateRendererMeters(from sourceLevels: [Float] = []) {
+        _ = sourceLevels
         let channels = rendererMeterChannels()
         guard !channels.isEmpty else { return }
 
-        updateRenderedMeterStore(
-            rendererMeterStore,
-            channels: channels,
-            scene: rendererScene,
-            sourceLevels: sourceLevels
-        )
+        rendererMeterStore.configureIfNeeded(channels: channels)
+        let meterLevels = engine.sonicSphereMeterLevels(channelCount: channels.count)
+        let isActive = engine.sonicSphereMeterIsActive()
+        sonicSphereMeterActive = isActive
+        rendererMeterStore.update(with: meterLevels, isActive: isActive)
     }
 
     private func updateRenderedMeterStore(

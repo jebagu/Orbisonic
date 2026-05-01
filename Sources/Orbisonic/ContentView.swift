@@ -4,7 +4,6 @@ import SwiftUI
 
 enum StageTab: String, CaseIterable, Identifiable {
     case input = "Input"
-    case routing = "Routing"
     case renderer = "Renderer"
     case output = "Output"
     case analyzerVU = "VU"
@@ -270,31 +269,19 @@ enum RoonPlayerRowsModel {
 }
 
 private struct VUMeterAppearance {
-    let visualGain: Double
-    let activityCompression: Double
     let elementScale: Double
     let maxSizeRatio: Double
     let outlineWeight: Double
+    let labelGapScale: Double
     let colorMode: VUMeterColorMode
-    let normalizesVisualEnergy: Bool
 
     static let `default` = VUMeterAppearance(
-        visualGain: 1,
-        activityCompression: 0.65,
         elementScale: 1,
         maxSizeRatio: 3,
         outlineWeight: 1,
-        colorMode: .systemGreen,
-        normalizesVisualEnergy: true
+        labelGapScale: 1,
+        colorMode: .systemGreen
     )
-
-    var resolvedVisualGain: Double {
-        min(max(visualGain, 0.25), 12)
-    }
-
-    var resolvedActivityCompression: Double {
-        min(max(activityCompression, 0), 1)
-    }
 
     var resolvedElementScale: Double {
         min(max(elementScale, 0.6), 9.0)
@@ -308,6 +295,10 @@ private struct VUMeterAppearance {
         CGFloat(min(max(outlineWeight, 0.5), 3))
     }
 
+    var resolvedLabelGapScale: CGFloat {
+        CGFloat(min(max(labelGapScale, 0.45), 1.35))
+    }
+
     var resolvedPanelFillScale: CGFloat {
         let normalized = log(resolvedElementScale / 0.6) / log(9.0 / 0.6)
         return CGFloat(0.35 + min(max(normalized, 0), 1) * 0.65)
@@ -316,26 +307,13 @@ private struct VUMeterAppearance {
 
 private enum VUMeterControlScale {
     static let sliderRange: ClosedRange<Double> = -10...10
-    static let inputGainCenter = 0.8024107461495135
-    static let monitorGainCenter = 1.048937176783776
-    static let rendererGainCenter = 3.025362846691562
-    static let activityCompressionCenter = 0.0
     static let elementScaleCenter = 6.733140080428954
     static let maxSizeRatioCenter = 14.66689430312875
     static let outlineWeightCenter = 1.339100201072386
+    static let labelGapScaleCenter = 1.0
 
     static func clampedOffset(_ value: Double) -> Double {
         min(max(value, sliderRange.lowerBound), sliderRange.upperBound)
-    }
-
-    static func gain(center: Double, offset: Double) -> Double {
-        let multiplier = pow(2.0, clampedOffset(offset) / 10.0 * 1.35)
-        return min(max(center * multiplier, 0.25), 12.0)
-    }
-
-    static func activityCompression(offset: Double) -> Double {
-        let positive = max(clampedOffset(offset), 0) / 10.0
-        return min(max(activityCompressionCenter + positive * 0.85, 0), 1)
     }
 
     static func elementScale(offset: Double) -> Double {
@@ -350,6 +328,14 @@ private enum VUMeterControlScale {
 
     static func outlineWeight(offset: Double) -> Double {
         min(max(outlineWeightCenter + clampedOffset(offset) * 0.085, 0.5), 3.0)
+    }
+
+    static func labelGapScale(offset: Double) -> Double {
+        let offset = clampedOffset(offset)
+        if offset < 0 {
+            return labelGapScaleCenter + offset / 10.0 * 0.55
+        }
+        return labelGapScaleCenter + offset / 10.0 * 0.35
     }
 }
 
@@ -544,21 +530,26 @@ struct ContentView: View {
     @State private var selectedLocalMusicPanel: LocalMusicPanel = .music
     @AppStorage("Orbisonic.vuMeterStyle") private var selectedVUMeterStyle: VUMeterVisualStyle = .verticalBars
     @AppStorage("Orbisonic.audioMotionVUStyle") private var selectedAudioMotionVUStyle: AudioMotionVUStyle = .prismGlow
-    @AppStorage("Orbisonic.vuMeterInputVisualGainOffset") private var vuMeterInputVisualGain = 0.0
-    @AppStorage("Orbisonic.vuMeterMonitorVisualGainOffset") private var vuMeterMonitorVisualGain = 0.0
-    @AppStorage("Orbisonic.vuMeterRendererVisualGainOffset") private var vuMeterRendererVisualGain = 0.0
-    @AppStorage("Orbisonic.vuMeterActivityCompressionOffset") private var vuMeterActivityCompression = 0.0
+    @AppStorage("Orbisonic.vuMeterReferenceDbFS") private var vuMeterReferenceDbFS = VUMeterCalibrationSettings.default.referenceDbFS
+    @AppStorage("Orbisonic.vuMeterResponseMode") private var vuMeterResponseMode: VUMeterResponseMode = .standard
+    @AppStorage("Orbisonic.vuMeterMonitorTrimDb") private var vuMeterMonitorTrimDb = VUMeterCalibrationSettings.default.monitorTrimDb
+    @AppStorage("Orbisonic.vuMeterSonicSphereTrimDb") private var vuMeterSonicSphereTrimDb = VUMeterCalibrationSettings.default.sonicSphereTrimDb
     @AppStorage("Orbisonic.vuMeterElementScaleOffset") private var vuMeterElementScale = 0.0
     @AppStorage("Orbisonic.vuMeterMaxSizeRatioOffset") private var vuMeterMaxSizeRatio = 0.0
     @AppStorage("Orbisonic.vuMeterOutlineWeightOffset") private var vuMeterOutlineWeight = 0.0
+    @AppStorage("Orbisonic.vuMeterLabelGapOffset") private var vuMeterLabelGapOffset = 0.0
     @AppStorage("Orbisonic.vuMeterColorMode") private var vuMeterColorMode: VUMeterColorMode = .classic
-    @AppStorage("Orbisonic.vuMeterNormalizesVisualEnergy") private var vuMeterNormalizesVisualEnergy = false
     @AppStorage("Orbisonic.vuMeterScaleVersion") private var vuMeterScaleVersion = 0
     @State private var showsLoopbackSetupDialog = false
-    @State private var routingVUOptionsExpanded = false
-    @State private var analyzerVUSettingsExpanded = false
+    @State private var vuOptionsExpanded = false
     @State private var showsSaveQueuePlaylistDialog = false
     @State private var saveQueuePlaylistName = ""
+    @State private var showsNewPlaylistDialog = false
+    @State private var newPlaylistName = ""
+    @State private var newPlaylistTrack: LocalMusicTrack?
+    @State private var showsRenamePlaylistDialog = false
+    @State private var renamePlaylistName = ""
+    @State private var playlistPendingRename: LocalMusicPlaylist?
     private let outputLanePanelMinHeight: CGFloat = 118
     private let outputLaneLabelColumnWidth: CGFloat = 112
     private let outputLaneColumnSpacing: CGFloat = 12
@@ -611,12 +602,18 @@ struct ContentView: View {
         }
         .onAppear {
             migrateCenteredVUMeterDefaultsIfNeeded()
+            applyVUMeterCalibration()
             if !hasConfirmedLoopbackSetup {
                 showsLoopbackSetupDialog = true
             }
         }
+        .onChange(of: vuMeterReferenceDbFS) { _, _ in applyVUMeterCalibration() }
+        .onChange(of: vuMeterResponseMode) { _, _ in applyVUMeterCalibration() }
+        .onChange(of: vuMeterMonitorTrimDb) { _, _ in applyVUMeterCalibration() }
+        .onChange(of: vuMeterSonicSphereTrimDb) { _, _ in applyVUMeterCalibration() }
         .sheet(isPresented: $showsSaveQueuePlaylistDialog) {
             SavePlaylistDialog(
+                title: "Save Queue as Playlist",
                 name: $saveQueuePlaylistName,
                 onCancel: {
                     showsSaveQueuePlaylistDialog = false
@@ -624,6 +621,44 @@ struct ContentView: View {
                 onSave: {
                     model.saveSessionQueueAsPlaylist(named: saveQueuePlaylistName)
                     showsSaveQueuePlaylistDialog = false
+                }
+            )
+        }
+        .sheet(isPresented: $showsNewPlaylistDialog) {
+            SavePlaylistDialog(
+                title: "New Playlist",
+                primaryActionTitle: "Create",
+                name: $newPlaylistName,
+                onCancel: {
+                    showsNewPlaylistDialog = false
+                    newPlaylistTrack = nil
+                },
+                onSave: {
+                    if let track = newPlaylistTrack {
+                        model.addLocalMusicTrackToNewPlaylist(track, named: newPlaylistName)
+                    } else {
+                        model.createLocalMusicPlaylist(named: newPlaylistName)
+                    }
+                    showsNewPlaylistDialog = false
+                    newPlaylistTrack = nil
+                }
+            )
+        }
+        .sheet(isPresented: $showsRenamePlaylistDialog) {
+            SavePlaylistDialog(
+                title: "Rename Playlist",
+                primaryActionTitle: "Rename",
+                name: $renamePlaylistName,
+                onCancel: {
+                    showsRenamePlaylistDialog = false
+                    playlistPendingRename = nil
+                },
+                onSave: {
+                    if let playlist = playlistPendingRename {
+                        model.renameLocalMusicPlaylist(playlist, named: renamePlaylistName)
+                    }
+                    showsRenamePlaylistDialog = false
+                    playlistPendingRename = nil
                 }
             )
         }
@@ -670,14 +705,12 @@ struct ContentView: View {
         switch selectedStageTab {
         case .input:
             stageViewport { inputTab }
-        case .routing:
-            stageViewport { routingTab }
         case .renderer:
             stageViewport { rendererTab }
         case .output:
             stageViewport { outputTab }
         case .analyzerVU:
-            stageViewport(scrolls: false) { analyzerVUTab }
+            stageViewport { analyzerVUTab }
         case .localMusic:
             stageViewport(scrolls: false) { localMusicTab }
         case .diagnostics:
@@ -713,16 +746,27 @@ struct ContentView: View {
     }
 
     private func migrateCenteredVUMeterDefaultsIfNeeded() {
-        guard vuMeterScaleVersion < 2 else { return }
-        vuMeterInputVisualGain = 0
-        vuMeterMonitorVisualGain = 0
-        vuMeterRendererVisualGain = 0
-        vuMeterActivityCompression = 0
+        guard VUMeterDefaultsMigration.migrate(defaults: .standard) else { return }
+        vuMeterReferenceDbFS = VUMeterCalibrationSettings.default.referenceDbFS
+        vuMeterResponseMode = VUMeterCalibrationSettings.default.responseMode
+        vuMeterMonitorTrimDb = VUMeterCalibrationSettings.default.monitorTrimDb
+        vuMeterSonicSphereTrimDb = VUMeterCalibrationSettings.default.sonicSphereTrimDb
         vuMeterElementScale = 0
         vuMeterMaxSizeRatio = 0
         vuMeterOutlineWeight = 0
-        vuMeterScaleVersion = 2
-        AppLogger.shared.notice(category: "settings", "Migrated VU slider offsets to centered defaults.")
+        vuMeterScaleVersion = VUMeterDefaultsMigration.currentScaleVersion
+        AppLogger.shared.notice(category: "settings", "Migrated VU meter signal calibration defaults.")
+    }
+
+    private func applyVUMeterCalibration() {
+        model.updateVUMeterCalibration(
+            VUMeterCalibrationSettings(
+                referenceDbFS: vuMeterReferenceDbFS,
+                responseMode: vuMeterResponseMode,
+                monitorTrimDb: vuMeterMonitorTrimDb,
+                sonicSphereTrimDb: vuMeterSonicSphereTrimDb
+            )
+        )
     }
 
     private var inputTab: some View {
@@ -741,13 +785,13 @@ struct ContentView: View {
             routingCompactMeters
 
             OrbisonicDisclosureTray(
-                isExpanded: $routingVUOptionsExpanded,
+                isExpanded: $vuOptionsExpanded,
                 title: "VU Options",
                 systemImage: "slider.horizontal.3",
                 trailingSummary: selectedAudioMotionVUStyle.rawValue
             ) {
                 analyzerVUStylePicker
-                vuMeterVisualGainSliders
+                vuMeterCalibrationControls
                 vuMeterAppearanceSliders
             }
         }
@@ -756,38 +800,53 @@ struct ContentView: View {
 
     private var analyzerVUTab: some View {
         VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                AudioMotionVUMeterPanel(
+                    title: "Input",
+                    subtitle: "",
+                    style: selectedAudioMotionVUStyle,
+                    appearance: inputVUMeterAppearance,
+                    meterStore: model.meterStore,
+                    minMeterHeight: 160,
+                    showsMeterPills: false
+                )
+
+                AudioMotionVUMeterPanel(
+                    title: "Monitor",
+                    subtitle: "",
+                    style: selectedAudioMotionVUStyle,
+                    appearance: monitorVUMeterAppearance,
+                    meterStore: model.monitorMeterStore,
+                    minMeterHeight: 160,
+                    showsMeterPills: false
+                )
+            }
+
             AudioMotionVUMeterPanel(
-                title: "Sonic Sphere VU meter",
+                title: "Sonic Sphere",
                 subtitle: "",
                 style: selectedAudioMotionVUStyle,
                 appearance: rendererVUMeterAppearance,
                 meterStore: model.rendererMeterStore,
-                minMeterHeight: 300,
-                maxMeterHeight: .infinity
+                minMeterHeight: 260,
+                showsMeterPills: false
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            analyzerVUSettingsPanel
+            vuOptionsPanel
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var analyzerVUSettingsPanel: some View {
+    private var vuOptionsPanel: some View {
         OrbisonicDisclosureTray(
-            isExpanded: $analyzerVUSettingsExpanded,
-            title: "Meter Settings",
+            isExpanded: $vuOptionsExpanded,
+            title: "VU Options",
             systemImage: "slider.horizontal.3",
             trailingSummary: selectedAudioMotionVUStyle.rawValue
         ) {
             analyzerVUStylePicker
-            vuSliderRow(
-                title: "Output 2 Renderer Visual Gain",
-                valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
-                lowText: "-10",
-                highText: "+10",
-                binding: rendererVUMeterVisualGainBinding,
-                range: VUMeterControlScale.sliderRange
-            )
+            vuMeterCalibrationControls
+            vuMeterAppearanceSliders
         }
     }
 
@@ -1432,58 +1491,28 @@ struct ContentView: View {
     }
 
     private var inputVUMeterAppearance: VUMeterAppearance {
-        vuMeterAppearance(visualGain: VUMeterControlScale.gain(center: VUMeterControlScale.inputGainCenter, offset: vuMeterInputVisualGain))
+        vuMeterAppearance()
     }
 
     private var monitorVUMeterAppearance: VUMeterAppearance {
-        vuMeterAppearance(visualGain: VUMeterControlScale.gain(center: VUMeterControlScale.monitorGainCenter, offset: vuMeterMonitorVisualGain))
+        vuMeterAppearance()
     }
 
     private var rendererVUMeterAppearance: VUMeterAppearance {
-        vuMeterAppearance(visualGain: VUMeterControlScale.gain(center: VUMeterControlScale.rendererGainCenter, offset: vuMeterRendererVisualGain))
+        vuMeterAppearance()
     }
 
     private var previewVUMeterAppearance: VUMeterAppearance {
         rendererVUMeterAppearance
     }
 
-    private func vuMeterAppearance(visualGain: Double) -> VUMeterAppearance {
+    private func vuMeterAppearance() -> VUMeterAppearance {
         VUMeterAppearance(
-            visualGain: visualGain,
-            activityCompression: VUMeterControlScale.activityCompression(offset: vuMeterActivityCompression),
             elementScale: VUMeterControlScale.elementScale(offset: vuMeterElementScale),
             maxSizeRatio: VUMeterControlScale.maxSizeRatio(offset: vuMeterMaxSizeRatio),
             outlineWeight: VUMeterControlScale.outlineWeight(offset: vuMeterOutlineWeight),
-            colorMode: vuMeterColorMode,
-            normalizesVisualEnergy: vuMeterNormalizesVisualEnergy
-        )
-    }
-
-    private var inputVUMeterVisualGainBinding: Binding<Double> {
-        Binding(
-            get: { VUMeterControlScale.clampedOffset(vuMeterInputVisualGain) },
-            set: { vuMeterInputVisualGain = VUMeterControlScale.clampedOffset($0) }
-        )
-    }
-
-    private var monitorVUMeterVisualGainBinding: Binding<Double> {
-        Binding(
-            get: { VUMeterControlScale.clampedOffset(vuMeterMonitorVisualGain) },
-            set: { vuMeterMonitorVisualGain = VUMeterControlScale.clampedOffset($0) }
-        )
-    }
-
-    private var rendererVUMeterVisualGainBinding: Binding<Double> {
-        Binding(
-            get: { VUMeterControlScale.clampedOffset(vuMeterRendererVisualGain) },
-            set: { vuMeterRendererVisualGain = VUMeterControlScale.clampedOffset($0) }
-        )
-    }
-
-    private var vuMeterActivityCompressionBinding: Binding<Double> {
-        Binding(
-            get: { VUMeterControlScale.clampedOffset(vuMeterActivityCompression) },
-            set: { vuMeterActivityCompression = VUMeterControlScale.clampedOffset($0) }
+            labelGapScale: VUMeterControlScale.labelGapScale(offset: vuMeterLabelGapOffset),
+            colorMode: vuMeterColorMode
         )
     }
 
@@ -1508,6 +1537,34 @@ struct ContentView: View {
         )
     }
 
+    private var vuMeterLabelGapBinding: Binding<Double> {
+        Binding(
+            get: { VUMeterControlScale.clampedOffset(vuMeterLabelGapOffset) },
+            set: { vuMeterLabelGapOffset = VUMeterControlScale.clampedOffset($0) }
+        )
+    }
+
+    private var vuMeterReferenceDbFSBinding: Binding<Double> {
+        Binding(
+            get: { min(max(vuMeterReferenceDbFS, VUMeterCalibrationSettings.referenceRange.lowerBound), VUMeterCalibrationSettings.referenceRange.upperBound) },
+            set: { vuMeterReferenceDbFS = min(max($0, VUMeterCalibrationSettings.referenceRange.lowerBound), VUMeterCalibrationSettings.referenceRange.upperBound) }
+        )
+    }
+
+    private var vuMeterMonitorTrimDbBinding: Binding<Double> {
+        Binding(
+            get: { min(max(vuMeterMonitorTrimDb, VUMeterCalibrationSettings.trimRange.lowerBound), VUMeterCalibrationSettings.trimRange.upperBound) },
+            set: { vuMeterMonitorTrimDb = min(max($0, VUMeterCalibrationSettings.trimRange.lowerBound), VUMeterCalibrationSettings.trimRange.upperBound) }
+        )
+    }
+
+    private var vuMeterSonicSphereTrimDbBinding: Binding<Double> {
+        Binding(
+            get: { min(max(vuMeterSonicSphereTrimDb, VUMeterCalibrationSettings.trimRange.lowerBound), VUMeterCalibrationSettings.trimRange.upperBound) },
+            set: { vuMeterSonicSphereTrimDb = min(max($0, VUMeterCalibrationSettings.trimRange.lowerBound), VUMeterCalibrationSettings.trimRange.upperBound) }
+        )
+    }
+
     private var inputVUMeterSubtitle: String {
         let sourceText = model.sourceMode.isLiveInput ? model.inputRoute.displayName : model.loadedFileName
         let count = model.meterStore.channelMeters.count
@@ -1521,6 +1578,9 @@ struct ContentView: View {
 
     private var rendererVUMeterSubtitle: String {
         let count = model.rendererMeterStore.channelMeters.count
+        if !model.sonicSphereMeterActive {
+            return "\(model.rendererText) • no measured Sonic Sphere bus"
+        }
         return "\(model.rendererText) • \(count) renderer outputs"
     }
 
@@ -2720,40 +2780,119 @@ struct ContentView: View {
 
     private var localMusicPlaylistsPanel: some View {
         settingsPanel(title: "Playlists", fillsHeight: true) {
-            HStack(spacing: 10) {
-                Button(action: { model.addSelectedLocalMusicPlaylistToQueue(shuffle: false) }) {
-                    Label("Add to Queue", systemImage: "text.badge.plus")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LabButtonStyle(isActive: true))
-            }
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button(action: { beginCreatePlaylist() }) {
+                        Label("New Playlist", systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LabButtonStyle(isActive: true))
 
-            infoRow(title: "Playlists", value: model.localMusicPlaylistCountText)
+                    infoRow(title: "Playlists", value: model.localMusicPlaylistCountText)
 
-            ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(spacing: 6) {
-                    ForEach(model.localMusicPlaylists) { playlist in
-                        Button {
-                            model.selectedLocalMusicPlaylistID = playlist.id
-                        } label: {
-                            playlistLibraryRow(
-                                playlist,
-                                trackCount: model.tracks(for: playlist).count,
-                                isSelected: model.selectedLocalMusicPlaylistID == playlist.id
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button("Add to Queue") {
-                                model.addLocalMusicPlaylistToQueue(playlist, shuffle: false)
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(spacing: 6) {
+                            ForEach(model.localMusicPlaylists) { playlist in
+                                let isEditable = model.isEditableLocalMusicPlaylist(playlist)
+                                Button {
+                                    model.selectedLocalMusicPlaylistID = playlist.id
+                                } label: {
+                                    playlistLibraryRow(
+                                        playlist,
+                                        trackCount: playlist.trackPaths.count,
+                                        isSelected: model.selectedLocalMusicPlaylistID == playlist.id,
+                                        isEditable: isEditable
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button("Play Playlist") {
+                                        model.playLocalMusicPlaylist(playlist, shuffle: false)
+                                    }
+                                    Button("Queue Playlist") {
+                                        model.addLocalMusicPlaylistToQueue(playlist, shuffle: false)
+                                    }
+                                    if isEditable {
+                                        Divider()
+                                        Button("Rename Playlist") {
+                                            beginRenamePlaylist(playlist)
+                                        }
+                                    }
+                                }
                             }
                         }
+                        .padding(8)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(localMusicListBackground)
                 }
-                .padding(8)
+                .frame(width: 278)
+
+                localMusicSelectedPlaylistPanel
+                    .frame(maxWidth: .infinity)
+                }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    @ViewBuilder
+    private var localMusicSelectedPlaylistPanel: some View {
+        if let playlist = model.selectedLocalMusicPlaylist {
+            let isEditable = model.isEditableLocalMusicPlaylist(playlist)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Button(action: { model.playLocalMusicPlaylist(playlist, shuffle: false) }) {
+                        Label("Play Playlist", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LabButtonStyle(isActive: true))
+                    .disabled(playlist.trackPaths.isEmpty)
+
+                    Button(action: { model.addLocalMusicPlaylistToQueue(playlist, shuffle: false) }) {
+                        Label("Queue Playlist", systemImage: "text.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LabButtonStyle())
+                    .disabled(playlist.trackPaths.isEmpty)
+
+                    Button(action: { beginRenamePlaylist(playlist) }) {
+                        Label("Rename", systemImage: "pencil")
+                            .frame(width: 104)
+                    }
+                    .buttonStyle(LabButtonStyle())
+                    .disabled(!isEditable)
+                }
+
+                infoRow(
+                    title: playlist.name,
+                    value: "\(playlist.trackPaths.count) track\(playlist.trackPaths.count == 1 ? "" : "s") • \(isEditable ? "Editable" : "Read-only")"
+                )
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(spacing: 6) {
+                        ForEach(Array(playlist.trackPaths.enumerated()), id: \.offset) { index, path in
+                            playlistTrackRow(
+                                track: model.localMusicTracks.first { $0.path == path },
+                                path: path,
+                                playlist: playlist,
+                                index: index,
+                                trackCount: playlist.trackPaths.count,
+                                isEditable: isEditable
+                            )
+                        }
+                    }
+                    .padding(8)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(localMusicListBackground)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(localMusicListBackground)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                infoRow(title: "Selected Playlist", value: "Choose a playlist.")
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -2770,8 +2909,8 @@ struct ContentView: View {
                 .disabled(model.sessionQueue.isEmpty)
 
                 Button(action: beginSaveSessionQueuePlaylist) {
-                    Label("Save Playlist", systemImage: "square.and.arrow.down")
-                        .frame(width: 124)
+                    Label("Save Queue as Playlist", systemImage: "square.and.arrow.down")
+                        .frame(width: 176)
                 }
                 .buttonStyle(LabButtonStyle(isActive: true))
                 .disabled(model.sessionQueue.isEmpty)
@@ -2799,6 +2938,18 @@ struct ContentView: View {
     private func beginSaveSessionQueuePlaylist() {
         saveQueuePlaylistName = Self.defaultQueuePlaylistName()
         showsSaveQueuePlaylistDialog = true
+    }
+
+    private func beginCreatePlaylist(for track: LocalMusicTrack? = nil) {
+        newPlaylistTrack = track
+        newPlaylistName = "New Playlist"
+        showsNewPlaylistDialog = true
+    }
+
+    private func beginRenamePlaylist(_ playlist: LocalMusicPlaylist) {
+        playlistPendingRename = playlist
+        renamePlaylistName = playlist.name
+        showsRenamePlaylistDialog = true
     }
 
     private static func defaultQueuePlaylistName() -> String {
@@ -2869,6 +3020,22 @@ struct ContentView: View {
                         Button("Add to Queue") {
                             model.addLocalMusicTrackToQueue(track)
                         }
+                        Menu("Add to Playlist") {
+                            if model.editableLocalMusicPlaylists.isEmpty {
+                                Button("No editable playlists") {}
+                                    .disabled(true)
+                            } else {
+                                ForEach(model.editableLocalMusicPlaylists) { playlist in
+                                    Button(playlist.name) {
+                                        model.addLocalMusicTrackToPlaylist(track, playlist)
+                                    }
+                                }
+                                Divider()
+                            }
+                            Button("New Playlist...") {
+                                beginCreatePlaylist(for: track)
+                            }
+                        }
                     }
                 }
             }
@@ -2936,9 +3103,9 @@ struct ContentView: View {
         )
     }
 
-    private func playlistLibraryRow(_ playlist: LocalMusicPlaylist, trackCount: Int, isSelected: Bool) -> some View {
+    private func playlistLibraryRow(_ playlist: LocalMusicPlaylist, trackCount: Int, isSelected: Bool, isEditable: Bool) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "music.note.list")
+            Image(systemName: isEditable ? "music.note.list" : "lock")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(isSelected ? LabTheme.cyan : LabTheme.textSoft.opacity(0.72))
                 .frame(width: 22, height: 22)
@@ -2955,6 +3122,11 @@ struct ContentView: View {
                     .foregroundStyle(LabTheme.textSoft)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                Text(isEditable ? "Editable" : "Read-only")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(isEditable ? LabTheme.cyan.opacity(0.9) : LabTheme.textSoft.opacity(0.74))
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 0)
@@ -2964,7 +3136,7 @@ struct ContentView: View {
                 .foregroundStyle(LabTheme.cyan)
                 .frame(width: 42, alignment: .trailing)
         }
-        .frame(height: 46)
+        .frame(height: 58)
         .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -2973,6 +3145,105 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(isSelected ? LabTheme.cyan.opacity(0.45) : Color.clear, lineWidth: 1)
                 )
+        )
+    }
+
+    private func playlistTrackRow(
+        track: LocalMusicTrack?,
+        path: String,
+        playlist: LocalMusicPlaylist,
+        index: Int,
+        trackCount: Int,
+        isEditable: Bool
+    ) -> some View {
+        let title = track?.displayTitle ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let subtitle = track?.displaySubtitle ?? path
+
+        return HStack(spacing: 12) {
+            Text("\(index + 1)")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(LabTheme.textSoft)
+                .frame(width: 30, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(LabTheme.panelSoft)
+                )
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text(subtitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(track?.channelText ?? "-")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(LabTheme.textSoft)
+                .frame(width: 58, alignment: .trailing)
+
+            if isEditable {
+                HStack(spacing: 4) {
+                    Button {
+                        model.moveLocalMusicPlaylistTrackUp(playlist, index: index)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(LabButtonStyle())
+                    .disabled(index == 0)
+
+                    Button {
+                        model.moveLocalMusicPlaylistTrackDown(playlist, index: index)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(LabButtonStyle())
+                    .disabled(index >= trackCount - 1)
+
+                    Button {
+                        model.removeLocalMusicPlaylistTrack(playlist, index: index)
+                    } label: {
+                        Image(systemName: "trash")
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(LabButtonStyle())
+                }
+            }
+        }
+        .frame(height: 46)
+        .padding(.horizontal, 10)
+        .contentShape(Rectangle())
+        .contextMenu {
+            if let track {
+                Button("Play Now") {
+                    model.playLocalMusicTrackNow(track)
+                }
+                Button("Add to Queue") {
+                    model.addLocalMusicTrackToQueue(track)
+                }
+            }
+            if isEditable {
+                if track != nil {
+                    Divider()
+                }
+                Button("Remove From Playlist") {
+                    model.removeLocalMusicPlaylistTrack(playlist, index: index)
+                }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.035))
         )
     }
 
@@ -3203,31 +3474,50 @@ struct ContentView: View {
         }
     }
 
-    private var vuMeterVisualGainSliders: some View {
+    private var vuMeterCalibrationControls: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("VU Calibration")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(LabTheme.textSoft)
+
             vuSliderRow(
-                title: "Input Visual Gain",
-                valueText: signedOffsetText(vuMeterInputVisualGain, suffix: String(format: " / %.2fx", inputVUMeterAppearance.resolvedVisualGain)),
-                lowText: "-10",
-                highText: "+10",
-                binding: inputVUMeterVisualGainBinding,
-                range: VUMeterControlScale.sliderRange
+                title: "0 VU Reference",
+                valueText: String(format: "%.0f dBFS", vuMeterReferenceDbFS),
+                lowText: "-24",
+                highText: "-12",
+                binding: vuMeterReferenceDbFSBinding,
+                range: VUMeterCalibrationSettings.referenceRange
+            )
+
+            HStack(spacing: 8) {
+                ForEach(VUMeterResponseMode.allCases) { mode in
+                    Button {
+                        vuMeterResponseMode = mode
+                    } label: {
+                        Text(mode.rawValue)
+                            .font(.system(size: 12, weight: .bold))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LabButtonStyle(isActive: vuMeterResponseMode == mode))
+                }
+            }
+
+            vuSliderRow(
+                title: "Monitor Trim",
+                valueText: dbText(vuMeterMonitorTrimDb),
+                lowText: "-6",
+                highText: "+6",
+                binding: vuMeterMonitorTrimDbBinding,
+                range: VUMeterCalibrationSettings.trimRange
             )
             vuSliderRow(
-                title: "Output 1 Monitor Visual Gain",
-                valueText: signedOffsetText(vuMeterMonitorVisualGain, suffix: String(format: " / %.2fx", monitorVUMeterAppearance.resolvedVisualGain)),
-                lowText: "-10",
-                highText: "+10",
-                binding: monitorVUMeterVisualGainBinding,
-                range: VUMeterControlScale.sliderRange
-            )
-            vuSliderRow(
-                title: "Output 2 Renderer Visual Gain",
-                valueText: signedOffsetText(vuMeterRendererVisualGain, suffix: String(format: " / %.2fx", rendererVUMeterAppearance.resolvedVisualGain)),
-                lowText: "-10",
-                highText: "+10",
-                binding: rendererVUMeterVisualGainBinding,
-                range: VUMeterControlScale.sliderRange
+                title: "Sonic Sphere Trim",
+                valueText: dbText(vuMeterSonicSphereTrimDb),
+                lowText: "-6",
+                highText: "+6",
+                binding: vuMeterSonicSphereTrimDbBinding,
+                range: VUMeterCalibrationSettings.trimRange
             )
         }
         .padding(12)
@@ -3243,17 +3533,13 @@ struct ContentView: View {
 
     private var vuMeterAppearanceSliders: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Toggle("Normalize Visual Energy", isOn: $vuMeterNormalizesVisualEnergy)
-                .toggleStyle(.checkbox)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(LabTheme.text)
-
+            vuMeterColorModePicker
             vuSliderRow(
-                title: "VU Activity Compression",
-                valueText: signedOffsetText(vuMeterActivityCompression, suffix: String(format: " / %.0f%%", previewVUMeterAppearance.resolvedActivityCompression * 100)),
-                lowText: "-10",
-                highText: "+10",
-                binding: vuMeterActivityCompressionBinding,
+                title: "Channel Label Gap",
+                valueText: signedOffsetText(vuMeterLabelGapOffset, suffix: String(format: " / %.2fx", Double(rendererVUMeterAppearance.resolvedLabelGapScale))),
+                lowText: "Tight",
+                highText: "Loose",
+                binding: vuMeterLabelGapBinding,
                 range: VUMeterControlScale.sliderRange
             )
             vuSliderRow(
@@ -3326,6 +3612,10 @@ struct ContentView: View {
 
     private func signedOffsetText(_ value: Double, suffix: String = "") -> String {
         "\(String(format: "%+.0f", VUMeterControlScale.clampedOffset(value)))\(suffix)"
+    }
+
+    private func dbText(_ value: Double) -> String {
+        "\(String(format: "%+.1f", value)) dB"
     }
 
     private func vuMeterColorSwatch(_ mode: VUMeterColorMode) -> some View {
@@ -3768,13 +4058,15 @@ struct ContentView: View {
 }
 
 private struct SavePlaylistDialog: View {
+    var title = "Save Playlist"
+    var primaryActionTitle = "Save"
     @Binding var name: String
     let onCancel: () -> Void
     let onSave: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Save Playlist")
+            Text(title)
                 .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(LabTheme.text)
 
@@ -3798,7 +4090,7 @@ private struct SavePlaylistDialog: View {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(LabButtonStyle())
 
-                Button("Save", action: onSave)
+                Button(primaryActionTitle, action: onSave)
                     .buttonStyle(LabButtonStyle(isActive: true))
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -4158,6 +4450,7 @@ private enum AudioMotionVUMeterRenderer {
                 time: time,
                 context: &context,
                 bounds: bounds,
+                appearance: appearance,
                 showLabels: showLabels
             )
         case .mirror:
@@ -4167,6 +4460,7 @@ private enum AudioMotionVUMeterRenderer {
                 time: time,
                 context: &context,
                 bounds: bounds,
+                appearance: appearance,
                 showLabels: showLabels
             )
         case .radial:
@@ -4182,7 +4476,7 @@ private enum AudioMotionVUMeterRenderer {
     }
 
     static func energyPercent(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> Double {
-        Double(sonicEnergy(levels: activityLevels(for: meters, appearance: appearance)) * 100)
+        Double(meterEnergy(levels: activityLevels(for: meters, appearance: appearance)) * 100)
     }
 
     private static func drawBackground(in bounds: CGRect, context: inout GraphicsContext) {
@@ -4216,16 +4510,19 @@ private enum AudioMotionVUMeterRenderer {
         time: TimeInterval,
         context: inout GraphicsContext,
         bounds: CGRect,
+        appearance: VUMeterAppearance,
         showLabels: Bool
     ) {
         let content = bounds.insetBy(dx: max(18, bounds.width * 0.026), dy: max(18, bounds.height * 0.045))
-        let labelHeight: CGFloat = showLabels ? 28 : 8
-        let reflectionHeight = style == .classicSpectrum ? content.height * 0.16 : content.height * 0.2
+        let labelGapScale = showLabels ? appearance.resolvedLabelGapScale : 1
+        let labelHeight: CGFloat = showLabels ? 28 * labelGapScale : 8
+        let reflectionHeight = (style == .classicSpectrum ? content.height * 0.16 : content.height * 0.2) * labelGapScale
+        let labelSpacer = 10 * labelGapScale
         let meterRect = CGRect(
             x: content.minX,
             y: content.minY,
             width: content.width,
-            height: max(1, content.height - reflectionHeight - labelHeight - 10)
+            height: max(1, content.height - reflectionHeight - labelHeight - labelSpacer)
         )
         let bars = VUMeterVerticalBarLayout.frames(count: levels.count, rect: meterRect)
 
@@ -4241,7 +4538,7 @@ private enum AudioMotionVUMeterRenderer {
             }
 
             drawPeakCap(level: level, index: index, rect: barRect, style: style, time: time, context: &context)
-            drawReflection(level: level, index: index, rect: barRect, style: style, time: time, context: &context)
+            drawReflection(level: level, index: index, rect: barRect, style: style, time: time, labelGapScale: labelGapScale, context: &context)
 
             if showLabels, shouldShowLabel(index: index, count: meters.count) {
                 context.draw(
@@ -4261,10 +4558,12 @@ private enum AudioMotionVUMeterRenderer {
         time: TimeInterval,
         context: inout GraphicsContext,
         bounds: CGRect,
+        appearance: VUMeterAppearance,
         showLabels: Bool
     ) {
         let content = bounds.insetBy(dx: max(18, bounds.width * 0.026), dy: max(20, bounds.height * 0.055))
-        let labelHeight: CGFloat = showLabels ? 26 : 8
+        let labelGapScale = showLabels ? appearance.resolvedLabelGapScale : 1
+        let labelHeight: CGFloat = showLabels ? 26 * labelGapScale : 8
         let meterRect = CGRect(x: content.minX, y: content.minY, width: content.width, height: content.height - labelHeight)
         let bars = VUMeterVerticalBarLayout.frames(count: levels.count, rect: meterRect)
         let centerY = meterRect.midY
@@ -4451,12 +4750,13 @@ private enum AudioMotionVUMeterRenderer {
         rect: CGRect,
         style: AudioMotionVUStyle,
         time: TimeInterval,
+        labelGapScale: CGFloat,
         context: inout GraphicsContext
     ) {
         guard level > 0, style != .ledBars else { return }
 
-        let height = min(rect.height * 0.28, rect.height * CGFloat(level) * 0.34)
-        let reflection = CGRect(x: rect.minX, y: rect.maxY + 6, width: rect.width, height: height)
+        let height = min(rect.height * 0.28, rect.height * CGFloat(level) * 0.34) * labelGapScale
+        let reflection = CGRect(x: rect.minX, y: rect.maxY + 6 * labelGapScale, width: rect.width, height: height)
         let color = barColor(level: level, index: index, style: style, time: time)
         context.fill(
             Path(roundedRect: reflection, cornerRadius: min(4, rect.width * 0.2)),
@@ -4475,36 +4775,15 @@ private enum AudioMotionVUMeterRenderer {
     }
 
     private static func activityLevels(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> [Float] {
-        let gained = meters.map { clampedLevel(Float(Double($0.level) * appearance.resolvedVisualGain)) }
-        let compression = Float(appearance.resolvedActivityCompression)
-        guard compression > 0 || appearance.normalizesVisualEnergy else { return gained }
-
-        let currentEnergy = sonicEnergy(levels: gained)
-        let targetEnergy: Float = 0.52
-        let normalizeScale = appearance.normalizesVisualEnergy && currentEnergy > 0
-            ? min(8, max(0.25, targetEnergy / currentEnergy))
-            : 1
-        let normalizeBlend: Float = appearance.normalizesVisualEnergy ? 1 : compression
-        let gamma = max(0.22, 1 - compression * 0.68)
-        let activeFloor = compression * 0.18
-
-        return gained.map { level in
-            guard level >= 0.002 else { return 0 }
-
-            let normalized = min(1, level * (1 + (normalizeScale - 1) * normalizeBlend))
-            guard compression > 0 else { return normalized }
-
-            let lifted = Float(pow(Double(normalized), Double(gamma)))
-            return min(1, max(normalized, activeFloor + lifted * (1 - activeFloor)))
-        }
+        _ = appearance
+        return meters.map { clampedLevel($0.level) }
     }
 
-    private static func sonicEnergy(levels: [Float]) -> Float {
-        guard !levels.isEmpty else { return 0 }
-        let sum = levels.reduce(Double(0)) { partial, level in
-            partial + Double(level * level)
-        }
-        return clampedLevel(Float(sqrt(sum / Double(levels.count))))
+    private static func meterEnergy(levels: [Float]) -> Float {
+        let active = levels.filter { $0 > 0.0001 }
+        guard !active.isEmpty else { return 0 }
+        let sumSquares = active.reduce(Float(0)) { $0 + $1 * $1 }
+        return sqrt(sumSquares / Float(active.count))
     }
 
     private static func gradientColors(level: Float, index: Int, style: AudioMotionVUStyle, time: TimeInterval) -> [Color] {
@@ -4768,7 +5047,7 @@ private enum DenseVUMeterRenderer {
     }
 
     static func energyPercent(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> Double {
-        Double(sonicEnergy(levels: activityLevels(for: meters, appearance: appearance)) * 100)
+        Double(meterEnergy(levels: activityLevels(for: meters, appearance: appearance)) * 100)
     }
 
     private static func squareCells(count: Int, size: CGSize, fillScale: CGFloat) -> [DenseMeterCell] {
@@ -4939,8 +5218,7 @@ private enum DenseVUMeterRenderer {
         showLabels: Bool
     ) {
         let shell = Path(roundedRect: cell.rect, cornerRadius: max(2, cell.size * 0.055))
-        let gain = appearance.resolvedVisualGain
-        context.fill(shell, with: .color(Color.white.opacity(min(0.18, 0.03 + 0.015 * gain))))
+        context.fill(shell, with: .color(Color.white.opacity(0.045)))
         context.stroke(
             shell,
             with: .color(outlineColor(level: level).opacity(outlineOpacity(level: level, appearance: appearance))),
@@ -4973,8 +5251,7 @@ private enum DenseVUMeterRenderer {
         showLabels: Bool
     ) {
         let shell = hexPath(center: cell.center, radius: cell.radius)
-        let gain = appearance.resolvedVisualGain
-        context.fill(shell, with: .color(Color.white.opacity(min(0.16, 0.028 + 0.013 * gain))))
+        context.fill(shell, with: .color(Color.white.opacity(0.041)))
         context.stroke(
             shell,
             with: .color(outlineColor(level: level).opacity(outlineOpacity(level: level, appearance: appearance))),
@@ -5105,46 +5382,21 @@ private enum DenseVUMeterRenderer {
     }
 
     private static func activityLevels(for meters: [ChannelMeter], appearance: VUMeterAppearance) -> [Float] {
-        let gained = meters.map { visualLevel($0.level, appearance: appearance) }
-        let compression = Float(appearance.resolvedActivityCompression)
-        guard compression > 0 || appearance.normalizesVisualEnergy else { return gained }
-
-        let currentEnergy = sonicEnergy(levels: gained)
-        let targetEnergy: Float = 0.48
-        let normalizeScale = appearance.normalizesVisualEnergy && currentEnergy > 0
-            ? min(8, max(0.25, targetEnergy / currentEnergy))
-            : 1
-        let normalizeBlend: Float = appearance.normalizesVisualEnergy ? 1 : compression
-        let gamma = max(0.22, 1 - compression * 0.72)
-        let activeFloor = compression * 0.22
-
-        return gained.map { level in
-            guard level >= 0.002 else { return 0 }
-
-            let normalized = min(1, level * (1 + (normalizeScale - 1) * normalizeBlend))
-            guard compression > 0 else { return normalized }
-
-            let lifted = Float(pow(Double(normalized), Double(gamma)))
-            return min(1, max(normalized, activeFloor + lifted * (1 - activeFloor)))
-        }
+        _ = appearance
+        return meters.map { clampedLevel($0.level) }
     }
 
-    private static func sonicEnergy(levels: [Float]) -> Float {
-        guard !levels.isEmpty else { return 0 }
-        let sum = levels.reduce(Double(0)) { partial, level in
-            partial + Double(level * level)
-        }
-        return clampedLevel(Float(sqrt(sum / Double(levels.count))))
+    private static func meterEnergy(levels: [Float]) -> Float {
+        let active = levels.filter { $0 > 0.0001 }
+        guard !active.isEmpty else { return 0 }
+        let sumSquares = active.reduce(Float(0)) { $0 + $1 * $1 }
+        return sqrt(sumSquares / Float(active.count))
     }
 
     private static func fillFraction(level: Float, appearance: VUMeterAppearance) -> CGFloat {
         let maxFraction: CGFloat = 0.86
         let minFraction = maxFraction / max(CGFloat(appearance.resolvedMaxSizeRatio), 1)
         return minFraction + CGFloat(clampedLevel(level)) * (maxFraction - minFraction)
-    }
-
-    private static func visualLevel(_ level: Float, appearance: VUMeterAppearance) -> Float {
-        clampedLevel(Float(Double(level) * appearance.resolvedVisualGain))
     }
 
     private static func outlineColor(level: Float) -> Color {

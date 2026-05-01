@@ -190,6 +190,184 @@ struct SurroundLayout: Hashable, Sendable {
     }
 }
 
+enum ChannelLayoutConfidence: String, Comparable, Sendable {
+    case low
+    case high
+
+    static func < (lhs: ChannelLayoutConfidence, rhs: ChannelLayoutConfidence) -> Bool {
+        switch (lhs, rhs) {
+        case (.low, .high):
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+enum ChannelLayoutDescriptorSource: Equatable, Sendable {
+    case fallbackChannelCount
+    case explicitChannelDescriptions
+    case explicitCoreAudioLayoutTag(String)
+    case unknown
+}
+
+struct ChannelRoleLayoutDescriptor: Equatable, Sendable {
+    let layoutName: String
+    let roles: [SurroundChannelRole]
+    let source: ChannelLayoutDescriptorSource
+    let confidence: ChannelLayoutConfidence
+    let sourceDescription: String
+    let warningDescriptions: [String]
+
+    var channelCount: Int {
+        roles.count
+    }
+
+    var layout: SurroundLayout {
+        SurroundLayout(
+            name: layoutName,
+            channels: roles.enumerated().map { index, role in
+                SurroundChannel(index: index, role: role)
+            }
+        )
+    }
+
+    var roleSummary: String {
+        layout.channelSummary
+    }
+
+    var appliesMPEGFiveOneCRemap: Bool {
+        roles == Self.mpegFiveOneCRoles && confidence == .high
+    }
+
+    static func fallback(for channelCount: Int) -> ChannelRoleLayoutDescriptor {
+        let fallback = fallbackNameAndRoles(for: channelCount)
+        return ChannelRoleLayoutDescriptor(
+            layoutName: fallback.name,
+            roles: fallback.roles,
+            source: .fallbackChannelCount,
+            confidence: .low,
+            sourceDescription: "Fallback by channel count",
+            warningDescriptions: []
+        )
+    }
+
+    static func unknown(channelCount: Int, sourceDescription: String) -> ChannelRoleLayoutDescriptor {
+        let fallback = fallbackNameAndRoles(for: channelCount)
+        return ChannelRoleLayoutDescriptor(
+            layoutName: fallback.name,
+            roles: fallback.roles,
+            source: .unknown,
+            confidence: .low,
+            sourceDescription: sourceDescription,
+            warningDescriptions: lowConfidenceWarnings(channelCount: channelCount, sourceDescription: sourceDescription)
+        )
+    }
+
+    static func mpegFiveOneC(
+        confidence: ChannelLayoutConfidence,
+        sourceDescription: String
+    ) -> ChannelRoleLayoutDescriptor {
+        guard confidence == .high else {
+            let fallback = fallbackNameAndRoles(for: 6)
+            return ChannelRoleLayoutDescriptor(
+                layoutName: fallback.name,
+                roles: fallback.roles,
+                source: .unknown,
+                confidence: .low,
+                sourceDescription: sourceDescription,
+                warningDescriptions: [
+                    "Low-confidence MPEG 5.1 C layout ignored; using legacy 5.1 order L R C LFE Ls Rs."
+                ]
+            )
+        }
+
+        return ChannelRoleLayoutDescriptor(
+            layoutName: "5.1 Surround",
+            roles: mpegFiveOneCRoles,
+            source: .explicitCoreAudioLayoutTag("MPEG 5.1 C"),
+            confidence: .high,
+            sourceDescription: sourceDescription,
+            warningDescriptions: []
+        )
+    }
+
+    static func explicit(
+        layoutName: String,
+        roles: [SurroundChannelRole],
+        source: ChannelLayoutDescriptorSource,
+        sourceDescription: String
+    ) -> ChannelRoleLayoutDescriptor {
+        ChannelRoleLayoutDescriptor(
+            layoutName: layoutName,
+            roles: roles,
+            source: source,
+            confidence: .high,
+            sourceDescription: sourceDescription,
+            warningDescriptions: []
+        )
+    }
+
+    private static let mpegFiveOneCRoles: [SurroundChannelRole] = [
+        .frontLeft, .center, .frontRight, .sideLeft, .sideRight, .lfe
+    ]
+
+    private static func lowConfidenceWarnings(
+        channelCount: Int,
+        sourceDescription: String
+    ) -> [String] {
+        switch channelCount {
+        case 6:
+            return [
+                "Low-confidence 5.1 layout \(sourceDescription); using legacy order L R C LFE Ls Rs."
+            ]
+        case 8:
+            return [
+                "Low-confidence 7.1 layout \(sourceDescription); using legacy order L R C LFE Ls Rs Lrs Rrs."
+            ]
+        default:
+            return []
+        }
+    }
+
+    private static func fallbackNameAndRoles(
+        for channelCount: Int
+    ) -> (name: String, roles: [SurroundChannelRole]) {
+        switch channelCount {
+        case 1:
+            return ("Mono", [.center])
+        case 2:
+            return ("Stereo", [.frontLeft, .frontRight])
+        case 3:
+            return ("3.0", [.frontLeft, .frontRight, .center])
+        case 4:
+            return ("Quadraphonic (4.0)", [.frontLeft, .frontRight, .rearLeft, .rearRight])
+        case 5:
+            return ("5.0 Surround", [.frontLeft, .frontRight, .center, .sideLeft, .sideRight])
+        case 6:
+            return ("5.1 Surround", [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight])
+        case 7:
+            return ("6.1 Surround", [.frontLeft, .frontRight, .center, .lfe, .rearCenter, .sideLeft, .sideRight])
+        case 8:
+            return ("7.1 Surround", [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight, .rearLeft, .rearRight])
+        case 9:
+            return ("9.0 Surround", [.frontLeft, .frontRight, .center, .rearLeft, .rearRight, .sideLeft, .sideRight, .wideLeft, .wideRight])
+        case 10:
+            return ("7.1.2", [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight, .rearLeft, .rearRight, .topFrontLeft, .topFrontRight])
+        case 11:
+            return ("9.2 Surround", [.frontLeft, .frontRight, .center, .rearLeft, .rearRight, .sideLeft, .sideRight, .wideLeft, .wideRight, .lfe, .lfe2])
+        case 12:
+            return ("7.1.4", [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight, .rearLeft, .rearRight, .topFrontLeft, .topFrontRight, .topRearLeft, .topRearRight])
+        case 14:
+            return ("9.1.4", [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight, .rearLeft, .rearRight, .wideLeft, .wideRight, .topFrontLeft, .topFrontRight, .topRearLeft, .topRearRight])
+        case 16:
+            return ("9.1.6", [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight, .rearLeft, .rearRight, .wideLeft, .wideRight, .topFrontLeft, .topFrontRight, .topMiddleLeft, .topMiddleRight, .topRearLeft, .topRearRight])
+        default:
+            return ("\(channelCount)-Channel Discrete", (0..<channelCount).map { .discrete($0) })
+        }
+    }
+}
+
 extension Sequence where Element == SurroundChannel {
     func displayOrdered() -> [SurroundChannel] {
         sorted { lhs, rhs in
@@ -317,137 +495,141 @@ enum SpatialPreset: String, CaseIterable, Identifiable {
 
 struct SurroundLayoutDetector {
     static func detect(for format: AVAudioFormat) -> SurroundLayout {
+        descriptor(for: format).layout
+    }
+
+    static func descriptor(for format: AVAudioFormat) -> ChannelRoleLayoutDescriptor {
         let channelCount = Int(format.channelCount)
 
         if let channelLayout = format.channelLayout {
-            let channels = channels(from: channelLayout, fallbackCount: channelCount)
-            if !channels.isEmpty {
-                return SurroundLayout(name: layoutName(for: channels, fallbackCount: channelCount), channels: channels)
-            }
+            return descriptor(from: channelLayout, fallbackCount: channelCount)
         }
 
-        return fallbackLayout(for: channelCount)
+        return fallbackDescriptor(for: channelCount)
     }
 
     static func fallbackLayout(for channelCount: Int) -> SurroundLayout {
-        switch channelCount {
-        case 1:
-            return makeLayout(
-                name: "Mono",
-                roles: [.center]
-            )
-        case 2:
-            return makeLayout(
-                name: "Stereo",
-                roles: [.frontLeft, .frontRight]
-            )
-        case 3:
-            return makeLayout(
-                name: "3.0",
-                roles: [.frontLeft, .frontRight, .center]
-            )
-        case 4:
-            return makeLayout(
-                name: "Quadraphonic (4.0)",
-                roles: [.frontLeft, .frontRight, .rearLeft, .rearRight]
-            )
-        case 5:
-            return makeLayout(
-                name: "5.0 Surround",
-                roles: [.frontLeft, .frontRight, .center, .sideLeft, .sideRight]
-            )
-        case 6:
-            return makeLayout(
-                name: "5.1 Surround",
-                roles: [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight]
-            )
-        case 7:
-            return makeLayout(
-                name: "6.1 Surround",
-                roles: [.frontLeft, .frontRight, .center, .lfe, .rearCenter, .sideLeft, .sideRight]
-            )
-        case 8:
-            return makeLayout(
-                name: "7.1 Surround",
-                roles: [.frontLeft, .frontRight, .center, .lfe, .rearLeft, .rearRight, .sideLeft, .sideRight]
-            )
-        case 9:
-            return makeLayout(
-                name: "9.0 Surround",
-                roles: [.frontLeft, .frontRight, .center, .rearLeft, .rearRight, .sideLeft, .sideRight, .wideLeft, .wideRight]
-            )
-        case 10:
-            return makeLayout(
-                name: "7.1.2",
-                roles: [.frontLeft, .frontRight, .center, .lfe, .rearLeft, .rearRight, .sideLeft, .sideRight, .topFrontLeft, .topFrontRight]
-            )
-        case 11:
-            return makeLayout(
-                name: "9.2 Surround",
-                roles: [.frontLeft, .frontRight, .center, .rearLeft, .rearRight, .sideLeft, .sideRight, .wideLeft, .wideRight, .lfe, .lfe2]
-            )
-        case 12:
-            return makeLayout(
-                name: "7.1.4",
-                roles: [.frontLeft, .frontRight, .center, .lfe, .rearLeft, .rearRight, .sideLeft, .sideRight, .topFrontLeft, .topFrontRight, .topRearLeft, .topRearRight]
-            )
-        case 14:
-            return makeLayout(
-                name: "9.1.4",
-                roles: [.frontLeft, .frontRight, .center, .lfe, .rearLeft, .rearRight, .sideLeft, .sideRight, .wideLeft, .wideRight, .topFrontLeft, .topFrontRight, .topRearLeft, .topRearRight]
-            )
-        case 16:
-            return makeLayout(
-                name: "9.1.6",
-                roles: [.frontLeft, .frontRight, .center, .lfe, .rearLeft, .rearRight, .sideLeft, .sideRight, .wideLeft, .wideRight, .topFrontLeft, .topFrontRight, .topMiddleLeft, .topMiddleRight, .topRearLeft, .topRearRight]
-            )
-        default:
-            return makeLayout(
-                name: "\(channelCount)-Channel Discrete",
-                roles: (0..<channelCount).map { .discrete($0) }
-            )
-        }
+        fallbackDescriptor(for: channelCount).layout
+    }
+
+    static func fallbackDescriptor(for channelCount: Int) -> ChannelRoleLayoutDescriptor {
+        ChannelRoleLayoutDescriptor.fallback(for: channelCount)
     }
 
     static func discreteRoles(for channelCount: Int) -> [SurroundChannelRole] {
         (0..<channelCount).map { .discrete($0) }
     }
 
-    private static func makeLayout(name: String, roles: [SurroundChannelRole]) -> SurroundLayout {
-        SurroundLayout(
-            name: name,
-            channels: roles.enumerated().map { index, role in
-                SurroundChannel(index: index, role: role)
+    private static func descriptor(
+        from channelLayout: AVAudioChannelLayout,
+        fallbackCount: Int
+    ) -> ChannelRoleLayoutDescriptor {
+        let rawDescriptions = AudioChannelLayout.UnsafePointer(channelLayout.layout)
+        if rawDescriptions.count == fallbackCount, rawDescriptions.count > 0 {
+            let mapped = (0..<rawDescriptions.count).map { index in
+                let description = rawDescriptions[index]
+                return SurroundChannel(index: index, role: role(for: description.mChannelLabel, index: index))
             }
+
+            let recognizedCount = mapped.reduce(into: 0) { partialResult, channel in
+                if case .discrete = channel.role {
+                    return
+                }
+                partialResult += 1
+            }
+
+            if recognizedCount > 0 {
+                return ChannelRoleLayoutDescriptor.explicit(
+                    layoutName: layoutName(for: mapped, fallbackCount: fallbackCount),
+                    roles: mapped.map(\.role),
+                    source: .explicitChannelDescriptions,
+                    sourceDescription: "Explicit Core Audio channel descriptions"
+                )
+            }
+        }
+
+        let tag = channelLayout.layout.pointee.mChannelLayoutTag
+        if let taggedDescriptor = descriptor(fromLayoutTag: tag, fallbackCount: fallbackCount) {
+            return taggedDescriptor
+        }
+
+        return ChannelRoleLayoutDescriptor.unknown(
+            channelCount: fallbackCount,
+            sourceDescription: "unknown Core Audio layout tag \(tag)"
         )
     }
 
-    private static func channels(from channelLayout: AVAudioChannelLayout, fallbackCount: Int) -> [SurroundChannel] {
-        let rawDescriptions = AudioChannelLayout.UnsafePointer(channelLayout.layout)
-        guard rawDescriptions.count == fallbackCount else {
-            return fallbackLayout(for: fallbackCount).channels
+    private static func descriptor(
+        fromLayoutTag tag: AudioChannelLayoutTag,
+        fallbackCount: Int
+    ) -> ChannelRoleLayoutDescriptor? {
+        let roles: [SurroundChannelRole]
+        let tagName: String
+        switch tag {
+        case kAudioChannelLayoutTag_Mono:
+            roles = [.center]
+            tagName = "Mono"
+        case kAudioChannelLayoutTag_Stereo:
+            roles = [.frontLeft, .frontRight]
+            tagName = "Stereo"
+        case kAudioChannelLayoutTag_MPEG_3_0_A:
+            roles = [.frontLeft, .frontRight, .center]
+            tagName = "MPEG 3.0 A"
+        case kAudioChannelLayoutTag_MPEG_3_0_B:
+            roles = [.center, .frontLeft, .frontRight]
+            tagName = "MPEG 3.0 B"
+        case kAudioChannelLayoutTag_MPEG_4_0_A:
+            roles = [.frontLeft, .frontRight, .center, .rearCenter]
+            tagName = "MPEG 4.0 A"
+        case kAudioChannelLayoutTag_MPEG_4_0_B:
+            roles = [.center, .frontLeft, .frontRight, .rearCenter]
+            tagName = "MPEG 4.0 B"
+        case kAudioChannelLayoutTag_MPEG_5_0_A:
+            roles = [.frontLeft, .frontRight, .center, .sideLeft, .sideRight]
+            tagName = "MPEG 5.0 A"
+        case kAudioChannelLayoutTag_MPEG_5_0_B:
+            roles = [.frontLeft, .frontRight, .sideLeft, .sideRight, .center]
+            tagName = "MPEG 5.0 B"
+        case kAudioChannelLayoutTag_MPEG_5_0_C:
+            roles = [.frontLeft, .center, .frontRight, .sideLeft, .sideRight]
+            tagName = "MPEG 5.0 C"
+        case kAudioChannelLayoutTag_MPEG_5_0_D:
+            roles = [.center, .frontLeft, .frontRight, .sideLeft, .sideRight]
+            tagName = "MPEG 5.0 D"
+        case kAudioChannelLayoutTag_MPEG_5_1_A:
+            roles = [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight]
+            tagName = "MPEG 5.1 A"
+        case kAudioChannelLayoutTag_MPEG_5_1_B:
+            roles = [.frontLeft, .frontRight, .sideLeft, .sideRight, .center, .lfe]
+            tagName = "MPEG 5.1 B"
+        case kAudioChannelLayoutTag_MPEG_5_1_C:
+            return ChannelRoleLayoutDescriptor.mpegFiveOneC(
+                confidence: .high,
+                sourceDescription: "explicit Core Audio MPEG 5.1 C layout tag"
+            )
+        case kAudioChannelLayoutTag_MPEG_5_1_D:
+            roles = [.center, .frontLeft, .frontRight, .sideLeft, .sideRight, .lfe]
+            tagName = "MPEG 5.1 D"
+        case kAudioChannelLayoutTag_MPEG_6_1_A:
+            roles = [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight, .rearCenter]
+            tagName = "MPEG 6.1 A"
+        case kAudioChannelLayoutTag_MPEG_7_1_C:
+            roles = [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight, .rearLeft, .rearRight]
+            tagName = "MPEG 7.1 C"
+        default:
+            return nil
         }
 
-        let count = rawDescriptions.count
-        guard count > 0 else { return [] }
-
-        let mapped = (0..<count).map { index in
-            let description = rawDescriptions[index]
-            return SurroundChannel(index: index, role: role(for: description.mChannelLabel, index: index))
+        guard roles.count == fallbackCount else { return nil }
+        let channels = roles.enumerated().map { index, role in
+            SurroundChannel(index: index, role: role)
         }
-
-        let recognizedCount = mapped.reduce(into: 0) { partialResult, channel in
-            if case .discrete = channel.role {
-                return
-            }
-            partialResult += 1
-        }
-
-        if recognizedCount == 0 {
-            return fallbackLayout(for: fallbackCount).channels
-        }
-
-        return mapped
+        return ChannelRoleLayoutDescriptor.explicit(
+            layoutName: layoutName(for: channels, fallbackCount: fallbackCount),
+            roles: roles,
+            source: .explicitCoreAudioLayoutTag(tagName),
+            sourceDescription: "explicit Core Audio \(tagName) layout tag"
+        )
     }
 
     private static func layoutName(for channels: [SurroundChannel], fallbackCount: Int) -> String {
@@ -456,10 +638,10 @@ struct SurroundLayoutDetector {
         if roles == [.frontLeft, .frontRight, .rearLeft, .rearRight] {
             return "Quadraphonic (4.0)"
         }
-        if roles == [.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight] {
+        if Set(roles) == Set([.frontLeft, .frontRight, .center, .lfe, .sideLeft, .sideRight]) {
             return "5.1 Surround"
         }
-        if roles == [.frontLeft, .frontRight, .center, .lfe, .rearLeft, .rearRight, .sideLeft, .sideRight] {
+        if Set(roles) == Set([.frontLeft, .frontRight, .center, .lfe, .rearLeft, .rearRight, .sideLeft, .sideRight]) {
             return "7.1 Surround"
         }
         if roles == [.frontLeft, .frontRight, .center, .rearLeft, .rearRight, .sideLeft, .sideRight, .wideLeft, .wideRight, .lfe, .lfe2] {

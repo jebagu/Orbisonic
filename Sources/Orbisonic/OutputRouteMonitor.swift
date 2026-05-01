@@ -152,7 +152,7 @@ struct OutputRouteInfo: Equatable, Identifiable {
             return "\(deviceName) is available as a multichannel renderer target."
         }
         if isHeadphones {
-            return "Current route looks headphone-safe for the binaural render."
+            return "Current route is available for the Normal Monitor stereo output."
         }
         if transportName == "AirPlay" {
             return "AirPlay is active. Latency and Apple spatial behavior depend on the receiver."

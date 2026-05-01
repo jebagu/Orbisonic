@@ -285,11 +285,8 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertTrue(state.player.isPlaying)
         XCTAssertTrue(state.player.enabledControls.isEmpty)
 
-        let deadline = Date().addingTimeInterval(2.0)
-        repeat {
-            try await Task.sleep(nanoseconds: 50_000_000)
-            state = model.webStateForTesting(controlEnabled: true)
-        } while state.player.status != "Spotify paused" && Date() < deadline
+        await model.waitForSpotifyPlaybackStatusDebounceForTesting()
+        state = model.webStateForTesting(controlEnabled: true)
 
         XCTAssertEqual(state.player.status, "Spotify paused")
         XCTAssertFalse(state.player.isPlaying)

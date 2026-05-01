@@ -60,7 +60,6 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
     case automatic
     case mono
     case stereo
-    case binaural
     case quad
     case surround51
     case auro80 = "auro_8_0"
@@ -73,6 +72,21 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
     case direct30
     case direct31
 
+    static let allCases: [RendererRenderMode] = [
+        .automatic,
+        .mono,
+        .stereo,
+        .quad,
+        .surround51,
+        .auro80,
+        .auro91,
+        .auro101,
+        .auro111714h,
+        .auro111515hT,
+        .auro121,
+        .auro131
+    ]
+
     var id: String { rawValue }
 
     var displayName: String {
@@ -83,8 +97,6 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
             "Mono"
         case .stereo:
             "Stereo"
-        case .binaural:
-            "Binaural"
         case .quad:
             "Quad"
         case .surround51:
@@ -130,8 +142,6 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
             "Auro 13.1 Static Bed"
         case .direct30, .direct31:
             "\(displayName) Bypass"
-        case .binaural:
-            displayName
         case .automatic:
             displayName
         default:
@@ -145,7 +155,7 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
             nil
         case .mono:
             1
-        case .stereo, .binaural:
+        case .stereo:
             2
         case .quad:
             4
@@ -172,7 +182,7 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
 
     var isRenderedBed: Bool {
         switch self {
-        case .mono, .stereo, .binaural, .quad, .surround51,
+        case .mono, .stereo, .quad, .surround51,
              .auro80, .auro91, .auro101, .auro111714h, .auro111515hT, .auro121, .auro131:
             true
         case .automatic, .direct30, .direct31:
@@ -191,10 +201,6 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
 
     var isBypass: Bool {
         self == .direct30 || self == .direct31
-    }
-
-    var usesDirectRendererAudio: Bool {
-        isRenderedBed || isBypass
     }
 
     static let supportedInputCounts = [1, 2, 4, 6, 8, 10, 11, 12, 13, 14, 30, 31]
@@ -246,7 +252,8 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
 enum RendererTwoChannelPreference: String, Codable, CaseIterable, Identifiable {
     case automatic
     case stereo
-    case binaural
+
+    static let allCases: [RendererTwoChannelPreference] = [.automatic, .stereo]
 
     var id: String { rawValue }
 
@@ -256,8 +263,6 @@ enum RendererTwoChannelPreference: String, Codable, CaseIterable, Identifiable {
             "Auto"
         case .stereo:
             "Stereo"
-        case .binaural:
-            "Binaural"
         }
     }
 
@@ -267,8 +272,6 @@ enum RendererTwoChannelPreference: String, Codable, CaseIterable, Identifiable {
             nil
         case .stereo:
             .stereo
-        case .binaural:
-            .binaural
         }
     }
 }
@@ -538,7 +541,7 @@ struct RendererPreset: Codable, Identifiable, Hashable {
         schemaVersion: currentSchemaVersion,
         id: "fey-static-bed-30-1-default",
         name: "Sonic Sphere 30.1 Spatial",
-        description: "Sonic Sphere 30.1 renderer for mono, stereo, binaural, quad, 5.1, and Auro-style decoded PCM beds. 30/31-channel sources bypass rendering.",
+        description: "Sonic Sphere 30.1 renderer for mono, stereo, quad, 5.1, and Auro-style decoded PCM beds. 30/31-channel sources bypass rendering.",
         outputTopology: .fey30Point1,
         options: .default
     )
@@ -967,7 +970,7 @@ enum RendererMatrixBuilder {
 
         let matrix = resolvedMode == .mono
             ? renderer.buildMonoDownmixMatrix(inputCount: layout.channelCount)
-            : renderer.buildMatrix(mode: resolvedMode)
+            : renderer.buildMatrix(mode: resolvedMode, sourceLayout: layout)
         validationMessages.append(contentsOf: renderer.validationMessages(for: matrix, mode: resolvedMode))
         return RendererSceneModel(
             preset: preset,
@@ -1187,6 +1190,15 @@ final class FeyStaticBedRenderer {
         buildMatrix(layoutId: mode)
     }
 
+    func buildMatrix(mode: RendererRenderMode, sourceLayout: SurroundLayout) -> RendererMatrix {
+        if mode == .surround51,
+           let matrix = buildSurround51Matrix(channels: sourceLayout.channels) {
+            return matrix
+        }
+
+        return buildMatrix(mode: mode)
+    }
+
     func buildMonoDownmixMatrix(inputCount: Int) -> RendererMatrix {
         guard OrbisonicAudioLimits.supportsSourceChannelCount(inputCount) else {
             return .empty
@@ -1219,14 +1231,6 @@ final class FeyStaticBedRenderer {
                 (options.stereoRearFill, lobes.rr)
             ])
             return renderedMatrix(fullRangeColumns: [left, right], lfeInputIndexes: [])
-        case .binaural:
-            let vectorOptions = FeyWeightedVectorOptions(
-                upperBiasDbPerUnitZ: options.defaultUpperBiasDbPerUnitZ,
-                maxSingleSpeakerPowerShare: options.defaultMaxSingleSpeakerPowerShare
-            )
-            let west = Self.buildHemisphereVector(west: true, options: vectorOptions)
-            let east = Self.buildHemisphereVector(west: false, options: vectorOptions)
-            return renderedMatrix(fullRangeColumns: [west, east], lfeInputIndexes: [])
         case .quad:
             return renderedMatrix(fullRangeColumns: [lobes.fl, lobes.fr, lobes.rl, lobes.rr], lfeInputIndexes: [])
         case .surround51:
@@ -1289,6 +1293,45 @@ final class FeyStaticBedRenderer {
         }
     }
 
+    private func buildSurround51Matrix(channels: [SurroundChannel]) -> RendererMatrix? {
+        guard channels.count == 6 else { return nil }
+
+        var columns = Array(
+            repeating: Array(repeating: 0.0, count: Self.fullRangeOutputs),
+            count: channels.count
+        )
+        var lfeInputIndexes: Set<Int> = []
+        var mappedFullRangeInputs = 0
+
+        for channel in channels {
+            guard channels.indices.contains(channel.index) else { return nil }
+            switch channel.role {
+            case .frontLeft:
+                columns[channel.index] = lobes.fl
+                mappedFullRangeInputs += 1
+            case .frontRight:
+                columns[channel.index] = lobes.fr
+                mappedFullRangeInputs += 1
+            case .center:
+                columns[channel.index] = lobes.frontCenter
+                mappedFullRangeInputs += 1
+            case .sideLeft, .rearLeft:
+                columns[channel.index] = lobes.rl
+                mappedFullRangeInputs += 1
+            case .sideRight, .rearRight:
+                columns[channel.index] = lobes.rr
+                mappedFullRangeInputs += 1
+            case .lfe, .lfe2:
+                lfeInputIndexes.insert(channel.index)
+            default:
+                return nil
+            }
+        }
+
+        guard mappedFullRangeInputs == 5, lfeInputIndexes.count == 1 else { return nil }
+        return renderedMatrix(fullRangeColumns: columns, lfeInputIndexes: lfeInputIndexes)
+    }
+
     func getSupportedLayouts() -> [RendererRenderMode] {
         RendererRenderMode.allCases.filter { $0 != .automatic }
     }
@@ -1338,8 +1381,6 @@ final class FeyStaticBedRenderer {
         case .mono:
             return FeyInputLayout(mode: mode, channelLabels: ["M"], lfeChannelIndexes: [])
         case .stereo:
-            return FeyInputLayout(mode: mode, channelLabels: ["L", "R"], lfeChannelIndexes: [])
-        case .binaural:
             return FeyInputLayout(mode: mode, channelLabels: ["L", "R"], lfeChannelIndexes: [])
         case .quad:
             return FeyInputLayout(mode: mode, channelLabels: ["FL", "FR", "RL", "RR"], lfeChannelIndexes: [])

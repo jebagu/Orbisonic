@@ -126,23 +126,6 @@ final class RendererModuleTests: XCTestCase {
         XCTAssertEqual(output[30], 0, accuracy: Float(tolerance))
     }
 
-    func testBinauralSplitsEnergyAcrossWestAndEastHalves() {
-        let renderer = FeyStaticBedRenderer()
-        let west = renderer.render(inputFrame: [1, 0], mode: .binaural)
-        let east = renderer.render(inputFrame: [0, 1], mode: .binaural)
-
-        let westSpeakerIDs = FeyStaticBedRenderer.feySpeakers.filter { $0.x < -0.001 }.map(\.speakerId)
-        let eastSpeakerIDs = FeyStaticBedRenderer.feySpeakers.filter { $0.x > 0.001 }.map(\.speakerId)
-        let seamSpeakerIDs = FeyStaticBedRenderer.feySpeakers.filter { abs($0.x) <= 0.001 }.map(\.speakerId)
-
-        XCTAssertGreaterThan(energy(west, speakerIDs: westSpeakerIDs), energy(west, speakerIDs: eastSpeakerIDs) * 8)
-        XCTAssertGreaterThan(energy(east, speakerIDs: eastSpeakerIDs), energy(east, speakerIDs: westSpeakerIDs) * 8)
-        XCTAssertGreaterThan(energy(west, speakerIDs: seamSpeakerIDs), 0)
-        XCTAssertGreaterThan(energy(east, speakerIDs: seamSpeakerIDs), 0)
-        XCTAssertEqual(west[30], 0, accuracy: Float(tolerance))
-        XCTAssertEqual(east[30], 0, accuracy: Float(tolerance))
-    }
-
     func testMonoImpulseHitsAllSpeakersUniformly() {
         let renderer = FeyStaticBedRenderer()
         let output = renderer.render(inputFrame: [1], mode: .mono)
@@ -236,10 +219,39 @@ final class RendererModuleTests: XCTestCase {
         XCTAssertEqual(output[30], 1, accuracy: Float(tolerance))
     }
 
+    func testSceneModelRoutesFiveOneMatrixByDetectedChannelRoles() {
+        let layout = SurroundLayout(
+            name: "5.1 Surround",
+            channels: [
+                SurroundChannel(index: 0, role: .frontLeft),
+                SurroundChannel(index: 1, role: .center),
+                SurroundChannel(index: 2, role: .frontRight),
+                SurroundChannel(index: 3, role: .sideLeft),
+                SurroundChannel(index: 4, role: .sideRight),
+                SurroundChannel(index: 5, role: .lfe)
+            ]
+        )
+
+        let scene = RendererMatrixBuilder.sceneModel(
+            for: layout,
+            preset: .sonicSphere30Point1,
+            renderMode: .automatic
+        )
+
+        XCTAssertEqual(scene.renderMode, .surround51)
+        XCTAssertEqual(scene.inputSpeakers.map(\.shortLabel), ["FL", "C", "FR", "SL", "SR", "LFE1"])
+        XCTAssertEqual(scene.matrix.lfeInputIndexes, [5])
+        XCTAssertEqual(scene.matrix.gains[5][30], 1, accuracy: tolerance)
+        XCTAssertEqual(scene.matrix.gains[3][30], 0, accuracy: tolerance)
+
+        let rightSurroundOutput = scene.matrix.gains[4].map(Float.init)
+        XCTAssertGreaterThan(energy(rightSurroundOutput, speakerIDs: [3, 8, 14, 19, 25, 30]), 0)
+    }
+
     func testRenderedColumnsArePowerNormalizedBeforeTrim() {
         let renderer = FeyStaticBedRenderer()
         let modes = [
-            RendererRenderMode.mono, .stereo, .binaural, .quad, .surround51,
+            RendererRenderMode.mono, .stereo, .quad, .surround51,
             .auro80, .auro91, .auro101, .auro111714h, .auro111515hT, .auro121, .auro131
         ]
         for mode in modes {
@@ -331,28 +343,10 @@ final class RendererModuleTests: XCTestCase {
             requestedMode: .automatic,
             inputChannelCount: 2,
             alwaysMono: true,
-            twoChannelPreference: .binaural
+            twoChannelPreference: .stereo
         )
 
         XCTAssertEqual(mode, .mono)
-    }
-
-    func testRendererModePolicyAppliesTwoChannelBinauralPreferenceOnlyForAuto() {
-        let autoMode = RendererModePolicy.effectiveRequestedMode(
-            requestedMode: .automatic,
-            inputChannelCount: 2,
-            alwaysMono: false,
-            twoChannelPreference: .binaural
-        )
-        let manualMode = RendererModePolicy.effectiveRequestedMode(
-            requestedMode: .quad,
-            inputChannelCount: 2,
-            alwaysMono: false,
-            twoChannelPreference: .binaural
-        )
-
-        XCTAssertEqual(autoMode, .binaural)
-        XCTAssertEqual(manualMode, .quad)
     }
 
     func testVerticalBarsStayTallForLowChannelCountsAndCentered() {

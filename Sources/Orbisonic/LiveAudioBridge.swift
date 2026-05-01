@@ -427,6 +427,37 @@ final class LiveChannelRingBuffer {
         return framesToRead
     }
 
+    func peek(into destination: UnsafeMutablePointer<Float>, frameCount: Int) -> Int {
+        guard frameCount > 0 else { return 0 }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        if isPriming, availableFrames < targetLatencyFrames {
+            for frame in 0..<frameCount {
+                destination[frame] = 0
+            }
+            return 0
+        }
+
+        let framesToRead = min(frameCount, availableFrames)
+        if framesToRead > 0 {
+            var cursor = readIndex
+            for frame in 0..<framesToRead {
+                destination[frame] = storage[cursor]
+                cursor = (cursor + 1) % storage.count
+            }
+        }
+
+        if framesToRead < frameCount {
+            for frame in framesToRead..<frameCount {
+                destination[frame] = 0
+            }
+        }
+
+        return framesToRead
+    }
+
     func status() -> LiveChannelRingBufferStatus {
         lock.lock()
         defer { lock.unlock() }
@@ -510,12 +541,19 @@ final class LiveAudioPipe {
     let sampleRate: Double
 
     private let rings: [LiveChannelRingBuffer]
+    private let meteringService: MeteringService?
     private let meterLock = NSLock()
     private var meterLevels: [Float]
 
-    init(channelCount: Int, sampleRate: Double, latencySeconds: Double = 0.15) {
+    init(
+        channelCount: Int,
+        sampleRate: Double,
+        latencySeconds: Double = 0.15,
+        meteringService: MeteringService? = nil
+    ) {
         self.channelCount = channelCount
         self.sampleRate = sampleRate
+        self.meteringService = meteringService
         let targetLatencyFrames = max(Int(sampleRate * max(latencySeconds, 0.05)), 512)
         let highWaterFrames = max(Int(Double(targetLatencyFrames) * 1.75), targetLatencyFrames + 1_024)
         let capacity = max(Int(sampleRate * max(latencySeconds * 8, 0.75)), highWaterFrames * 2, 4_096)
@@ -550,6 +588,11 @@ final class LiveAudioPipe {
         meterLock.lock()
         meterLevels = nextMeters
         meterLock.unlock()
+        meteringService?.ingest(
+            signal: .input,
+            bufferList: UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList),
+            frameCount: frames
+        )
     }
 
     func write(bufferList: UnsafeMutableAudioBufferListPointer, frameCount: Int) {
@@ -577,6 +620,7 @@ final class LiveAudioPipe {
         meterLock.lock()
         meterLevels = nextMeters
         meterLock.unlock()
+        meteringService?.ingest(signal: .input, bufferList: bufferList, frameCount: frameCount)
     }
 
     func render(channelIndex: Int, audioBufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: AVAudioFrameCount) -> OSStatus {
@@ -630,32 +674,51 @@ final class LiveAudioPipe {
             }
         }
 
-        for buffer in buffers {
-            guard let rawData = buffer.mData else { continue }
-            let sampleCount = min(
-                Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride,
-                frames
-            )
-            rawData.assumingMemoryBound(to: Float.self).initialize(repeating: 0, count: sampleCount)
+        RendererMatrixSampleRenderer.render(
+            matrix: matrix,
+            inputSamples: inputScratch,
+            frameCount: frames,
+            outputBuffers: buffers
+        )
+
+        meteringService?.ingest(signal: .sonicSphere, bufferList: buffers, frameCount: frames)
+        return noErr
+    }
+
+    @discardableResult
+    func renderMeterSnapshot(matrix: RendererMatrix, frameCount: Int) -> Bool {
+        let frames = max(frameCount, 0)
+        guard frames > 0,
+              matrix.inputCount == rings.count,
+              matrix.outputCount > 0
+        else {
+            return false
         }
 
-        let outputLimit = min(buffers.count, matrix.outputCount)
-        for outputIndex in 0..<outputLimit {
-            guard let rawData = buffers[outputIndex].mData else { continue }
-            let output = rawData.assumingMemoryBound(to: Float.self)
+        var inputScratch = Array(
+            repeating: Array(repeating: Float(0), count: frames),
+            count: matrix.inputCount
+        )
 
-            for inputIndex in 0..<matrix.inputCount {
-                let gain = Float(matrix.gains[inputIndex][outputIndex])
-                guard abs(gain) > 0.000_001 else { continue }
-
-                let input = inputScratch[inputIndex]
-                for frame in 0..<frames {
-                    output[frame] += input[frame] * gain
-                }
+        for inputIndex in 0..<matrix.inputCount {
+            inputScratch[inputIndex].withUnsafeMutableBufferPointer { destination in
+                guard let baseAddress = destination.baseAddress else { return }
+                _ = rings[inputIndex].peek(into: baseAddress, frameCount: frames)
             }
         }
 
-        return noErr
+        let rendered = RendererMatrixSampleRenderer.renderSampleBuffers(
+            matrix: matrix,
+            inputSamples: inputScratch,
+            frameCount: frames
+        )
+        guard rendered.frameCount > 0 else { return false }
+        meteringService?.ingest(
+            signal: .sonicSphere,
+            sampleBuffers: rendered.sampleBuffers,
+            frameCount: rendered.frameCount
+        )
+        return true
     }
 
     func latestMeterLevels() -> [Float] {

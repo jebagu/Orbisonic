@@ -128,6 +128,29 @@ struct LocalMusicPlaylist: Identifiable, Codable, Equatable, Sendable {
     var fileName: String { URL(fileURLWithPath: path).lastPathComponent }
 }
 
+enum LocalMusicPlaylistMutationError: LocalizedError, Equatable {
+    case duplicateTrack
+    case invalidName
+    case readOnly
+    case playlistMissing
+    case nameConflict(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .duplicateTrack:
+            return "That song is already in this playlist."
+        case .invalidName:
+            return "Playlist name is required."
+        case .readOnly:
+            return "Imported playlists are read-only. Save or create an Orbisonic playlist to edit it."
+        case .playlistMissing:
+            return "The playlist file could not be found."
+        case .nameConflict(let name):
+            return "A playlist named \(name) already exists."
+        }
+    }
+}
+
 struct LocalMusicScanResult: Sendable {
     let tracks: [LocalMusicTrack]
     let playlists: [LocalMusicPlaylist]
@@ -171,6 +194,10 @@ final class LocalMusicLibrary {
 
     var playlistDirectoryPath: String {
         playlistDirectoryURL.path
+    }
+
+    func isEditablePlaylist(_ playlist: LocalMusicPlaylist) -> Bool {
+        isManagedPlaylistURL(URL(fileURLWithPath: playlist.path))
     }
 
     func load() -> LocalMusicDatabase {
@@ -226,19 +253,102 @@ final class LocalMusicLibrary {
 
         let fileStem = Self.sanitizedFileStem(name)
         let playlistURL = uniquePlaylistURL(fileStem: fileStem)
-        let lines = ["#EXTM3U"] + tracks.flatMap { track in
-            [
-                "#EXTINF:\(Int(track.duration.rounded(.down))),\(track.displayTitle)",
-                track.path
-            ]
-        }
-        let contents = lines.joined(separator: "\n") + "\n"
-        try contents.write(to: playlistURL, atomically: true, encoding: .utf8)
+        try writePlaylist(
+            to: playlistURL,
+            trackPaths: tracks.map(\.path),
+            tracksByPath: tracksByPath(for: tracks)
+        )
 
         return LocalMusicPlaylist(
             name: playlistURL.deletingPathExtension().lastPathComponent,
             path: playlistURL.path,
             trackPaths: tracks.map(\.path)
+        )
+    }
+
+    func createPlaylist(name: String, tracks: [LocalMusicTrack]) throws -> LocalMusicPlaylist {
+        try saveSessionPlaylist(name: name, tracks: tracks)
+    }
+
+    func appendTrack(
+        _ track: LocalMusicTrack,
+        to playlist: LocalMusicPlaylist,
+        knownTracks: [LocalMusicTrack]
+    ) throws -> LocalMusicPlaylist {
+        guard isEditablePlaylist(playlist) else {
+            throw LocalMusicPlaylistMutationError.readOnly
+        }
+        guard !playlist.trackPaths.contains(track.path) else {
+            throw LocalMusicPlaylistMutationError.duplicateTrack
+        }
+
+        return try updateEditablePlaylist(
+            playlist,
+            trackPaths: playlist.trackPaths + [track.path],
+            knownTracks: knownTracks + [track]
+        )
+    }
+
+    func updateEditablePlaylist(
+        _ playlist: LocalMusicPlaylist,
+        trackPaths: [String],
+        knownTracks: [LocalMusicTrack]
+    ) throws -> LocalMusicPlaylist {
+        guard isEditablePlaylist(playlist) else {
+            throw LocalMusicPlaylistMutationError.readOnly
+        }
+
+        let playlistURL = URL(fileURLWithPath: playlist.path)
+        try fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
+        try writePlaylist(
+            to: playlistURL,
+            trackPaths: trackPaths,
+            tracksByPath: tracksByPath(for: knownTracks)
+        )
+
+        return LocalMusicPlaylist(
+            name: playlistURL.deletingPathExtension().lastPathComponent,
+            path: playlistURL.path,
+            trackPaths: trackPaths
+        )
+    }
+
+    func renameEditablePlaylist(_ playlist: LocalMusicPlaylist, to rawName: String) throws -> LocalMusicPlaylist {
+        guard isEditablePlaylist(playlist) else {
+            throw LocalMusicPlaylistMutationError.readOnly
+        }
+
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw LocalMusicPlaylistMutationError.invalidName
+        }
+
+        let currentURL = URL(fileURLWithPath: playlist.path)
+        let fileStem = Self.sanitizedFileStem(name)
+        let targetURL = playlistDirectoryURL
+            .appendingPathComponent(fileStem, isDirectory: false)
+            .appendingPathExtension("m3u")
+
+        if currentURL.standardizedFileURL.path == targetURL.standardizedFileURL.path {
+            return LocalMusicPlaylist(
+                name: targetURL.deletingPathExtension().lastPathComponent,
+                path: currentURL.path,
+                trackPaths: playlist.trackPaths
+            )
+        }
+
+        guard !fileManager.fileExists(atPath: targetURL.path) else {
+            throw LocalMusicPlaylistMutationError.nameConflict(targetURL.deletingPathExtension().lastPathComponent)
+        }
+        guard fileManager.fileExists(atPath: currentURL.path) else {
+            throw LocalMusicPlaylistMutationError.playlistMissing
+        }
+
+        try fileManager.moveItem(at: currentURL, to: targetURL)
+        return LocalMusicPlaylist(
+            name: targetURL.deletingPathExtension().lastPathComponent,
+            path: targetURL.path,
+            trackPaths: playlist.trackPaths
         )
     }
 
@@ -307,7 +417,7 @@ final class LocalMusicLibrary {
             let trackPaths = parseM3U(at: playlistURL).urls
                 .map(\.path)
                 .filter { tracksByPath[$0] != nil || fileManager.fileExists(atPath: $0) }
-            guard !trackPaths.isEmpty else { return nil }
+            guard !trackPaths.isEmpty || isManagedPlaylistURL(playlistURL) else { return nil }
             return LocalMusicPlaylist(
                 name: playlistURL.deletingPathExtension().lastPathComponent,
                 path: playlistURL.path,
@@ -450,7 +560,7 @@ final class LocalMusicLibrary {
             let trackPaths = playlist.trackPaths.filter { path in
                 existingTrackPaths.contains(path) || fileManager.fileExists(atPath: path)
             }
-            guard !trackPaths.isEmpty else { return nil }
+            guard !trackPaths.isEmpty || isEditablePlaylist(playlist) else { return nil }
             return LocalMusicPlaylist(name: playlist.name, path: playlist.path, trackPaths: trackPaths)
         }
 
@@ -627,6 +737,35 @@ final class LocalMusicLibrary {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "  ", with: " ")
         return stem.isEmpty ? "Session Queue" : stem
+    }
+
+    private func isManagedPlaylistURL(_ url: URL) -> Bool {
+        Self.isM3UPlaylist(url) &&
+            url.deletingLastPathComponent().standardizedFileURL.path == playlistDirectoryURL.standardizedFileURL.path
+    }
+
+    private func writePlaylist(
+        to playlistURL: URL,
+        trackPaths: [String],
+        tracksByPath: [String: LocalMusicTrack]
+    ) throws {
+        let lines = ["#EXTM3U"] + trackPaths.flatMap { path in
+            let track = tracksByPath[path]
+            let duration = track.map { Int($0.duration.rounded(.down)) } ?? -1
+            let title = track?.displayTitle ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+            return [
+                "#EXTINF:\(duration),\(title)",
+                path
+            ]
+        }
+        let contents = lines.joined(separator: "\n") + "\n"
+        try contents.write(to: playlistURL, atomically: true, encoding: .utf8)
+    }
+
+    private func tracksByPath(for tracks: [LocalMusicTrack]) -> [String: LocalMusicTrack] {
+        tracks.reduce(into: [:]) { result, track in
+            result[track.path] = track
+        }
     }
 
     private func uniquePlaylistURL(fileStem: String) -> URL {

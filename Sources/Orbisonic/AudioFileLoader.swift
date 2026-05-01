@@ -351,8 +351,12 @@ final class AudioFileLoader {
             throw AudioFileLoaderError.fileTooLarge
         }
 
-        let detectedLayout = SurroundLayoutDetector.detect(for: inputFormat)
+        let layoutDescriptor = SurroundLayoutDetector.descriptor(for: inputFormat)
+        let detectedLayout = layoutDescriptor.layout
         let inputLayout = try buildChannelLayout(for: inputFormat, fallback: detectedLayout)
+        for warning in layoutDescriptor.warningDescriptions {
+            AppLogger.shared.notice(category: "loader", "Channel layout warning file=\(url.lastPathComponent) warning=\"\(warning)\"")
+        }
 
         AppLogger.shared.info(
             category: "loader",
