@@ -229,6 +229,41 @@ Dante output adapter:
 - Leaves physical channel 32 silent unless explicitly assigned later.
 - Fails closed if runtime route validation cannot prove enough output channels at the session sample rate.
 
+Prompt 10 adds the first concrete output adapter architecture in `AudioCore`:
+
+- `AudioOutputAdapter` is the common value-boundary protocol for prepared output routes. It exposes route descriptors, output formats, lifecycle calls, block consumption, and status snapshots. It does not expose live graph or device handles.
+- `DesktopOutputAdapter` represents the local stereo confidence output. Desktop failures may mute or fail desktop only.
+- `DanteOutputAdapter` represents the Sonic Sphere production output. Dante failures are production-output failures.
+- `OfflineDesktopOutputAdapter` validates and consumes desktop stereo render blocks for tests without claiming live device output.
+- `OfflineDanteOutputAdapter` validates Dante route capability, consumes 31/32-channel Dante blocks, and enforces silent physical channel 32 when present.
+- `DualOutputRenderCoordinator` pulls one source adapter into the canonical source bus, renders desktop and Dante as sibling outputs, and hands each block to its matching output adapter.
+
+Prompt 10 remains validation/offline only. The live dual-device binding is not implemented yet. Status messages must therefore say that the desktop or Dante renderer is validated and that the live output adapter is not yet active. No UI or diagnostic surface may claim Dante audio is leaving the Mac until a real live Dante adapter has been implemented and verified.
+
+Prompt 10 dual-output render flow:
+
+```text
+AudioSourceAdapter
+-> CanonicalSourceBus
+-> DesktopMonitorRenderer
+-> DesktopOutputAdapter
+```
+
+```text
+AudioSourceAdapter
+-> CanonicalSourceBus
+-> DanteSonicSphereRenderer
+-> DanteOutputAdapter
+```
+
+Failure isolation rules:
+
+- Desktop route validation or consume failure updates only desktop output status.
+- Dante route validation failure blocks preparation.
+- Dante consume failure sets production-output-failed status.
+- Desktop gain and Dante gain are separate domains in `GainPlan`.
+- Route sample-rate mismatch is a validation failure, not a hidden conversion.
+
 ## Meter Copy Contract
 
 Metering receives copies from defined copy points:

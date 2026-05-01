@@ -120,6 +120,19 @@ State, UI, and web surfaces that currently touch or expose audio state:
 - `Sources/Orbisonic/DiagnosticsView.swift`
 - `Sources/Orbisonic/OrbisonicWebServer.swift`
 
+Pure Audio layers added during this branch:
+
+- `Sources/AudioContracts/`
+- `Sources/AudioCore/AudioControl.swift`
+- `Sources/AudioCore/AudioCoreShell.swift`
+- `Sources/AudioCore/AudioSessionPlanner.swift`
+- `Sources/AudioCore/RenderGraphPlan.swift`
+- `Sources/AudioCore/RenderGraphPlanner.swift`
+- `Sources/AudioCore/RenderKernels.swift`
+- `Sources/AudioCore/SourceAdapters.swift`
+- `Sources/AudioCore/OutputAdapters.swift`
+- `Sources/AudioImport/`
+
 Repo structure note:
 
 - The repository already has lowercase `docs/` for older documents.
@@ -176,6 +189,18 @@ Test tone support:
 - `Tests/OrbisonicTests/TestToneSupportTests.swift`
 - Tone-related assertions also exist in `Tests/OrbisonicTests/VURoutingViewTests.swift` and `Tests/OrbisonicTests/SpatialTuningTests.swift`.
 
+Pure Audio tests added during this branch:
+
+- `Tests/AudioContractsTests/`
+- `Tests/AudioCoreTests/AudioControlTests.swift`
+- `Tests/AudioCoreTests/AudioSessionPlannerTests.swift`
+- `Tests/AudioCoreTests/RenderGraphPlanTests.swift`
+- `Tests/AudioCoreTests/RenderKernelTests.swift`
+- `Tests/AudioCoreTests/SourceAdapterTests.swift`
+- `Tests/AudioCoreTests/OutputAdapterTests.swift`
+- `Tests/AudioImportTests/`
+- Architecture boundary tests under `Tests/OrbisonicTests/`
+
 ## High-Level Migration Order
 
 1. Freeze this baseline and keep current behavior intact.
@@ -190,6 +215,15 @@ Test tone support:
 10. Update UI/view model/web surfaces to command-only mutation and read-only snapshots.
 11. Add boundary tests that prevent UI, VU, metadata, route picker, or renderer display code from mutating live audio objects.
 12. Only after those boundaries exist, connect Dante production output.
+
+Prompt 10 adds the dual-output adapter architecture as validation/offline structure:
+
+- Desktop and Dante are now modeled as separate output adapter protocols.
+- `DualOutputRenderCoordinator` renders desktop and Dante from one canonical source bus as sibling blocks.
+- Desktop route failure is isolated from Dante render output.
+- Dante route failure is treated as production-output failure.
+- The offline adapters consume deterministic blocks and expose value-only status snapshots.
+- Live dual physical output is not implemented yet. The code must not claim Dante is audible until a real AudioCore-owned live Dante adapter is added and verified.
 
 ## Prompt 1 Non-Goals
 

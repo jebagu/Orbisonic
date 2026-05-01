@@ -100,6 +100,34 @@ The render kernels must never add any of these ledger conversions:
 
 Offline managed import remains the only approved sample-rate conversion path before production playback. The render kernel may consume the resulting managed asset only after the managed descriptor and session format agree on sample rate.
 
+## Prompt 10 Output Adapter Ledger Facts
+
+Prompt 10 adds validation/offline output adapters:
+
+- `OfflineDesktopOutputAdapter`
+- `OfflineDanteOutputAdapter`
+- `DualOutputRenderCoordinator`
+
+These adapters consume already-rendered blocks. They do not perform format conversion, channel remixing, sample-rate conversion, file I/O, or route negotiation inside block consumption.
+
+Output adapter ledger/audit facts:
+
+- Desktop output sample rate must equal the session sample rate.
+- Dante output sample rate must equal the session sample rate.
+- Desktop output must be stereo.
+- Dante output must expose at least 31 physical channels.
+- Physical Dante channel 32, when present, must remain silent and reserved.
+- A route sample-rate mismatch is a validation failure, not a conversion event.
+- A validation-only status is proof of route/render validation only. It is not proof that audio is leaving the Mac.
+
+The output adapters must never add any of these ledger conversions:
+
+- `offlineManagedSampleRateConversion`
+- `productionSampleRateConversion`
+- `unknownGraphConversion`
+
+Future live output adapters must continue this rule: live device binding may accept only blocks already at the session sample rate and must fail closed rather than relying on hidden device or graph sample-rate conversion.
+
 ## Prompt 6 Managed Import Ledgers
 
 Prompt 6 adds `ManagedAssetImporter` and `ManagedAssetDescriptor`.
