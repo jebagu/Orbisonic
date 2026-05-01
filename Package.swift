@@ -13,6 +13,9 @@ let package = Package(
         )
     ],
     targets: [
+        .target(
+            name: "AudioContracts"
+        ),
         .executableTarget(
             name: "Orbisonic",
             exclude: [
@@ -40,6 +43,10 @@ let package = Package(
         .testTarget(
             name: "OrbisonicTests",
             dependencies: ["Orbisonic"]
+        ),
+        .testTarget(
+            name: "AudioContractsTests",
+            dependencies: ["AudioContracts"]
         )
     ]
 )
