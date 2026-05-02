@@ -220,6 +220,43 @@ final class LoopbackSourceSupportTests: XCTestCase {
         )
     }
 
+    func testStartupMonitorSelectionFallsBackFromNoneAndStaleDevicesToSystemDefault() {
+        let system = outputRoute(uid: "built-in", name: "MacBook Speakers", transport: "Built-In", channels: 2)
+        let selected = outputRoute(uid: "usb", name: "USB Headphones", transport: "USB", channels: 2)
+        let routes = [system, selected]
+
+        XCTAssertEqual(
+            OutputRouteSelectionPolicy.startupMonitorSelection(
+                from: routes,
+                storedSelection: .none,
+                systemOutput: system
+            ),
+            .systemDefault
+        )
+        XCTAssertEqual(
+            OutputRouteSelectionPolicy.startupMonitorSelection(
+                from: routes,
+                storedSelection: .device("missing"),
+                systemOutput: system
+            ),
+            .systemDefault
+        )
+    }
+
+    func testStartupMonitorSelectionKeepsAvailableSelectableSavedDevice() {
+        let system = outputRoute(uid: "built-in", name: "MacBook Speakers", transport: "Built-In", channels: 2)
+        let selected = outputRoute(uid: "usb", name: "USB Headphones", transport: "USB", channels: 2)
+
+        XCTAssertEqual(
+            OutputRouteSelectionPolicy.startupMonitorSelection(
+                from: [system, selected],
+                storedSelection: .device(selected.uid),
+                systemOutput: system
+            ),
+            .device(selected.uid)
+        )
+    }
+
     func testRendererOutputSelectionAllowsNone() {
         let system = outputRoute(uid: "built-in", name: "MacBook Speakers", transport: "Built-In", channels: 2)
         let selected = OutputRouteSelectionPolicy.rendererRoute(

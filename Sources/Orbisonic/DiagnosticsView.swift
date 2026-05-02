@@ -91,7 +91,7 @@ struct DiagnosticsView: View {
             diagnosticsDisclosure(
                 id: .inputHealth,
                 title: "Input / Source Health",
-                defaultExpanded: true,
+                defaultExpanded: false,
                 rows: inputHealthRows,
                 warnings: inputHealthWarnings
             )
@@ -99,7 +99,7 @@ struct DiagnosticsView: View {
             diagnosticsDisclosure(
                 id: .roon,
                 title: "Roon",
-                defaultExpanded: model.sourceMode == .roon,
+                defaultExpanded: false,
                 rows: roonRows,
                 warnings: roonWarnings
             )
@@ -107,7 +107,7 @@ struct DiagnosticsView: View {
             diagnosticsDisclosure(
                 id: .spotify,
                 title: "Spotify",
-                defaultExpanded: model.sourceMode == .spotify,
+                defaultExpanded: false,
                 rows: spotifyRows,
                 warnings: spotifyWarnings
             )
@@ -115,7 +115,7 @@ struct DiagnosticsView: View {
             diagnosticsDisclosure(
                 id: .aux,
                 title: "Aux Cable",
-                defaultExpanded: model.sourceMode == .aux,
+                defaultExpanded: false,
                 rows: auxRows,
                 warnings: auxWarnings
             )
@@ -123,7 +123,7 @@ struct DiagnosticsView: View {
             diagnosticsDisclosure(
                 id: .localFiles,
                 title: "Local Files",
-                defaultExpanded: model.sourceMode == .filePlayback,
+                defaultExpanded: false,
                 rows: localFileRows,
                 warnings: localFileWarnings
             )
@@ -871,7 +871,7 @@ struct DiagnosticsView: View {
         warnings: [DiagnosticsRow],
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        let expansion = expansionBinding(for: id, defaultExpanded: defaultExpanded || !warnings.isEmpty)
+        let expansion = expansionBinding(for: id, defaultExpanded: defaultExpanded)
 
         return OrbisonicDisclosureTray(
             isExpanded: expansion,

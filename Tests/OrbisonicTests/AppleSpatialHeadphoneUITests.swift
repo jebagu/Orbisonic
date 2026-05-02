@@ -1,28 +1,26 @@
 import XCTest
 
 final class AppleSpatialHeadphoneUITests: XCTestCase {
-    func testAppleSpatialHeadphonesToggleSendsCommandOnly() throws {
+    func testAppleSpatialHeadphonesToggleIsAbsentFromOutputUI() throws {
         let contentView = try source("Sources/Orbisonic/ContentView.swift")
         let viewModel = try source("Sources/Orbisonic/OrbisonicViewModel.swift")
 
-        XCTAssertTrue(contentView.contains("Apple Spatial Headphones"))
-        XCTAssertTrue(contentView.contains("model.setAppleSpatialHeadphonesEnabled"))
-        XCTAssertFalse(contentView.contains(".disabled(!model.appleSpatialHeadphonesToggleIsEnabled)"))
+        XCTAssertFalse(contentView.contains("Apple Spatial Headphones"))
+        XCTAssertFalse(contentView.contains("model.setAppleSpatialHeadphonesEnabled"))
         XCTAssertFalse(contentView.contains("import AVFAudio"))
         XCTAssertFalse(contentView.contains("import CoreAudio"))
         XCTAssertFalse(contentView.contains("AVAudioEnvironmentNode"))
         XCTAssertFalse(viewModel.contains("AVAudioEnvironmentNode"))
         XCTAssertFalse(viewModel.contains("AudioBufferList"))
+        XCTAssertTrue(viewModel.contains("appleSpatialHeadphonesEnabled = false"))
     }
 
-    func testOutputMonitorToggleIsInOutputOneOnly() throws {
+    func testOutputMonitorDoesNotContainAppleSpatialToggle() throws {
         let contentView = try source("Sources/Orbisonic/ContentView.swift")
-        let outputOneRange = try XCTUnwrap(contentView.range(of: #"title: "Output 1: Listen locally""#))
-        let outputTwoRange = try XCTUnwrap(contentView.range(of: #"title: "Output 2: Sonic Sphere""#))
-        let toggleRange = try XCTUnwrap(contentView.range(of: "appleSpatialHeadphonesMonitorToggle"))
 
-        XCTAssertLessThan(outputOneRange.lowerBound, toggleRange.lowerBound)
-        XCTAssertLessThan(toggleRange.lowerBound, outputTwoRange.lowerBound)
+        XCTAssertTrue(contentView.contains(#"title: "Output 1: Listen locally""#))
+        XCTAssertTrue(contentView.contains(#"title: "Output 2: Sonic Sphere""#))
+        XCTAssertFalse(contentView.contains("appleSpatialHeadphonesMonitorToggle"))
     }
 
     func testAppleSpatialGraphDoesNotExposeImplementationObjectsToUI() throws {

@@ -421,9 +421,9 @@ public final class AudioCoreShell: @unchecked Sendable {
             state.renderMode = mode
             publishSnapshots(routeRefreshedAt: nil)
             return .renderModeChanged(mode)
-        case .setDesktopMonitorMode(let mode, let options):
-            state.desktopMonitorMode = mode
-            state.appleSpatialHeadphoneOptions = options
+        case .setDesktopMonitorMode:
+            state.desktopMonitorMode = .referenceStereo
+            state.appleSpatialHeadphoneOptions = .disabled
             let status = desktopMonitorModeStatus()
             publishSnapshots(routeRefreshedAt: nil)
             return .desktopMonitorModeChanged(status)

@@ -734,16 +734,7 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var rendererOutputRoute: OutputRouteInfo = .unavailable
     @Published private(set) var systemOutputRoute: OutputRouteInfo = .unavailable
     @Published private(set) var availableOutputRoutes: [OutputRouteInfo] = []
-    @Published var appleSpatialHeadphonesEnabled: Bool = OrbisonicViewModel.loadBool(
-        key: OrbisonicViewModel.appleSpatialHeadphonesEnabledKey,
-        defaultValue: false
-    ) {
-        didSet {
-            guard oldValue != appleSpatialHeadphonesEnabled else { return }
-            UserDefaults.standard.set(appleSpatialHeadphonesEnabled, forKey: Self.appleSpatialHeadphonesEnabledKey)
-            refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: true)
-        }
-    }
+    @Published private(set) var appleSpatialHeadphonesEnabled = false
     @Published private(set) var appleSpatialHeadphoneMonitorStatus = DesktopMonitorModeStatus.referenceStereo()
     @Published private(set) var inputRoute: InputRouteInfo = .unavailable
     @Published private(set) var systemInputRoute: InputRouteInfo = .unavailable
@@ -905,6 +896,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var selectedInputDeviceUID = UserDefaults.standard.string(forKey: OrbisonicViewModel.selectedInputDeviceUIDKey)
     private var monitorOutputSelection = OrbisonicViewModel.loadMonitorOutputSelection()
     private var rendererOutputSelection = OrbisonicViewModel.loadRendererOutputSelection()
+    private var shouldNormalizeStartupMonitorOutputSelection = true
     private var suppressTuningPublish = false
     private var suppressRendererPublish = false
 
@@ -964,6 +956,7 @@ final class OrbisonicViewModel: ObservableObject {
         loadRendererPresets()
         restorePersistedRendererOptions()
         loadLocalMusicDatabase()
+        UserDefaults.standard.set(false, forKey: Self.appleSpatialHeadphonesEnabledKey)
         refreshRoutesIfNeeded(force: true)
         refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: false)
         configureMonitorMeters()
@@ -2264,7 +2257,6 @@ final class OrbisonicViewModel: ObservableObject {
         for url in panel.urls where !nextSettings.m3uPlaylistPaths.contains(url.path) {
             nextSettings.m3uPlaylistPaths.append(url.path)
         }
-        nextSettings.m3uPlaylistPaths.sort { $0.localizedStandardCompare($1) == .orderedAscending }
         updateLocalMusicSettings(nextSettings, rescan: true)
     }
 
@@ -2280,15 +2272,15 @@ final class OrbisonicViewModel: ObservableObject {
         updateLocalMusicSettings(nextSettings, rescan: true)
     }
 
-    func setLocalMusicImportsM3UPlaylists(_ importsM3UPlaylists: Bool) {
+    func setLocalMusicImportsM3UPlaylists(_: Bool) {
         var nextSettings = localMusicSettings
-        nextSettings.importsM3UPlaylists = importsM3UPlaylists
+        nextSettings.importsM3UPlaylists = true
         updateLocalMusicSettings(nextSettings, rescan: true)
     }
 
-    func setLocalMusicExtractsAlbumArt(_ extractsAlbumArt: Bool) {
+    func setLocalMusicExtractsAlbumArt(_: Bool) {
         var nextSettings = localMusicSettings
-        nextSettings.extractsAlbumArt = extractsAlbumArt
+        nextSettings.extractsAlbumArt = true
         updateLocalMusicSettings(nextSettings, rescan: true)
     }
 
@@ -2310,7 +2302,7 @@ final class OrbisonicViewModel: ObservableObject {
     private func applyLocalMusicScanResult(_ result: LocalMusicScanResult) {
         clearLocalPreparedFilePreloads(reason: "local music scan result applied")
         localMusicTracks = result.tracks
-        localMusicPlaylists = result.playlists
+        localMusicPlaylists = orderedLocalMusicPlaylistsAfterScan(result.playlists)
 
         if let selectedLibraryTrackID,
            !localMusicTracks.contains(where: { $0.id == selectedLibraryTrackID }) {
@@ -2836,6 +2828,51 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    func moveLocalMusicPlaylistUp(_ playlist: LocalMusicPlaylist) {
+        moveLocalMusicPlaylist(playlist, offset: -1)
+    }
+
+    func moveLocalMusicPlaylistDown(_ playlist: LocalMusicPlaylist) {
+        moveLocalMusicPlaylist(playlist, offset: 1)
+    }
+
+    func canMoveLocalMusicPlaylistUp(_ playlist: LocalMusicPlaylist) -> Bool {
+        guard let index = localMusicPlaylists.firstIndex(where: { $0.id == playlist.id }) else { return false }
+        return index > 0
+    }
+
+    func canMoveLocalMusicPlaylistDown(_ playlist: LocalMusicPlaylist) -> Bool {
+        guard let index = localMusicPlaylists.firstIndex(where: { $0.id == playlist.id }) else { return false }
+        return index < localMusicPlaylists.count - 1
+    }
+
+    func deleteLocalMusicPlaylist(_ playlist: LocalMusicPlaylist) {
+        let isEditable = isEditableLocalMusicPlaylist(playlist)
+
+        do {
+            if isEditable {
+                try localMusicLibrary.deleteEditablePlaylist(playlist)
+            }
+
+            localMusicPlaylists.removeAll { $0.id == playlist.id }
+            localMusicSettings.m3uPlaylistPaths.removeAll { $0 == playlist.path }
+            if selectedLocalMusicPlaylistID == playlist.id {
+                selectedLocalMusicPlaylistID = localMusicPlaylists.first?.id
+            }
+            persistLocalMusicDatabase()
+
+            statusMessage = isEditable
+                ? "Deleted playlist \(playlist.name)."
+                : "Removed playlist \(playlist.name) from Orbisonic."
+            AppLogger.shared.notice(
+                category: "local-music",
+                "\(isEditable ? "Deleted" : "Removed") playlist path=\(playlist.path)"
+            )
+        } catch {
+            handleLocalMusicPlaylistMutationError(error, logPrefix: "Could not delete playlist")
+        }
+    }
+
     func addSelectedLocalMusicPlaylistToQueue(shuffle: Bool = false) {
         guard let playlist = selectedLocalMusicPlaylist ?? localMusicPlaylists.first else {
             statusMessage = "No M3U playlists are available. Add one in Settings or scan a folder that contains playlists."
@@ -2891,7 +2928,6 @@ final class OrbisonicViewModel: ObservableObject {
             }
             localMusicPlaylists.removeAll { $0.id == playlist.id }
             localMusicPlaylists.append(playlist)
-            localMusicPlaylists.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             selectedLocalMusicPlaylistID = playlist.id
             persistLocalMusicDatabase()
             statusMessage = "Saved session queue as \(playlist.name)."
@@ -2928,6 +2964,18 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    private func moveLocalMusicPlaylist(_ playlist: LocalMusicPlaylist, offset: Int) {
+        guard let sourceIndex = localMusicPlaylists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        let destinationIndex = sourceIndex + offset
+        guard localMusicPlaylists.indices.contains(destinationIndex) else { return }
+
+        localMusicPlaylists.swapAt(sourceIndex, destinationIndex)
+        syncRegisteredPlaylistPathOrderWithVisiblePlaylistOrder()
+        selectedLocalMusicPlaylistID = playlist.id
+        persistLocalMusicDatabase()
+        statusMessage = "Moved \(playlist.name) \(offset < 0 ? "up" : "down")."
+    }
+
     private func validatedPlaylistName(_ rawName: String) throws -> String {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
@@ -2959,9 +3007,34 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func replaceLocalMusicPlaylist(_ oldID: String, with playlist: LocalMusicPlaylist) {
-        localMusicPlaylists.removeAll { $0.id == oldID || $0.id == playlist.id }
-        localMusicPlaylists.append(playlist)
-        localMusicPlaylists.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if let index = localMusicPlaylists.firstIndex(where: { $0.id == oldID || $0.id == playlist.id }) {
+            localMusicPlaylists[index] = playlist
+            localMusicPlaylists.removeAll { $0.id != playlist.id && ($0.id == oldID || $0.id == playlist.id) }
+        } else {
+            localMusicPlaylists.append(playlist)
+        }
+        syncRegisteredPlaylistPathOrderWithVisiblePlaylistOrder()
+    }
+
+    private func orderedLocalMusicPlaylistsAfterScan(_ scannedPlaylists: [LocalMusicPlaylist]) -> [LocalMusicPlaylist] {
+        let scannedByID = Dictionary(uniqueKeysWithValues: scannedPlaylists.map { ($0.id, $0) })
+        var seenIDs = Set<String>()
+        let preserved = localMusicPlaylists.compactMap { playlist -> LocalMusicPlaylist? in
+            guard let scanned = scannedByID[playlist.id], seenIDs.insert(playlist.id).inserted else { return nil }
+            return scanned
+        }
+        let additions = scannedPlaylists.filter { seenIDs.insert($0.id).inserted }
+        return preserved + additions
+    }
+
+    private func syncRegisteredPlaylistPathOrderWithVisiblePlaylistOrder() {
+        let registeredPaths = Set(localMusicSettings.m3uPlaylistPaths)
+        let visibleRegisteredPaths = localMusicPlaylists
+            .map(\.path)
+            .filter { registeredPaths.contains($0) }
+        let hiddenRegisteredPaths = localMusicSettings.m3uPlaylistPaths
+            .filter { !visibleRegisteredPaths.contains($0) }
+        localMusicSettings.m3uPlaylistPaths = visibleRegisteredPaths + hiddenRegisteredPaths
     }
 
     private func handleLocalMusicPlaylistMutationError(_ error: Error, logPrefix: String) {
@@ -4697,7 +4770,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func loadLocalMusicDatabase() {
         let database = localMusicLibrary.load()
-        localMusicSettings = database.settings
+        localMusicSettings = Self.normalizedLocalMusicSettings(database.settings)
         localMusicTracks = database.tracks
         localMusicPlaylists = database.playlists
         sessionQueue = []
@@ -4709,6 +4782,9 @@ final class OrbisonicViewModel: ObservableObject {
             category: "local-music",
             "Loaded local music database tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) watchFolders=\(localMusicSettings.watchFolderPaths.count)"
         )
+        if localMusicSettings != database.settings {
+            persistLocalMusicDatabase()
+        }
         preloadFirstLocalMusicTrackIfNeeded(reason: "local music database loaded")
     }
 
@@ -5144,11 +5220,18 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func updateLocalMusicSettings(_ settings: LocalMusicSettings, rescan: Bool) {
-        localMusicSettings = settings
+        localMusicSettings = Self.normalizedLocalMusicSettings(settings)
         persistLocalMusicDatabase()
         if rescan {
             rescanLocalMusicLibrary()
         }
+    }
+
+    private static func normalizedLocalMusicSettings(_ settings: LocalMusicSettings) -> LocalMusicSettings {
+        var normalized = settings
+        normalized.extractsAlbumArt = true
+        normalized.importsM3UPlaylists = true
+        return normalized
     }
 
     private func startSessionQueue(
@@ -7242,7 +7325,7 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     var appleSpatialHeadphonesToggleIsEnabled: Bool {
-        appleSpatialHeadphonesEnabled || appleSpatialHeadphoneMonitorStatus.capability.isUsable
+        false
     }
 
     var appleSpatialHeadphonesStatusText: String {
@@ -7270,11 +7353,9 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     func setAppleSpatialHeadphonesEnabled(_ enabled: Bool) {
-        guard appleSpatialHeadphonesEnabled != enabled else {
-            refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: true)
-            return
-        }
-        appleSpatialHeadphonesEnabled = enabled
+        UserDefaults.standard.set(false, forKey: Self.appleSpatialHeadphonesEnabledKey)
+        appleSpatialHeadphonesEnabled = false
+        refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: enabled)
     }
 
     private func refreshAppleSpatialHeadphoneMonitorStatus(updateStatusMessage: Bool) {
@@ -7284,11 +7365,9 @@ final class OrbisonicViewModel: ObservableObject {
         let sessionRate: AudioSampleRate? = monitorOutputRoute.nominalSampleRate > 0
             ? try? AudioSampleRate(hertz: monitorOutputRoute.nominalSampleRate)
             : nil
-        let options = AppleSpatialHeadphoneOptions(isEnabled: appleSpatialHeadphonesEnabled)
-        let mode: DesktopMonitorMode = appleSpatialHeadphonesEnabled ? .appleSpatialHeadphones : .referenceStereo
         let nextStatus = appleSpatialHeadphoneMonitor.status(
-            mode: mode,
-            options: options,
+            mode: .referenceStereo,
+            options: .disabled,
             route: routeDescriptor,
             sessionSampleRate: sessionRate,
             liveDesktopBranchConnected: false
@@ -7296,10 +7375,10 @@ final class OrbisonicViewModel: ObservableObject {
         appleSpatialHeadphoneMonitorStatus = nextStatus
 
         if updateStatusMessage {
-            statusMessage = nextStatus.userVisibleMessage
-            if !nextStatus.capability.isUsable && appleSpatialHeadphonesEnabled {
-                lastError = nextStatus.lastError ?? nextStatus.userVisibleMessage
+            if appleSpatialHeadphonesEnabled {
+                appleSpatialHeadphonesEnabled = false
             }
+            statusMessage = "Apple Spatial Headphones is disabled in this build. Reference Stereo Monitor is active."
         }
     }
 
@@ -8274,6 +8353,23 @@ final class OrbisonicViewModel: ObservableObject {
                 category: "route",
                 "Available output routes changed count=\(nextAvailableOutputRoutes.count) devices=[\(outputNames)]"
             )
+        }
+
+        if shouldNormalizeStartupMonitorOutputSelection {
+            shouldNormalizeStartupMonitorOutputSelection = false
+            let normalizedSelection = OutputRouteSelectionPolicy.startupMonitorSelection(
+                from: nextAvailableOutputRoutes,
+                storedSelection: monitorOutputSelection,
+                systemOutput: nextSystemOutputRoute
+            )
+            if normalizedSelection != monitorOutputSelection {
+                AppLogger.shared.notice(
+                    category: "route",
+                    "Startup monitor output selection normalized from \(monitorOutputSelection.storedValue) to \(normalizedSelection.storedValue)"
+                )
+                monitorOutputSelection = normalizedSelection
+                persistMonitorOutputSelection()
+            }
         }
 
         let nextMonitorOutputRoute = resolvedMonitorOutputRoute(

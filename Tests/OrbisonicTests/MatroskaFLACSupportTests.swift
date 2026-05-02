@@ -167,7 +167,7 @@ final class MatroskaFLACSupportTests: XCTestCase {
         XCTAssertEqual(rows[3].value, "02:05")
     }
 
-    func testLocalPlayerRowsUseConciseUsefulFormatNote() {
+    func testLocalPlayerRowsMoveAtmosNoteToRendererAndPrefixLayout() {
         let metadata = AudioSourceMetadata(
             fileName: "atmos-bed.mka",
             containerName: "Matroska",
@@ -183,8 +183,13 @@ final class MatroskaFLACSupportTests: XCTestCase {
 
         let rows = LocalFilePlayerRowsModel.rows(metadata: metadata)
 
-        XCTAssertEqual(rows.map(\.title), ["Format", "Note", "Channels", "Layout", "Length"])
-        XCTAssertEqual(rows[1].value, "Atmos bed decoded; object metadata not rendered")
+        XCTAssertEqual(rows.map(\.title), ["Format", "Channels", "Layout", "Length"])
+        XCTAssertFalse(rows.contains { $0.title == "Note" })
+        XCTAssertEqual(rows[2].value, "Atmos 5.1")
+        XCTAssertEqual(
+            LocalFilePlayerRowsModel.rendererAtmosNote(metadata.formatNote),
+            "Atmos bed decoded; object metadata not rendered"
+        )
     }
 
     func testCompressedAudioProbeRecognizesEAC3AtmosBedMetadata() {

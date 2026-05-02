@@ -34,7 +34,7 @@ final class AppleSpatialHeadphoneMonitorTests: XCTestCase {
         XCTAssertEqual(capability, .unsupportedBecauseBuiltInSpeakers)
     }
 
-    func testAppleSpatialHeadphonesSupportedForAirPodsLikeRoute() {
+    func testAppleSpatialHeadphonesModuleIsDisabledForAirPodsLikeRoute() {
         let status = AppleSpatialHeadphoneMonitor().status(
             mode: .appleSpatialHeadphones,
             options: .enabledDefault,
@@ -43,10 +43,11 @@ final class AppleSpatialHeadphoneMonitorTests: XCTestCase {
             liveDesktopBranchConnected: false
         )
 
-        XCTAssertTrue(status.capability.isUsable, status.userVisibleMessage)
+        XCTAssertEqual(status.mode, .referenceStereo)
+        XCTAssertEqual(status.capability, .validationOnly)
         XCTAssertFalse(status.isActive)
         XCTAssertFalse(status.isPendingRestart)
-        XCTAssertTrue(status.userVisibleMessage.contains("not wired yet"))
+        XCTAssertTrue(status.userVisibleMessage.contains("disabled"))
     }
 
     func testAppleSpatialHeadphonesRejectsSampleRateMismatch() {
@@ -82,7 +83,7 @@ final class AppleSpatialHeadphoneMonitorTests: XCTestCase {
         let status = try await control.setDesktopMonitorMode(.appleSpatialHeadphones)
         let after = try XCTUnwrap(control.latestGraphAudit())
 
-        XCTAssertEqual(status.mode, .appleSpatialHeadphones)
+        XCTAssertEqual(status.mode, .referenceStereo)
         XCTAssertEqual(before.danteOutputGain, after.danteOutputGain)
         XCTAssertEqual(before.danteOutputEnabled, after.danteOutputEnabled)
         XCTAssertEqual(before.renderMode, after.renderMode)

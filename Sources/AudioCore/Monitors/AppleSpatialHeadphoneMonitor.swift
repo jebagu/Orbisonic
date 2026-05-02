@@ -241,54 +241,16 @@ public final class AppleSpatialHeadphoneMonitor: @unchecked Sendable {
                 sessionSampleRate: sessionSampleRate
             )
         case .appleSpatialHeadphones:
-            guard options.isEnabled else {
-                return DesktopMonitorModeStatus(
-                    mode: .appleSpatialHeadphones,
-                    isActive: false,
-                    isPendingRestart: false,
-                    capability: .validationOnly,
-                    userVisibleMessage: "Apple Spatial Headphones is off.",
-                    effectiveOutputRouteName: route?.name,
-                    sessionSampleRate: sessionSampleRate
-                )
-            }
-
-            let capability = classifier.capability(
-                route: route,
-                sessionSampleRate: sessionSampleRate,
-                options: options
-            )
-            guard capability.isUsable else {
-                return DesktopMonitorModeStatus(
-                    mode: .appleSpatialHeadphones,
-                    isActive: false,
-                    isPendingRestart: false,
-                    capability: capability,
-                    userVisibleMessage: capability.userVisibleMessage,
-                    effectiveOutputRouteName: route?.name,
-                    sessionSampleRate: sessionSampleRate,
-                    lastError: capability.userVisibleMessage
-                )
-            }
-
-            let configuration = validateEnvironment(options: options)
-            let active = liveDesktopBranchConnected
-            let message: String
-            if active {
-                message = activeMessage(routeName: route?.name, configuration: configuration)
-            } else {
-                message = "Preference saved. Live Apple Spatial Headphones output is not wired yet."
-            }
-
             return DesktopMonitorModeStatus(
-                mode: .appleSpatialHeadphones,
-                isActive: active,
+                mode: .referenceStereo,
+                isActive: false,
                 isPendingRestart: false,
-                capability: configuration.capability,
-                userVisibleMessage: message,
-                headTrackingStatus: configuration.headTrackingStatus,
+                capability: .validationOnly,
+                userVisibleMessage: "Apple Spatial Headphones is disabled in this build. Reference Stereo Monitor is active.",
+                headTrackingStatus: .notRequested,
                 effectiveOutputRouteName: route?.name,
-                sessionSampleRate: sessionSampleRate
+                sessionSampleRate: sessionSampleRate,
+                lastError: "Apple Spatial Headphones is disabled in this build."
             )
         }
     }
@@ -298,10 +260,7 @@ public final class AppleSpatialHeadphoneMonitor: @unchecked Sendable {
         position: AppleSpatialSpeakerPosition,
         options: AppleSpatialHeadphoneOptions = .enabledDefault
     ) {
-        guard !position.isOmitted else { return }
-        source.position = AVAudio3DPoint(x: position.x, y: position.y, z: position.z)
-        source.renderingAlgorithm = options.preferHRTFHQ ? .HRTFHQ : .HRTF
-        source.sourceMode = .pointSource
+        // The module is retained for future work, but spatial headphone rendering is disabled in this build.
     }
 
     private func validateEnvironment(options: AppleSpatialHeadphoneOptions) -> EnvironmentConfiguration {

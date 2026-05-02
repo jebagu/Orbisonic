@@ -220,6 +220,240 @@ final class LocalPlayerStabilizationTests: XCTestCase {
     }
 
     @MainActor
+    func testViewModelKeepsLocalMusicAlbumArtExtractionAlwaysOn() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(importsM3UPlaylists: false, extractsAlbumArt: false),
+            tracks: [],
+            playlists: []
+        ))
+
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library
+        )
+
+        XCTAssertTrue(model.localMusicSettings.extractsAlbumArt)
+        XCTAssertTrue(model.localMusicSettings.importsM3UPlaylists)
+
+        model.setLocalMusicExtractsAlbumArt(false)
+        model.setLocalMusicImportsM3UPlaylists(false)
+
+        XCTAssertTrue(model.localMusicSettings.extractsAlbumArt)
+        XCTAssertTrue(model.localMusicSettings.importsM3UPlaylists)
+        XCTAssertTrue(library.load().settings.extractsAlbumArt)
+        XCTAssertTrue(library.load().settings.importsM3UPlaylists)
+    }
+
+    func testMatroskaScanUsesAttachedCoverInsteadOfFirstVideoFrame() throws {
+        guard let ffmpegURL = FFmpegToolLocator.ffmpegURL(),
+              FFmpegToolLocator.ffprobeURL() != nil
+        else {
+            throw XCTSkip("ffmpeg/ffprobe unavailable")
+        }
+
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let matroskaURL = fixture.directory.appendingPathComponent("iaa-style-cover.mkv")
+        try Self.writeMatroskaFixture(
+            to: matroskaURL,
+            ffmpegURL: ffmpegURL,
+            includesNormalVideo: true,
+            includesAttachedCover: true
+        )
+
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        let result = library.scan(settings: LocalMusicSettings(
+            watchFolderPaths: [fixture.directory.path],
+            extractsAlbumArt: true
+        ))
+
+        let track = try XCTUnwrap(result.tracks.first { $0.fileName == matroskaURL.lastPathComponent })
+        let artworkPath = try XCTUnwrap(track.artworkPath)
+        XCTAssertTrue(artworkPath.hasSuffix("-cover.png"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artworkPath))
+
+        let artworkData = try Data(contentsOf: URL(fileURLWithPath: artworkPath))
+        XCTAssertTrue(artworkData.starts(with: [0x89, 0x50, 0x4E, 0x47]))
+    }
+
+    func testMatroskaScanDoesNotCreateArtworkFromOrdinaryVideoStream() throws {
+        guard let ffmpegURL = FFmpegToolLocator.ffmpegURL(),
+              FFmpegToolLocator.ffprobeURL() != nil
+        else {
+            throw XCTSkip("ffmpeg/ffprobe unavailable")
+        }
+
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let matroskaURL = fixture.directory.appendingPathComponent("renderer-display-only.mkv")
+        try Self.writeMatroskaFixture(
+            to: matroskaURL,
+            ffmpegURL: ffmpegURL,
+            includesNormalVideo: true,
+            includesAttachedCover: false
+        )
+
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        let result = library.scan(settings: LocalMusicSettings(
+            watchFolderPaths: [fixture.directory.path],
+            extractsAlbumArt: true
+        ))
+
+        let track = try XCTUnwrap(result.tracks.first { $0.fileName == matroskaURL.lastPathComponent })
+        XCTAssertNil(track.artworkPath)
+    }
+
+    func testLoadRepairsLegacyMatroskaArtworkCachePath() throws {
+        guard let ffmpegURL = FFmpegToolLocator.ffmpegURL(),
+              FFmpegToolLocator.ffprobeURL() != nil
+        else {
+            throw XCTSkip("ffmpeg/ffprobe unavailable")
+        }
+
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let matroskaURL = fixture.directory.appendingPathComponent("legacy-black-cache.mkv")
+        try Self.writeMatroskaFixture(
+            to: matroskaURL,
+            ffmpegURL: ffmpegURL,
+            includesNormalVideo: true,
+            includesAttachedCover: true
+        )
+
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        let legacyArtworkURL = fixture.supportDirectory
+            .appendingPathComponent("Album Artwork", isDirectory: true)
+            .appendingPathComponent(Self.stableIdentifier(for: matroskaURL.path), isDirectory: false)
+            .appendingPathExtension("jpg")
+        try FileManager.default.createDirectory(
+            at: legacyArtworkURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data([0x00, 0x01, 0x02]).write(to: legacyArtworkURL)
+
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(extractsAlbumArt: true),
+            tracks: [
+                LocalMusicTrack(
+                    path: matroskaURL.path,
+                    rootPath: fixture.directory.path,
+                    fileName: matroskaURL.lastPathComponent,
+                    title: "Legacy Cache",
+                    artist: nil,
+                    album: nil,
+                    channelCount: 2,
+                    channelSummary: "FL, FR",
+                    layoutName: "Stereo",
+                    sampleRate: 48_000,
+                    duration: 0.1,
+                    artworkPath: legacyArtworkURL.path
+                )
+            ],
+            playlists: []
+        ))
+
+        let loaded = library.load()
+        let repairedTrack = try XCTUnwrap(loaded.tracks.first)
+        let artworkPath = try XCTUnwrap(repairedTrack.artworkPath)
+        XCTAssertNotEqual(artworkPath, legacyArtworkURL.path)
+        XCTAssertTrue(artworkPath.hasSuffix("-cover.png"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artworkPath))
+    }
+
+    @MainActor
+    func testAppleSpatialHeadphonesPreferenceCannotActivateModule() throws {
+        UserDefaults.standard.set(true, forKey: "Orbisonic.appleSpatialHeadphonesEnabled")
+        defer { UserDefaults.standard.removeObject(forKey: "Orbisonic.appleSpatialHeadphonesEnabled") }
+
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        )
+
+        XCTAssertFalse(model.appleSpatialHeadphonesEnabled)
+        XCTAssertEqual(model.appleSpatialHeadphoneMonitorStatus.mode, .referenceStereo)
+
+        model.setAppleSpatialHeadphonesEnabled(true)
+
+        XCTAssertFalse(model.appleSpatialHeadphonesEnabled)
+        XCTAssertEqual(model.appleSpatialHeadphoneMonitorStatus.mode, .referenceStereo)
+        XCTAssertTrue(model.statusMessage.contains("disabled in this build"))
+    }
+
+    @MainActor
+    func testViewModelReordersAndDeletesPlaylists() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let trackURL = fixture.directory.appendingPathComponent("track.wav")
+        try Self.writeSilentAudioFile(to: trackURL)
+        let track = Self.track(url: trackURL)
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        let first = try library.createPlaylist(name: "First", tracks: [track])
+        let second = try library.createPlaylist(name: "Second", tracks: [track])
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(m3uPlaylistPaths: [first.path, second.path]),
+            tracks: [track],
+            playlists: [first, second]
+        ))
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library
+        )
+
+        model.moveLocalMusicPlaylistDown(first)
+
+        XCTAssertEqual(model.localMusicPlaylists.map(\.name), ["Second", "First"])
+        XCTAssertEqual(model.localMusicSettings.m3uPlaylistPaths, [second.path, first.path])
+
+        model.deleteLocalMusicPlaylist(first)
+
+        XCTAssertEqual(model.localMusicPlaylists.map(\.name), ["Second"])
+        XCTAssertEqual(model.localMusicSettings.m3uPlaylistPaths, [second.path])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    @MainActor
+    func testViewModelRemovesImportedPlaylistWithoutDeletingExternalFile() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let trackURL = fixture.directory.appendingPathComponent("track.wav")
+        try Self.writeSilentAudioFile(to: trackURL)
+        let track = Self.track(url: trackURL)
+        let importedURL = fixture.directory.appendingPathComponent("imported.m3u")
+        try ["#EXTM3U", track.path].joined(separator: "\n").write(to: importedURL, atomically: true, encoding: .utf8)
+        let imported = LocalMusicPlaylist(name: "Imported", path: importedURL.path, trackPaths: [track.path])
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(m3uPlaylistPaths: [imported.path]),
+            tracks: [track],
+            playlists: [imported]
+        ))
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library
+        )
+
+        model.deleteLocalMusicPlaylist(imported)
+
+        XCTAssertTrue(model.localMusicPlaylists.isEmpty)
+        XCTAssertTrue(model.localMusicSettings.m3uPlaylistPaths.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: imported.path))
+    }
+
+    @MainActor
     func testStartupPreloadsFirstLibraryTrackPaused() async throws {
         let fixture = try TemporaryLocalMusicFixture()
         defer { fixture.remove() }
@@ -992,6 +1226,104 @@ final class LocalPlayerStabilizationTests: XCTestCase {
             duration: 1,
             artworkPath: nil
         )
+    }
+
+    private static func writeMatroskaFixture(
+        to url: URL,
+        ffmpegURL: URL,
+        includesNormalVideo: Bool,
+        includesAttachedCover: Bool
+    ) throws {
+        let directory = url.deletingLastPathComponent()
+        let coverURL = directory.appendingPathComponent("cover-\(UUID().uuidString).png")
+        if includesAttachedCover {
+            let coverResult = try MatroskaAudioProbe.runProcess(
+                executableURL: ffmpegURL,
+                arguments: [
+                    "-v", "error",
+                    "-y",
+                    "-f", "lavfi",
+                    "-i", "color=c=red:s=32x32",
+                    "-frames:v", "1",
+                    coverURL.path
+                ]
+            )
+            guard coverResult.terminationStatus == 0 else {
+                throw XCTSkip("ffmpeg cover fixture generation failed: \(coverResult.errorText)")
+            }
+        }
+
+        var arguments = [
+            "-v", "error",
+            "-y"
+        ]
+        if includesNormalVideo {
+            arguments += [
+                "-f", "lavfi",
+                "-i", "color=c=black:s=64x64:r=1"
+            ]
+        }
+        arguments += [
+            "-f", "lavfi",
+            "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"
+        ]
+        if includesAttachedCover {
+            arguments += [
+                "-loop", "1",
+                "-i", coverURL.path
+            ]
+        }
+        arguments += [
+            "-t", "0.1"
+        ]
+        if includesNormalVideo {
+            arguments += [
+                "-map", "0:v",
+                "-map", "1:a"
+            ]
+            if includesAttachedCover {
+                arguments += ["-map", "2:v"]
+            }
+        } else {
+            arguments += ["-map", "0:a"]
+            if includesAttachedCover {
+                arguments += ["-map", "1:v"]
+            }
+        }
+        if includesNormalVideo {
+            arguments += ["-c:v:0", "libx264"]
+        }
+        arguments += [
+            "-c:a", "flac",
+            "-metadata", "title=Matroska Artwork Fixture"
+        ]
+        if includesAttachedCover {
+            let attachedVideoIndex = includesNormalVideo ? "1" : "0"
+            arguments += [
+                "-metadata:s:v:\(attachedVideoIndex)", "filename=cover.png",
+                "-metadata:s:v:\(attachedVideoIndex)", "mimetype=image/png",
+                "-disposition:v:\(attachedVideoIndex)", "attached_pic",
+                "-c:v:\(attachedVideoIndex)", "png"
+            ]
+        }
+        arguments.append(url.path)
+
+        let result = try MatroskaAudioProbe.runProcess(
+            executableURL: ffmpegURL,
+            arguments: arguments
+        )
+        guard result.terminationStatus == 0 else {
+            throw XCTSkip("ffmpeg Matroska artwork fixture generation failed: \(result.errorText)")
+        }
+    }
+
+    private static func stableIdentifier(for value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
 
     private static func spotifyNowPlaying(title: String, isPlaying: Bool) -> SpotifyNowPlaying {

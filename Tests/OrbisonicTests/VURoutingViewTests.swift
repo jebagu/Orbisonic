@@ -34,16 +34,6 @@ final class VURoutingViewTests: XCTestCase {
         XCTAssertFalse(source.contains("Dante Output Meter"))
     }
 
-    func testActiveVUMeterUsesAudioMotionSparkleStyles() throws {
-        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/Orbisonic/ContentView.swift"))
-
-        XCTAssertTrue(source.contains("case .analyzerVU:\n            stageViewport { analyzerVUTab }"))
-        XCTAssertFalse(source.contains("case .analyzerVU:\n            stageViewport { vuMeterTab }"))
-        XCTAssertTrue(source.contains("case sparkles = \"Sparkles\""))
-        XCTAssertTrue(source.contains("case blockyPixelSparkles = \"Blocky Pixel Sparkles\""))
-        XCTAssertTrue(source.contains("drawSparkleBars("))
-    }
-
     func testRendererMeterDisplayAlwaysUsesFullThirtyOneChannelSurface() {
         let scene = RendererMatrixBuilder.sceneModel(
             for: SurroundLayoutDetector.fallbackLayout(for: 30),

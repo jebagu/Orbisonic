@@ -94,6 +94,23 @@ enum OutputSelectionMode: Equatable {
 }
 
 enum OutputRouteSelectionPolicy {
+    static func startupMonitorSelection(
+        from routes: [OutputRouteInfo],
+        storedSelection: OutputSelectionMode,
+        systemOutput: OutputRouteInfo
+    ) -> OutputSelectionMode {
+        switch storedSelection {
+        case .none:
+            return .systemDefault
+        case .systemDefault:
+            return .systemDefault
+        case .device(let uid):
+            return routes.contains { $0.uid == uid && $0.isSelectableOutputTarget }
+                ? storedSelection
+                : .systemDefault
+        }
+    }
+
     static func monitorRoute(
         from routes: [OutputRouteInfo],
         selection: OutputSelectionMode,

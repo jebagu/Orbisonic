@@ -204,8 +204,6 @@ private enum AudioMotionVUStyle: String, CaseIterable, Identifiable {
     case classicSpectrum = "Classic Spectrum"
     case ledBars = "LED Bars"
     case prismGlow = "Prism Glow"
-    case sparkles = "Sparkles"
-    case blockyPixelSparkles = "Blocky Pixel Sparkles"
     case radial = "Radial"
     case mirror = "Mirror"
 
@@ -234,6 +232,86 @@ private struct PlayerDetailRow: Identifiable {
     var id: String { "\(title)-\(hasTopDivider ? "divided" : "plain")" }
 }
 
+private struct OutputLaneNaturalHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct StatusChipBackground: View {
+    let fillColor: Color
+    let strokeColor: Color
+    let isLoading: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+            .fill(fillColor)
+            .overlay {
+                if isLoading {
+                    TimelineView(.animation) { timeline in
+                        LoadingCrosshatchStripePattern(phase: timeline.date.timeIntervalSinceReferenceDate)
+                            .clipShape(RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous))
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                    .stroke(strokeColor, lineWidth: 1)
+            )
+    }
+}
+
+private struct LoadingCrosshatchStripePattern: View {
+    let phase: TimeInterval
+
+    var body: some View {
+        Canvas { context, size in
+            let spacing: CGFloat = 9
+            let travel = CGFloat(phase.truncatingRemainder(dividingBy: 1.2) / 1.2) * spacing
+            drawStripes(
+                in: &context,
+                size: size,
+                spacing: spacing,
+                offset: travel,
+                slope: 1,
+                color: Color.white.opacity(0.30)
+            )
+            drawStripes(
+                in: &context,
+                size: size,
+                spacing: spacing * 1.4,
+                offset: -travel * 0.7,
+                slope: -1,
+                color: Color.black.opacity(0.12)
+            )
+        }
+    }
+
+    private func drawStripes(
+        in context: inout GraphicsContext,
+        size: CGSize,
+        spacing: CGFloat,
+        offset: CGFloat,
+        slope: CGFloat,
+        color: Color
+    ) {
+        var path = Path()
+        let diagonal = size.width + size.height
+        var start = -diagonal + offset
+        while start < diagonal * 1.6 {
+            let startPoint = CGPoint(x: start, y: slope > 0 ? size.height : 0)
+            let endPoint = CGPoint(x: start + size.height, y: slope > 0 ? 0 : size.height)
+            path.move(to: startPoint)
+            path.addLine(to: endPoint)
+            start += spacing
+        }
+        context.stroke(path, with: .color(color), lineWidth: 1)
+    }
+}
+
 struct PlayerDetailRowContent: Equatable {
     let title: String
     let value: String
@@ -242,16 +320,19 @@ struct PlayerDetailRowContent: Equatable {
 
 enum LocalFilePlayerRowsModel {
     static func rows(metadata: AudioSourceMetadata) -> [PlayerDetailRowContent] {
-        var rows = [
+        [
             PlayerDetailRowContent(title: "Format", value: formatText(for: metadata)),
             PlayerDetailRowContent(title: "Channels", value: channelCountText(metadata.channelCount)),
-            PlayerDetailRowContent(title: "Layout", value: layoutText(count: metadata.channelCount, layoutName: metadata.layoutName)),
+            PlayerDetailRowContent(
+                title: "Layout",
+                value: layoutText(
+                    count: metadata.channelCount,
+                    layoutName: metadata.layoutName,
+                    formatNote: metadata.formatNote
+                )
+            ),
             PlayerDetailRowContent(title: "Length", value: metadata.durationText)
         ]
-        if let note = conciseFormatNote(metadata.formatNote) {
-            rows.insert(PlayerDetailRowContent(title: "Note", value: note), at: 1)
-        }
-        return rows
     }
 
     static func rows(track: LocalMusicTrack) -> [PlayerDetailRowContent] {
@@ -279,22 +360,50 @@ enum LocalFilePlayerRowsModel {
         return container.isEmpty ? "Audio file" : container
     }
 
-    private static func conciseFormatNote(_ note: String?) -> String? {
+    static func rendererAtmosNote(_ note: String?) -> String? {
         guard let note = note?.trimmedNilIfBlank else { return nil }
-        if note.localizedCaseInsensitiveContains("Dolby Atmos metadata present"),
-           note.localizedCaseInsensitiveContains("object rendering") {
+        if isAtmosObjectMetadataNote(note) {
             return "Atmos bed decoded; object metadata not rendered"
         }
-        return note.count <= 72 ? note : nil
+        return nil
     }
 
     private static func channelCountText(_ count: Int) -> String {
         count > 0 ? "\(count)" : "-"
     }
 
-    private static func layoutText(count: Int, layoutName: String) -> String {
+    static func layoutText(count: Int, layoutName: String, formatNote: String? = nil) -> String {
         guard count > 0 else { return "-" }
-        return layoutName.trimmedNilIfBlank ?? "\(count).0"
+        let base = layoutName.trimmedNilIfBlank ?? "\(count).0"
+        guard isAtmosObjectMetadataNote(formatNote) else { return base }
+        guard !base.localizedCaseInsensitiveContains("Atmos") else { return base }
+        return "Atmos \(atmosBedLayoutText(count: count, layoutName: base))"
+    }
+
+    private static func isAtmosObjectMetadataNote(_ note: String?) -> Bool {
+        guard let note = note?.trimmedNilIfBlank else { return false }
+        return note.localizedCaseInsensitiveContains("Dolby Atmos metadata present") &&
+            note.localizedCaseInsensitiveContains("object rendering")
+    }
+
+    private static func atmosBedLayoutText(count: Int, layoutName: String) -> String {
+        let lowercased = layoutName.lowercased()
+        for layout in ["9.1.6", "7.1.4", "7.1.2", "7.1", "5.1.4", "5.1.2", "5.1"] where lowercased.contains(layout) {
+            return layout
+        }
+
+        switch count {
+        case 6:
+            return "5.1"
+        case 8:
+            return "7.1"
+        case 12:
+            return "7.1.4"
+        case 16:
+            return "9.1.6"
+        default:
+            return layoutName
+        }
     }
 }
 
@@ -614,7 +723,9 @@ struct ContentView: View {
     @State private var showsRenamePlaylistDialog = false
     @State private var renamePlaylistName = ""
     @State private var playlistPendingRename: LocalMusicPlaylist?
-    private let outputLanePanelMinHeight: CGFloat = 118
+    @State private var playlistPendingDeletion: LocalMusicPlaylist?
+    @State private var rendererTuningExpanded = false
+    @State private var outputLaneEqualHeight: CGFloat = 0
     private let outputLaneLabelColumnWidth: CGFloat = 112
     private let outputLaneColumnSpacing: CGFloat = 12
     private let localMusicSettingsPanelMinHeight: CGFloat = 300
@@ -725,6 +836,31 @@ struct ContentView: View {
                     playlistPendingRename = nil
                 }
             )
+        }
+        .confirmationDialog(
+            "Remove Playlist",
+            isPresented: Binding(
+                get: { playlistPendingDeletion != nil },
+                set: { if !$0 { playlistPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let playlist = playlistPendingDeletion {
+                let isEditable = model.isEditableLocalMusicPlaylist(playlist)
+                Button(isEditable ? "Delete Playlist" : "Remove Playlist", role: .destructive) {
+                    model.deleteLocalMusicPlaylist(playlist)
+                    playlistPendingDeletion = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                playlistPendingDeletion = nil
+            }
+        } message: {
+            if let playlist = playlistPendingDeletion {
+                Text(model.isEditableLocalMusicPlaylist(playlist)
+                    ? "Delete \(playlist.name) from Orbisonic playlists. This removes the managed playlist file."
+                    : "Remove \(playlist.name) from Orbisonic. The external M3U file will not be deleted.")
+            }
         }
     }
 
@@ -915,7 +1051,7 @@ struct ContentView: View {
     }
 
     private var analyzerVUStylePicker: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 124), spacing: 10)], spacing: 10) {
+        HStack(spacing: 10) {
             ForEach(AudioMotionVUStyle.allCases) { style in
                 Button {
                     selectedAudioMotionVUStyle = style
@@ -927,9 +1063,7 @@ struct ContentView: View {
                         Text(style.rawValue)
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(LabTheme.text)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.82)
-                            .frame(minHeight: 28, alignment: .topLeading)
+                            .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 3)
@@ -1423,7 +1557,6 @@ struct ContentView: View {
                         if let warning = model.monitorOutputWarningText {
                             outputLaneWarningText(warning)
                         }
-                        appleSpatialHeadphonesMonitorToggle
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1442,43 +1575,17 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private var appleSpatialHeadphonesMonitorToggle: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(
-                isOn: Binding(
-                    get: { model.appleSpatialHeadphonesEnabled },
-                    set: { model.setAppleSpatialHeadphonesEnabled($0) }
-                )
-            ) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Apple Spatial Headphones")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(LabTheme.text)
-                    Text("Use Apple's headphone spatial renderer for the desktop monitor path. Dante output is unaffected.")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .fixedSize(horizontal: false, vertical: true)
+            .onPreferenceChange(OutputLaneNaturalHeightPreferenceKey.self) { height in
+                if abs(outputLaneEqualHeight - height) > 0.5 {
+                    outputLaneEqualHeight = height
                 }
             }
-            .toggleStyle(.switch)
-            .accessibilityLabel("Apple Spatial Headphones")
-            .accessibilityHint("Toggles Apple's headphone spatial renderer for Output 1 only.")
 
-            Text(model.appleSpatialHeadphonesStatusText)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(model.appleSpatialHeadphoneMonitorStatus.capability.isUsable ? LabTheme.textSoft : LabTheme.amber)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(model.appleSpatialHeadphonesDetailText)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(LabTheme.textSoft)
-                .fixedSize(horizontal: false, vertical: true)
+            settingsPanel(title: "Now playing on Sonic Sphere webpage (local network only)") {
+                webURLRow(title: "Link", url: model.webPublicPageURL)
+            }
         }
-        .padding(.top, 2)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var monitorOutputMenu: some View {
@@ -1696,13 +1803,21 @@ struct ContentView: View {
                 settingsPanel(title: "Renderer") {
                     infoRow(title: "Input", value: rendererInputChannelText)
                     infoRow(title: "Layout", value: rendererSourceLayoutText)
+                    if let note = rendererAtmosNoteText {
+                        infoRow(title: "Atmos", value: note)
+                    }
                     infoRow(title: "Matrix", value: model.rendererText)
                     infoRow(title: "Output", value: model.rendererSelectionText)
                     infoRow(title: "Inspect", value: model.rendererMatrixInspectionText)
                 }
             }
 
-            settingsPanel(title: "Safe Tuning") {
+            OrbisonicDisclosureTray(
+                isExpanded: $rendererTuningExpanded,
+                title: "Tuning",
+                systemImage: "slider.horizontal.3",
+                style: .diagnostics
+            ) {
                 rendererTuningControls
             }
         }
@@ -1830,10 +1945,19 @@ struct ContentView: View {
 
     private var rendererSourceLayoutText: String {
         if let metadata = model.visibleLocalSourceMetadata {
-            return metadata.layoutName
+            return LocalFilePlayerRowsModel.layoutText(
+                count: metadata.channelCount,
+                layoutName: metadata.layoutName,
+                formatNote: metadata.formatNote
+            )
         }
 
         return model.rendererScene.renderMode.displayName
+    }
+
+    private var rendererAtmosNoteText: String? {
+        guard let metadata = model.visibleLocalSourceMetadata else { return nil }
+        return LocalFilePlayerRowsModel.rendererAtmosNote(metadata.formatNote)
     }
 
     private var rendererViewportGrid: some View {
@@ -2069,6 +2193,10 @@ struct ContentView: View {
         return model.isPlaying || model.isTestTonePlaying
     }
 
+    private var statusChipIsLoading: Bool {
+        model.sourceMode == .filePlayback && model.isLocalFileLoading
+    }
+
     private var transportIsBusy: Bool {
         model.isDiagnosticTransitioning ||
             (model.sourceMode == .roon && model.isRoonTransportCommandInFlight) ||
@@ -2191,12 +2319,11 @@ struct ContentView: View {
                         .minimumScaleFactor(0.72)
                         .frame(width: 154, height: 22)
                         .background(
-                            RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                .fill(statusChipFillColor)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                                        .stroke(statusChipStrokeColor, lineWidth: 1)
-                                )
+                            StatusChipBackground(
+                                fillColor: statusChipFillColor,
+                                strokeColor: statusChipStrokeColor,
+                                isLoading: statusChipIsLoading
+                            )
                         )
                 }
 
@@ -2258,6 +2385,11 @@ struct ContentView: View {
                         .stroke(LabTheme.line.opacity(0.72), lineWidth: 1)
                 )
         )
+        .contextMenu {
+            if let track = model.visibleLocalPlaybackTrack {
+                addToPlaylistMenu(for: track)
+            }
+        }
     }
 
     private var playerTransportControls: some View {
@@ -2894,7 +3026,7 @@ struct ContentView: View {
 
                     ScrollView(.vertical, showsIndicators: true) {
                         LazyVStack(spacing: 6) {
-                            ForEach(model.localMusicPlaylists) { playlist in
+                            ForEach(Array(model.localMusicPlaylists.enumerated()), id: \.element.id) { _, playlist in
                                 let isEditable = model.isEditableLocalMusicPlaylist(playlist)
                                 Button {
                                     model.selectedLocalMusicPlaylistID = playlist.id
@@ -2914,11 +3046,23 @@ struct ContentView: View {
                                     Button("Queue Playlist") {
                                         model.addLocalMusicPlaylistToQueue(playlist, shuffle: false)
                                     }
+                                    Divider()
+                                    Button("Move Up") {
+                                        model.moveLocalMusicPlaylistUp(playlist)
+                                    }
+                                    .disabled(!model.canMoveLocalMusicPlaylistUp(playlist))
+                                    Button("Move Down") {
+                                        model.moveLocalMusicPlaylistDown(playlist)
+                                    }
+                                    .disabled(!model.canMoveLocalMusicPlaylistDown(playlist))
                                     if isEditable {
                                         Divider()
                                         Button("Rename Playlist") {
                                             beginRenamePlaylist(playlist)
                                         }
+                                    }
+                                    Button(isEditable ? "Delete Playlist" : "Remove Playlist", role: .destructive) {
+                                        beginDeletePlaylist(playlist)
                                     }
                                 }
                             }
@@ -2963,6 +3107,12 @@ struct ContentView: View {
                     }
                     .buttonStyle(LabButtonStyle())
                     .disabled(!isEditable)
+
+                    Button(action: { beginDeletePlaylist(playlist) }) {
+                        Label(isEditable ? "Delete" : "Remove", systemImage: "trash")
+                            .frame(width: 104)
+                    }
+                    .buttonStyle(LabButtonStyle())
                 }
 
                 infoRow(
@@ -3054,6 +3204,10 @@ struct ContentView: View {
         showsRenamePlaylistDialog = true
     }
 
+    private func beginDeletePlaylist(_ playlist: LocalMusicPlaylist) {
+        playlistPendingDeletion = playlist
+    }
+
     private static func defaultQueuePlaylistName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
@@ -3122,22 +3276,7 @@ struct ContentView: View {
                         Button("Add to Queue") {
                             model.addLocalMusicTrackToQueue(track)
                         }
-                        Menu("Add to Playlist") {
-                            if model.editableLocalMusicPlaylists.isEmpty {
-                                Button("No editable playlists") {}
-                                    .disabled(true)
-                            } else {
-                                ForEach(model.editableLocalMusicPlaylists) { playlist in
-                                    Button(playlist.name) {
-                                        model.addLocalMusicTrackToPlaylist(track, playlist)
-                                    }
-                                }
-                                Divider()
-                            }
-                            Button("New Playlist...") {
-                                beginCreatePlaylist(for: track)
-                            }
-                        }
+                        addToPlaylistMenu(for: track)
                     }
                 }
             }
@@ -3425,6 +3564,8 @@ struct ContentView: View {
             Button("Play From Here") {
                 model.playSessionQueueIndex(index)
             }
+            addToPlaylistMenu(for: track)
+            Divider()
             Button("Remove From Queue") {
                 model.removeSessionQueueItem(index)
             }
@@ -3439,13 +3580,28 @@ struct ContentView: View {
         )
     }
 
+    @ViewBuilder
+    private func addToPlaylistMenu(for track: LocalMusicTrack) -> some View {
+        Menu("Add to Playlist") {
+            if model.editableLocalMusicPlaylists.isEmpty {
+                Button("No editable playlists") {}
+                    .disabled(true)
+            } else {
+                ForEach(model.editableLocalMusicPlaylists) { playlist in
+                    Button(playlist.name) {
+                        model.addLocalMusicTrackToPlaylist(track, playlist)
+                    }
+                }
+                Divider()
+            }
+            Button("New Playlist...") {
+                beginCreatePlaylist(for: track)
+            }
+        }
+    }
+
     private var settingsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            settingsPanel(title: "Web Pages") {
-                infoRow(title: "Status", value: model.webServerStatus)
-                webURLRow(title: "Public", url: model.webPublicPageURL)
-            }
-
             HStack(alignment: .top, spacing: 18) {
                 settingsPanel(title: "Watch Folders", minHeight: localMusicSettingsPanelMinHeight) {
                     HStack(spacing: 10) {
@@ -3462,15 +3618,17 @@ struct ContentView: View {
                         .buttonStyle(LabButtonStyle())
                     }
 
-                    Toggle(
-                        "Search subfolders",
-                        isOn: Binding(
-                            get: { model.localMusicSettings.scansSubfolders },
-                            set: model.setLocalMusicScansSubfolders
+                    HStack(spacing: 16) {
+                        Toggle(
+                            "Search subfolders",
+                            isOn: Binding(
+                                get: { model.localMusicSettings.scansSubfolders },
+                                set: model.setLocalMusicScansSubfolders
+                            )
                         )
-                    )
-                    .toggleStyle(.switch)
-                    .tint(LabTheme.cyan)
+                        .toggleStyle(.switch)
+                        .tint(LabTheme.cyan)
+                    }
 
                     infoRow(title: "Folders", value: model.localMusicWatchFolderText)
                     settingsPathList(
@@ -3481,76 +3639,17 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                settingsPanel(title: "M3U Playlists", minHeight: localMusicSettingsPanelMinHeight) {
-                    HStack(spacing: 10) {
-                        Button(action: model.chooseM3UPlaylist) {
-                            Label("Add M3U", systemImage: "text.badge.plus")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle(isActive: true))
-
-                        Button(action: model.rescanLocalMusicLibrary) {
-                            Label("Rescan", systemImage: "arrow.clockwise")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(LabButtonStyle())
-                    }
-
-                    Toggle(
-                        "Import M3U files",
-                        isOn: Binding(
-                            get: { model.localMusicSettings.importsM3UPlaylists },
-                            set: model.setLocalMusicImportsM3UPlaylists
-                        )
+                settingsPanel(title: "Max Volume Limiter", minHeight: localMusicSettingsPanelMinHeight) {
+                    tuningSlider(
+                        title: "Max Output Volume",
+                        value: $model.sphereOutputSafetyLimitPercent,
+                        range: 0...100,
+                        format: "%.0f"
                     )
-                    .toggleStyle(.switch)
-                    .tint(LabTheme.cyan)
-
-                    infoRow(title: "Playlists", value: model.localMusicPlaylistCountText)
-                    settingsPathList(
-                        paths: model.localMusicSettings.m3uPlaylistPaths,
-                        emptyText: "No explicit M3U files yet.",
-                        removeAction: model.removeM3UPlaylist
-                    )
+                    infoRow(title: "Current Effective Volume", value: model.sphereEffectiveOutputVolumeText)
+                    Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-
-            settingsPanel(title: "Album Art And Local Database") {
-                Toggle(
-                    "Extract embedded album art",
-                    isOn: Binding(
-                        get: { model.localMusicSettings.extractsAlbumArt },
-                        set: model.setLocalMusicExtractsAlbumArt
-                    )
-                )
-                .toggleStyle(.switch)
-                .tint(LabTheme.cyan)
-
-                infoRow(title: "Artwork", value: model.localMusicArtworkStatusText)
-                infoRow(title: "Library DB", value: model.localMusicDatabasePath)
-                infoRow(title: "Art Cache", value: model.localMusicArtworkDirectoryPath)
-            }
-
-            settingsPanel(title: "Max Volume Limiter") {
-                tuningSlider(
-                    title: "Max Output Volume",
-                    value: $model.sphereOutputSafetyLimitPercent,
-                    range: 0...100,
-                    format: "%.0f"
-                )
-                infoRow(title: "Current Effective Volume", value: model.sphereEffectiveOutputVolumeText)
-            }
-
-            settingsPanel(title: "Logs And Diagnostics") {
-                HStack(spacing: 10) {
-                    Button(action: model.saveDiagnosticBundle) {
-                        Label("Export Log", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle(isActive: true))
-                }
-                infoRow(title: "Log File", value: AppLogger.logFilePath)
             }
         }
     }
@@ -4040,8 +4139,13 @@ struct ContentView: View {
 
             content()
         }
-        .frame(maxWidth: .infinity, minHeight: outputLanePanelMinHeight, alignment: .topLeading)
         .padding(16)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: OutputLaneNaturalHeightPreferenceKey.self, value: proxy.size.height)
+            }
+        )
+        .frame(maxWidth: .infinity, minHeight: outputLaneEqualHeight > 0 ? outputLaneEqualHeight : nil, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
                 .fill(LabTheme.panelSoft)
@@ -4574,28 +4678,6 @@ private enum AudioMotionVUMeterRenderer {
                 bounds: bounds,
                 showLabels: showLabels
             )
-        case .sparkles:
-            drawSparkleBars(
-                meters: meters,
-                levels: levels,
-                time: time,
-                context: &context,
-                bounds: bounds,
-                appearance: appearance,
-                showLabels: showLabels,
-                pixelated: false
-            )
-        case .blockyPixelSparkles:
-            drawSparkleBars(
-                meters: meters,
-                levels: levels,
-                time: time,
-                context: &context,
-                bounds: bounds,
-                appearance: appearance,
-                showLabels: showLabels,
-                pixelated: true
-            )
         }
     }
 
@@ -4780,263 +4862,6 @@ private enum AudioMotionVUMeterRenderer {
         }
     }
 
-    private static func drawSparkleBars(
-        meters: [ChannelMeter],
-        levels: [Float],
-        time: TimeInterval,
-        context: inout GraphicsContext,
-        bounds: CGRect,
-        appearance: VUMeterAppearance,
-        showLabels: Bool,
-        pixelated: Bool
-    ) {
-        let content = bounds.insetBy(dx: max(18, bounds.width * 0.026), dy: max(18, bounds.height * 0.045))
-        let labelGapScale = showLabels ? appearance.resolvedLabelGapScale : 1
-        let labelHeight: CGFloat = showLabels ? 28 * labelGapScale : 8
-        let reflectionHeight = content.height * (pixelated ? 0.10 : 0.14) * labelGapScale
-        let labelSpacer = 10 * labelGapScale
-        let meterRect = CGRect(
-            x: content.minX,
-            y: content.minY,
-            width: content.width,
-            height: max(1, content.height - reflectionHeight - labelHeight - labelSpacer)
-        )
-        let bars = VUMeterVerticalBarLayout.frames(count: levels.count, rect: meterRect)
-
-        for index in 0..<min(levels.count, bars.count, meters.count) {
-            let level = clampedLevel(levels[index])
-            let barRect = bars[index]
-            drawBarShell(rect: barRect, context: &context)
-            drawSparkleColumn(
-                level: level,
-                index: index,
-                rect: barRect,
-                time: time,
-                pixelated: pixelated,
-                appearance: appearance,
-                context: &context
-            )
-            drawSparklePeak(level: level, index: index, rect: barRect, time: time, pixelated: pixelated, context: &context)
-            drawSparkleReflection(
-                level: level,
-                index: index,
-                rect: barRect,
-                time: time,
-                labelGapScale: labelGapScale,
-                pixelated: pixelated,
-                context: &context
-            )
-
-            if showLabels, shouldShowLabel(index: index, count: meters.count) {
-                context.draw(
-                    Text(VUMeterChannelLabel.text(for: meters[index].channel))
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(LabTheme.textSoft),
-                    at: CGPoint(x: barRect.midX, y: content.maxY - 6),
-                    anchor: .bottom
-                )
-            }
-        }
-    }
-
-    private static func drawSparkleColumn(
-        level: Float,
-        index: Int,
-        rect: CGRect,
-        time: TimeInterval,
-        pixelated: Bool,
-        appearance: VUMeterAppearance,
-        context: inout GraphicsContext
-    ) {
-        guard level > 0.001 else { return }
-
-        let energy = CGFloat(level)
-        let scale = appearance.resolvedPanelFillScale
-        let fillHeight = min(rect.height, max(rect.width * (pixelated ? 1.0 : 1.4), rect.height * (0.10 + energy * 0.90)))
-        let activeRect = CGRect(x: rect.minX, y: rect.maxY - fillHeight, width: rect.width, height: fillHeight)
-        let color = sparkleColor(level: level, index: index, seed: 0.24, time: time)
-        var glow = context
-        glow.addFilter(.shadow(color: color.opacity(pixelated ? 0.24 : 0.38), radius: pixelated ? 5 : 13, x: 0, y: 0))
-        glow.fill(
-            Path(roundedRect: activeRect.insetBy(dx: -rect.width * 0.05, dy: 0), cornerRadius: pixelated ? 1 : min(4, rect.width * 0.24)),
-            with: .linearGradient(
-                Gradient(colors: [
-                    color.opacity(0.03 + Double(level) * 0.10),
-                    color.opacity(0.08 + Double(level) * 0.20),
-                    Color.white.opacity(0.03 + Double(level) * 0.12)
-                ]),
-                startPoint: CGPoint(x: activeRect.midX, y: activeRect.maxY),
-                endPoint: CGPoint(x: activeRect.midX, y: activeRect.minY)
-            )
-        )
-
-        var clipped = context
-        clipped.clip(to: Path(rect.insetBy(dx: -1, dy: -1)))
-        let baseCount = pixelated ? 2 : 3
-        let maxCount = pixelated ? 14 : 19
-        let sparkleCount = max(1, Int(CGFloat(baseCount) + energy * CGFloat(maxCount) * scale))
-        let frame = floor(CGFloat(time) * (pixelated ? 8 : 18))
-
-        for sparkle in 0..<sparkleCount {
-            let seed = CGFloat(index) * 41.731 + CGFloat(sparkle) * 12.989
-            let motion = frame + CGFloat(sparkle) * 0.37
-            let x = activeRect.minX + noise(seed + motion * 0.113) * activeRect.width
-            let y = activeRect.maxY - pow(noise(seed * 0.73 + motion * 0.091), 0.68) * activeRect.height
-            let twinkle = noise(seed * 1.91 + frame * 1.37)
-            let alpha = min(CGFloat(0.96), (0.16 + energy * 0.72) * (0.45 + twinkle * 0.75))
-            let particleColor = sparkleColor(level: level, index: index, seed: noise(seed * 0.41 + frame), time: time)
-
-            if pixelated {
-                let block = max(CGFloat(2), floor(min(rect.width * 0.46, 2 + energy * 5 + scale * 2)))
-                drawPixelSparkle(
-                    center: CGPoint(x: x, y: y),
-                    block: block,
-                    color: particleColor,
-                    alpha: Double(alpha),
-                    context: &clipped
-                )
-            } else {
-                let radius = max(CGFloat(1.5), min(rect.width * 0.44, (2.0 + twinkle * 3.2 + energy * 2.4) * scale))
-                drawSparkle(
-                    center: CGPoint(x: x, y: y),
-                    radius: radius,
-                    color: particleColor,
-                    alpha: Double(alpha),
-                    context: &clipped
-                )
-            }
-        }
-    }
-
-    private static func drawSparklePeak(
-        level: Float,
-        index: Int,
-        rect: CGRect,
-        time: TimeInterval,
-        pixelated: Bool,
-        context: inout GraphicsContext
-    ) {
-        guard level > 0.01 else { return }
-
-        let y = max(rect.minY, rect.maxY - rect.height * CGFloat(level))
-        let color = level > 0.92 ? LabTheme.red : sparkleColor(level: level, index: index, seed: 0.72, time: time)
-        if pixelated {
-            let block = max(CGFloat(2), min(6, rect.width * 0.38))
-            let capRect = CGRect(
-                x: floor((rect.minX - block * 0.5) / block) * block,
-                y: floor(y / block) * block,
-                width: rect.width + block,
-                height: block
-            )
-            context.fill(Path(capRect), with: .color(color.opacity(0.94)))
-        } else {
-            drawSparkle(
-                center: CGPoint(x: rect.midX, y: y),
-                radius: max(2.4, min(6, rect.width * 0.42)),
-                color: color,
-                alpha: 0.95,
-                context: &context
-            )
-        }
-    }
-
-    private static func drawSparkleReflection(
-        level: Float,
-        index: Int,
-        rect: CGRect,
-        time: TimeInterval,
-        labelGapScale: CGFloat,
-        pixelated: Bool,
-        context: inout GraphicsContext
-    ) {
-        guard level > 0.02 else { return }
-
-        let height = min(rect.height * 0.22, rect.height * CGFloat(level) * 0.30) * labelGapScale
-        guard height > 1 else { return }
-
-        let reflection = CGRect(x: rect.minX, y: rect.maxY + 6 * labelGapScale, width: rect.width, height: height)
-        let color = sparkleColor(level: level, index: index, seed: 0.38, time: time)
-        context.fill(
-            Path(roundedRect: reflection, cornerRadius: pixelated ? 1 : min(4, rect.width * 0.2)),
-            with: .linearGradient(
-                Gradient(colors: [color.opacity(pixelated ? 0.14 : 0.18), color.opacity(0.0)]),
-                startPoint: CGPoint(x: reflection.midX, y: reflection.minY),
-                endPoint: CGPoint(x: reflection.midX, y: reflection.maxY)
-            )
-        )
-
-        var clipped = context
-        clipped.clip(to: Path(reflection))
-        let count = max(1, Int(1 + CGFloat(level) * (pixelated ? 4 : 6)))
-        let frame = floor(CGFloat(time) * (pixelated ? 5 : 10))
-        for sparkle in 0..<count {
-            let seed = CGFloat(index) * 19.19 + CGFloat(sparkle) * 7.77
-            let x = reflection.minX + noise(seed + frame * 0.17) * reflection.width
-            let y = reflection.minY + noise(seed * 0.67 + frame * 0.13) * reflection.height
-            let alpha = Double((1 - ((y - reflection.minY) / max(reflection.height, 1))) * 0.26 * CGFloat(level))
-            if pixelated {
-                drawPixelSparkle(center: CGPoint(x: x, y: y), block: max(2, floor(rect.width * 0.28)), color: color, alpha: alpha, context: &clipped)
-            } else {
-                drawSparkle(center: CGPoint(x: x, y: y), radius: max(1.2, rect.width * 0.22), color: color, alpha: alpha, context: &clipped)
-            }
-        }
-    }
-
-    private static func drawSparkle(
-        center: CGPoint,
-        radius: CGFloat,
-        color: Color,
-        alpha: Double,
-        context: inout GraphicsContext
-    ) {
-        let lineWidth = max(CGFloat(1), radius * 0.18)
-        var star = Path()
-        star.move(to: CGPoint(x: center.x, y: center.y - radius))
-        star.addLine(to: CGPoint(x: center.x, y: center.y + radius))
-        star.move(to: CGPoint(x: center.x - radius, y: center.y))
-        star.addLine(to: CGPoint(x: center.x + radius, y: center.y))
-        star.move(to: CGPoint(x: center.x - radius * 0.58, y: center.y - radius * 0.58))
-        star.addLine(to: CGPoint(x: center.x + radius * 0.58, y: center.y + radius * 0.58))
-        star.move(to: CGPoint(x: center.x + radius * 0.58, y: center.y - radius * 0.58))
-        star.addLine(to: CGPoint(x: center.x - radius * 0.58, y: center.y + radius * 0.58))
-
-        var glow = context
-        glow.addFilter(.shadow(color: color.opacity(alpha * 0.42), radius: radius * 1.8, x: 0, y: 0))
-        glow.stroke(
-            star,
-            with: .color(color.opacity(alpha)),
-            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-        )
-        context.fill(
-            Path(ellipseIn: CGRect(x: center.x - lineWidth, y: center.y - lineWidth, width: lineWidth * 2, height: lineWidth * 2)),
-            with: .color(Color.white.opacity(min(0.9, alpha + 0.12)))
-        )
-    }
-
-    private static func drawPixelSparkle(
-        center: CGPoint,
-        block: CGFloat,
-        color: Color,
-        alpha: Double,
-        context: inout GraphicsContext
-    ) {
-        let snapped = CGPoint(x: floor(center.x / block) * block, y: floor(center.y / block) * block)
-        let core = CGRect(x: snapped.x, y: snapped.y, width: block, height: block)
-        context.fill(Path(core), with: .color(color.opacity(alpha)))
-        guard alpha > 0.32 else { return }
-
-        let armAlpha = alpha * 0.42
-        let arms = [
-            CGRect(x: core.minX - block, y: core.minY, width: block, height: block),
-            CGRect(x: core.maxX, y: core.minY, width: block, height: block),
-            CGRect(x: core.minX, y: core.minY - block, width: block, height: block),
-            CGRect(x: core.minX, y: core.maxY, width: block, height: block)
-        ]
-        for rect in arms {
-            context.fill(Path(rect), with: .color(color.opacity(armAlpha)))
-        }
-    }
-
     private static func drawBarShell(rect: CGRect, context: inout GraphicsContext) {
         let radius = min(4, rect.width * 0.24)
         let shell = Path(roundedRect: rect, cornerRadius: radius)
@@ -5185,13 +5010,6 @@ private enum AudioMotionVUMeterRenderer {
                 Color(hue: shiftedHue(index: index, time: time) + 0.08, saturation: 0.78, brightness: 1),
                 level > 0.94 ? LabTheme.red : Color.white.opacity(0.92)
             ]
-        case .sparkles, .blockyPixelSparkles:
-            let base = sparkleColor(level: level, index: index, seed: 0.4, time: time)
-            return [
-                base.opacity(0.62),
-                sparkleColor(level: level, index: index, seed: 0.7, time: time).opacity(0.9),
-                level > 0.94 ? LabTheme.red : Color.white.opacity(0.92)
-            ]
         }
     }
 
@@ -5208,8 +5026,6 @@ private enum AudioMotionVUMeterRenderer {
             return LabTheme.cyan
         case .prismGlow, .radial:
             return prismColor(index: index, time: time)
-        case .sparkles, .blockyPixelSparkles:
-            return sparkleColor(level: level, index: index, seed: 0.42, time: time)
         }
     }
 
@@ -5226,29 +5042,12 @@ private enum AudioMotionVUMeterRenderer {
         return raw - floor(raw)
     }
 
-    private static func sparkleColor(level: Float, index: Int, seed: CGFloat, time: TimeInterval) -> Color {
-        if level > 0.96, seed > 0.74 { return LabTheme.red }
-        if level > 0.80, seed > 0.58 { return LabTheme.amber }
-        let raw = Double(index) * 0.071 + Double(seed) * 0.41 + time * 0.052 + Double(level) * 0.12
-        let hue = raw - floor(raw)
-        return Color(
-            hue: hue,
-            saturation: 0.64 + Double(level) * 0.24,
-            brightness: 0.78 + Double(level) * 0.22
-        )
-    }
-
     private static func point(center: CGPoint, radius: CGFloat, angle: CGFloat) -> CGPoint {
         CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
     }
 
     private static func clampedLevel(_ level: Float) -> Float {
         min(max(level, 0), 1)
-    }
-
-    private static func noise(_ value: CGFloat) -> CGFloat {
-        let raw = sin(value * 127.1 + 311.7) * 43_758.5453
-        return raw - floor(raw)
     }
 }
 

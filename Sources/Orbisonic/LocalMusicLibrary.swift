@@ -134,6 +134,7 @@ enum LocalMusicPlaylistMutationError: LocalizedError, Equatable {
     case readOnly
     case playlistMissing
     case nameConflict(String)
+    case deleteFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -147,6 +148,8 @@ enum LocalMusicPlaylistMutationError: LocalizedError, Equatable {
             return "The playlist file could not be found."
         case .nameConflict(let name):
             return "A playlist named \(name) already exists."
+        case .deleteFailed(let name):
+            return "Could not delete playlist \(name)."
         }
     }
 }
@@ -165,6 +168,78 @@ private struct LocalMusicURLCollection {
 private struct M3UParseResult {
     let urls: [URL]
     let skippedMissingFiles: Int
+}
+
+private struct MatroskaArtworkProbeOutput: Decodable {
+    let streams: [MatroskaArtworkProbeStream]
+}
+
+private struct MatroskaArtworkProbeStream: Decodable {
+    let index: Int
+    let codecType: String?
+    let codecName: String?
+    let disposition: [String: Int]?
+    let tags: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case codecType = "codec_type"
+        case codecName = "codec_name"
+        case disposition
+        case tags
+    }
+
+    var fileExtension: String? {
+        let mimeType = Self.tagValue("mimetype", in: tags ?? [:])?.lowercased()
+        switch mimeType {
+        case "image/png":
+            return "png"
+        case "image/jpeg", "image/jpg":
+            return "jpg"
+        default:
+            break
+        }
+
+        switch codecName?.lowercased() {
+        case "png":
+            return "png"
+        case "mjpeg", "jpeg", "jpg":
+            return "jpg"
+        default:
+            return nil
+        }
+    }
+
+    var isAttachedPicture: Bool {
+        disposition?["attached_pic"] == 1
+    }
+
+    var hasCoverMetadata: Bool {
+        let filename = Self.tagValue("filename", in: tags ?? [:])?.lowercased() ?? ""
+        let mimeType = Self.tagValue("mimetype", in: tags ?? [:])?.lowercased() ?? ""
+        return filename.contains("cover") || mimeType.hasPrefix("image/")
+    }
+
+    var isArtworkCandidate: Bool {
+        codecType == "video" && fileExtension != nil && (isAttachedPicture || hasCoverMetadata)
+    }
+
+    var preferenceScore: Int {
+        var score = 0
+        if isAttachedPicture {
+            score += 100
+        }
+        if hasCoverMetadata {
+            score += 20
+        }
+        return score
+    }
+
+    private static func tagValue(_ key: String, in tags: [String: String]) -> String? {
+        tags.first { $0.key.localizedCaseInsensitiveCompare(key) == .orderedSame }?
+            .value
+            .trimmedNilIfBlank
+    }
 }
 
 final class LocalMusicLibrary {
@@ -352,6 +427,23 @@ final class LocalMusicLibrary {
         )
     }
 
+    func deleteEditablePlaylist(_ playlist: LocalMusicPlaylist) throws {
+        guard isEditablePlaylist(playlist) else {
+            throw LocalMusicPlaylistMutationError.readOnly
+        }
+
+        let playlistURL = URL(fileURLWithPath: playlist.path)
+        guard fileManager.fileExists(atPath: playlistURL.path) else {
+            throw LocalMusicPlaylistMutationError.playlistMissing
+        }
+
+        do {
+            try fileManager.removeItem(at: playlistURL)
+        } catch {
+            throw LocalMusicPlaylistMutationError.deleteFailed(playlist.name)
+        }
+    }
+
     private func collectAudioURLs(settings: LocalMusicSettings) -> LocalMusicURLCollection {
         var seenPaths = Set<String>()
         var urls: [URL] = []
@@ -534,10 +626,16 @@ final class LocalMusicLibrary {
         var repaired = database
         var changed = false
         repaired.tracks = database.tracks.map { track in
-            guard track.channelCount <= 0,
-                  MatroskaFLACSupport.isMatroska(track.url),
+            guard MatroskaFLACSupport.isMatroska(track.url),
                   fileManager.fileExists(atPath: track.path)
             else {
+                return track
+            }
+
+            let needsMetadataRepair = track.channelCount <= 0
+            let needsArtworkRepair = database.settings.extractsAlbumArt
+                && track.artworkPath == legacyMatroskaArtworkURL(for: track.url).path
+            guard needsMetadataRepair || needsArtworkRepair else {
                 return track
             }
 
@@ -618,9 +716,14 @@ final class LocalMusicLibrary {
     }
 
     private func extractMatroskaArtwork(for url: URL) -> String? {
-        guard let ffmpegURL = FFmpegToolLocator.ffmpegURL() else { return nil }
+        guard let ffmpegURL = FFmpegToolLocator.ffmpegURL(),
+              let artworkStream = matroskaArtworkStream(for: url),
+              let artworkExtension = artworkStream.fileExtension
+        else {
+            return nil
+        }
 
-        let filename = "\(Self.stableIdentifier(for: url.path)).jpg"
+        let filename = "\(Self.stableIdentifier(for: url.path))-cover.\(artworkExtension)"
         let destinationURL = artworkDirectoryURL.appendingPathComponent(filename, isDirectory: false)
         if fileManager.fileExists(atPath: destinationURL.path) {
             return destinationURL.path
@@ -632,8 +735,9 @@ final class LocalMusicLibrary {
             "-y",
             "-v", "error",
             "-i", url.path,
-            "-map", "0:v:0",
+            "-map", "0:\(artworkStream.index)",
             "-frames:v", "1",
+            "-c:v", "copy",
             destinationURL.path
         ]
 
@@ -656,6 +760,53 @@ final class LocalMusicLibrary {
         }
 
         return destinationURL.path
+    }
+
+    private func matroskaArtworkStream(for url: URL) -> MatroskaArtworkProbeStream? {
+        guard let ffprobeURL = FFmpegToolLocator.ffprobeURL() else { return nil }
+
+        do {
+            let result = try MatroskaAudioProbe.runProcess(
+                executableURL: ffprobeURL,
+                arguments: [
+                    "-v", "error",
+                    "-print_format", "json",
+                    "-show_streams",
+                    url.path
+                ]
+            )
+
+            guard result.terminationStatus == 0 else {
+                AppLogger.shared.debug(
+                    category: "local-music",
+                    "Matroska artwork probe failed file=\(url.path) error=\(result.errorText)"
+                )
+                return nil
+            }
+
+            let output = try JSONDecoder().decode(MatroskaArtworkProbeOutput.self, from: result.outputData)
+            return output.streams
+                .filter(\.isArtworkCandidate)
+                .sorted { lhs, rhs in
+                    if lhs.preferenceScore == rhs.preferenceScore {
+                        return lhs.index < rhs.index
+                    }
+                    return lhs.preferenceScore > rhs.preferenceScore
+                }
+                .first
+        } catch {
+            AppLogger.shared.debug(
+                category: "local-music",
+                "Matroska artwork probe could not inspect file=\(url.path) error=\(error.localizedDescription)"
+            )
+            return nil
+        }
+    }
+
+    private func legacyMatroskaArtworkURL(for url: URL) -> URL {
+        artworkDirectoryURL
+            .appendingPathComponent(Self.stableIdentifier(for: url.path), isDirectory: false)
+            .appendingPathExtension("jpg")
     }
 
     private func extractArtwork(for url: URL, metadata: [AVMetadataItem]) -> String? {

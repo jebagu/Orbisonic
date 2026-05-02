@@ -751,7 +751,7 @@ public enum AppleSpatialHeadphoneCapability: Equatable, Hashable, Sendable {
         case .unsupportedBecauseSessionSampleRateMismatch:
             "Session sample rate must match the desktop monitor route."
         case .validationOnly:
-            "Apple Spatial Headphones is validation-only in this build."
+            "Apple Spatial Headphones is disabled in this build."
         }
     }
 }
