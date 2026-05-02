@@ -45,7 +45,8 @@ final class AppleSpatialHeadphoneMonitorTests: XCTestCase {
 
         XCTAssertTrue(status.capability.isUsable, status.userVisibleMessage)
         XCTAssertFalse(status.isActive)
-        XCTAssertTrue(status.isPendingRestart)
+        XCTAssertFalse(status.isPendingRestart)
+        XCTAssertTrue(status.userVisibleMessage.contains("not wired yet"))
     }
 
     func testAppleSpatialHeadphonesRejectsSampleRateMismatch() {

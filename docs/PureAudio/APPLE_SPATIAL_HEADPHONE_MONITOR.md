@@ -62,4 +62,4 @@ The default LFE policy is conservative: LFE and LFE2 are omitted from the refere
 
 Prompt 13 adds the command/status boundary, route capability classifier, virtual speaker position map, UI toggle, and validation module.
 
-Live desktop graph rebuilding is not claimed as complete here. When the route supports the mode, the UI reports the mode as pending restart until the desktop monitor branch is safely rebuilt by AudioCore.
+Live desktop graph rebuilding is not claimed as complete here. When the route supports the mode, the UI saves the preference but reports that live Apple Spatial Headphones output is not wired until the desktop monitor branch is safely rebuilt by AudioCore.

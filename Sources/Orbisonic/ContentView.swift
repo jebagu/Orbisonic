@@ -1465,7 +1465,6 @@ struct ContentView: View {
                 }
             }
             .toggleStyle(.switch)
-            .disabled(!model.appleSpatialHeadphonesToggleIsEnabled)
             .accessibilityLabel("Apple Spatial Headphones")
             .accessibilityHint("Toggles Apple's headphone spatial renderer for Output 1 only.")
 

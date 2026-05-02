@@ -7,6 +7,7 @@ final class AppleSpatialHeadphoneUITests: XCTestCase {
 
         XCTAssertTrue(contentView.contains("Apple Spatial Headphones"))
         XCTAssertTrue(contentView.contains("model.setAppleSpatialHeadphonesEnabled"))
+        XCTAssertFalse(contentView.contains(".disabled(!model.appleSpatialHeadphonesToggleIsEnabled)"))
         XCTAssertFalse(contentView.contains("import AVFAudio"))
         XCTAssertFalse(contentView.contains("import CoreAudio"))
         XCTAssertFalse(contentView.contains("AVAudioEnvironmentNode"))

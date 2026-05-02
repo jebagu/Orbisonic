@@ -277,13 +277,13 @@ public final class AppleSpatialHeadphoneMonitor: @unchecked Sendable {
             if active {
                 message = activeMessage(routeName: route?.name, configuration: configuration)
             } else {
-                message = "Apple Spatial Headphones will activate after restarting the monitor."
+                message = "Preference saved. Live Apple Spatial Headphones output is not wired yet."
             }
 
             return DesktopMonitorModeStatus(
                 mode: .appleSpatialHeadphones,
                 isActive: active,
-                isPendingRestart: !active,
+                isPendingRestart: false,
                 capability: configuration.capability,
                 userVisibleMessage: message,
                 headTrackingStatus: configuration.headTrackingStatus,
