@@ -85,6 +85,27 @@ final class OrbisonicUITweakTests: XCTestCase {
         XCTAssertTrue(source.contains("statusChipIsLoading"))
     }
 
+    func testPlayerArtworkUsesLargeVerticalMediaLayout() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let artworkStart = try XCTUnwrap(source.range(of: "private struct PlayerArtworkView"))
+        let artworkEnd = try XCTUnwrap(source.range(of: "struct ContentView", range: artworkStart.upperBound..<source.endIndex))
+        let artworkView = String(source[artworkStart.lowerBound..<artworkEnd.lowerBound])
+        let mediaStart = try XCTUnwrap(source.range(of: "private var nowPlayingMediaBlock"))
+        let mediaEnd = try XCTUnwrap(source.range(of: "private var playerTransportControls", range: mediaStart.upperBound..<source.endIndex))
+        let mediaBlock = String(source[mediaStart.lowerBound..<mediaEnd.lowerBound])
+
+        XCTAssertFalse(artworkView.contains("private let size: CGFloat = 58"))
+        XCTAssertFalse(artworkView.contains(".frame(width: size, height: size)"))
+        XCTAssertTrue(artworkView.contains(".aspectRatio(1, contentMode: .fit)"))
+        XCTAssertTrue(artworkView.contains(".frame(maxWidth: .infinity)"))
+        XCTAssertTrue(mediaBlock.contains("VStack(alignment: .leading, spacing: 10)"))
+        XCTAssertFalse(mediaBlock.contains("HStack(alignment: .center, spacing: 12)"))
+        XCTAssertTrue(mediaBlock.contains("PlayerArtworkView(url: nowPlayingArtworkURL)"))
+        XCTAssertTrue(mediaBlock.contains("Text(nowPlayingTitle)"))
+        XCTAssertTrue(mediaBlock.contains("Text(nowPlayingSubtitle)"))
+        XCTAssertTrue(mediaBlock.contains("addToPlaylistMenu(for: track)"))
+    }
+
     private func source(_ relativePath: String) throws -> String {
         try String(contentsOf: packageRoot().appendingPathComponent(relativePath), encoding: .utf8)
     }

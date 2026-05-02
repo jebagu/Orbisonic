@@ -648,7 +648,6 @@ struct LabButtonStyle: ButtonStyle {
 
 private struct PlayerArtworkView: View {
     let url: URL?
-    private let size: CGFloat = 58
 
     var body: some View {
         ZStack {
@@ -676,8 +675,8 @@ private struct PlayerArtworkView: View {
                 artworkPlaceholder
             }
         }
-        .frame(width: size, height: size)
         .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous))
     }
 
@@ -685,7 +684,7 @@ private struct PlayerArtworkView: View {
         image
             .resizable()
             .scaledToFill()
-            .frame(width: size, height: size)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
     }
 
@@ -2344,9 +2343,10 @@ struct ContentView: View {
     }
 
     private var nowPlayingMediaBlock: some View {
-        HStack(alignment: .center, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             PlayerArtworkView(url: nowPlayingArtworkURL)
                 .padding(6)
+                .frame(maxWidth: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
                         .fill(Color.black.opacity(0.14))
@@ -2359,7 +2359,7 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(nowPlayingTitle)
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(LabTheme.text)
                     .lineLimit(3)
                     .truncationMode(.tail)
