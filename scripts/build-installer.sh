@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-version="${1:-1.0}"
+version="${1:-1.1}"
 app_name="Orbisonic"
 bundle_path="$repo_root/${app_name}.app"
 binary_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}"

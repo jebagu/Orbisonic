@@ -2026,7 +2026,7 @@ struct ContentView: View {
 
     private var headerCard: some View {
         card {
-            Text("Orbisonic 1.0")
+            Text("Orbisonic")
                 .font(.system(size: 18, weight: .heavy))
                 .foregroundStyle(LabTheme.text)
                 .lineLimit(1)

@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 app_name="Orbisonic"
+app_version="1.1"
 bundle_path="$repo_root/${app_name}.app"
 binary_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}"
 resource_bundle_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}_${app_name}.bundle"
@@ -64,6 +65,7 @@ else
   set_plist_string "OrbisonicGitBranch" "detached"
 fi
 set_plist_string "OrbisonicGitCommit" "$git_commit"
+set_plist_string "CFBundleShortVersionString" "$app_version"
 
 xattr -cr "$bundle_path"
 codesign --force --deep --sign - "$bundle_path"

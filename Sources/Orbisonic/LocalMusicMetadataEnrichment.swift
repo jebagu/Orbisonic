@@ -891,7 +891,7 @@ final class MusicBrainzLocalMusicMetadataLookupClient: LocalMusicMetadataLookupC
 
     init(
         session: URLSession = .shared,
-        userAgent: String = "Orbisonic/1.0 (local macOS app)"
+        userAgent: String = "Orbisonic/1.1 (local macOS app)"
     ) {
         self.session = session
         self.userAgent = userAgent
@@ -1050,7 +1050,7 @@ final class AppleITunesLocalMusicMetadataLookupClient: LocalMusicMetadataLookupC
     init(
         session: URLSession = .shared,
         country: String = "us",
-        userAgent: String = "Orbisonic/1.0 (local macOS app)"
+        userAgent: String = "Orbisonic/1.1 (local macOS app)"
     ) {
         self.session = session
         self.country = country
