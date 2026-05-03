@@ -247,6 +247,30 @@ final class MeteringService {
 
     func ingest(
         signal: MeterSignalID,
+        buffer: AVAudioPCMBuffer,
+        startFrame: Int,
+        frameCount: Int
+    ) {
+        guard frameCount > 0,
+              let channelData = buffer.floatChannelData
+        else { return }
+
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return }
+
+        let start = max(0, min(startFrame, frameLength - 1))
+        let frames = min(frameCount, frameLength - start)
+        guard frames > 0 else { return }
+
+        let channelCount = Int(buffer.format.channelCount)
+        let measurements = (0..<channelCount).map { channel -> (rmsDbFS: Float, peakDbFS: Float) in
+            Self.measure(samples: channelData[channel].advanced(by: start), frameCount: frames)
+        }
+        update(signal: signal, measurements: measurements)
+    }
+
+    func ingest(
+        signal: MeterSignalID,
         sampleBuffers: [[Float]],
         frameCount: Int
     ) {

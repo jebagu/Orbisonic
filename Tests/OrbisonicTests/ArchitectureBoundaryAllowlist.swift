@@ -68,6 +68,7 @@ enum ArchitectureBoundaryAllowlist {
         "Sources/AudioImport/LocalAssetImport.swift",
         "Sources/Orbisonic/AudioFileLoader.swift",
         "Sources/Orbisonic/AudioFileProbe.swift",
+        "Sources/Orbisonic/LocalAudioFileSource.swift",
         "Sources/Orbisonic/LocalMusicLibrary.swift",
         "Sources/Orbisonic/MatroskaFLACSupport.swift",
         "Sources/Orbisonic/StreamingAudioFileSource.swift",
@@ -78,6 +79,8 @@ enum ArchitectureBoundaryAllowlist {
     static let legacyAudioCoreCompatibilityFiles: Set<String> = [
         "Sources/Orbisonic/BlackHoleRouteRepair.swift",
         "Sources/Orbisonic/LiveAudioBridge.swift",
+        "Sources/Orbisonic/LocalGaplessScheduler.swift",
+        "Sources/Orbisonic/LocalGaplessTypes.swift",
         "Sources/Orbisonic/MeteringService.swift",
         "Sources/Orbisonic/OrbisonicEngine.swift",
         "Sources/Orbisonic/OutputRouteMonitor.swift",
@@ -110,8 +113,17 @@ enum ArchitectureBoundaryAllowlist {
             "AudioBufferList", "AVAudioPCMBuffer", "UnsafeMutablePointer<Float>",
             "RendererMatrix", "RingBuffer", "LiveAudioPipe"
         ],
+        "Sources/Orbisonic/LocalAudioFileSource.swift": [
+            "importAudioToolbox", "importAVFoundation", "AVAudioPCMBuffer", "AVAudioFile", "AVAudioConverter"
+        ],
         "Sources/Orbisonic/LocalMusicLibrary.swift": [
             "importAVFoundation", "AVAudioFile"
+        ],
+        "Sources/Orbisonic/LocalGaplessTypes.swift": [
+            "importAVFoundation", "AVAudioPCMBuffer"
+        ],
+        "Sources/Orbisonic/LocalGaplessScheduler.swift": [
+            "importAVFoundation", "AVAudioPlayerNode", "AVAudioPCMBuffer"
         ],
         "Sources/Orbisonic/MeteringService.swift": [
             "importAVFoundation", "AVAudioPCMBuffer", "AudioBufferList"
@@ -127,7 +139,7 @@ enum ArchitectureBoundaryAllowlist {
         ],
         "Sources/Orbisonic/OrbisonicEngine.swift": [
             "importAudioToolbox", "importAVFoundation", "AVAudioEngine", "AVAudioMixerNode",
-            "AVAudioPlayerNode", "AVAudioSourceNode", "AVAudioPCMBuffer", "AudioUnit",
+            "AVAudioPlayerNode", "AVAudioSourceNode", "AVAudioPCMBuffer", "AVAudioFile", "AudioUnit",
             "AudioDeviceID", "AudioBufferList", "UnsafeMutablePointer<Float>", "RendererMatrix",
             "LiveAudioPipe", "installTap", "connectCall", "disconnectCall", "mainMixerNode",
             "outputNode"

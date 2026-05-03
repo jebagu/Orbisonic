@@ -113,6 +113,33 @@ final class MeteringServiceTests: XCTestCase {
         XCTAssertTrue(service.levels(signal: .sonicSphere, channelCount: 31).allSatisfy { $0.displayLevel == 0 })
     }
 
+    func testIngestMultichannelPCMBufferWindow() throws {
+        let service = MeteringService()
+        let buffer = try Self.makeMultichannelBuffer(channelCount: 2, frames: 64) { channel, frame in
+            frame < 16 ? 0 : (channel == 0 ? 0.25 : -0.125)
+        }
+
+        service.ingest(signal: .input, buffer: buffer, startFrame: 16, frameCount: 32)
+        let levels = service.levels(signal: .input, channelCount: 2)
+
+        XCTAssertTrue(service.isActive(signal: .input))
+        XCTAssertEqual(levels.count, 2)
+        XCTAssertEqual(levels[0].rawRMSDbFS, MeteringServiceTests.dbFS(0.25), accuracy: 0.05)
+        XCTAssertEqual(levels[1].rawRMSDbFS, MeteringServiceTests.dbFS(0.125), accuracy: 0.05)
+        XCTAssertTrue(levels.allSatisfy { $0.displayLevel > 0 })
+    }
+
+    func testIngestSilentPCMBufferWindowStaysInactive() throws {
+        let service = MeteringService()
+        let buffer = try Self.makeMultichannelBuffer(channelCount: 2, frames: 64) { _, _ in 0 }
+
+        service.ingest(signal: .input, buffer: buffer, startFrame: 16, frameCount: 32)
+        let levels = service.levels(signal: .input, channelCount: 2)
+
+        XCTAssertFalse(service.isActive(signal: .input))
+        XCTAssertTrue(levels.allSatisfy { $0.displayLevel == 0 })
+    }
+
     func testVersionFourMigrationResetsVisualBoostsAndInstallsSignalDefaults() {
         let suiteName = "OrbisonicTests.VUMeterDefaultsMigration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -155,7 +182,28 @@ final class MeteringServiceTests: XCTestCase {
         service.ingest(signal: signal, buffers: buffers, startFrame: 0, frameCount: frames)
     }
 
+    private static func makeMultichannelBuffer(
+        channelCount: AVAudioChannelCount,
+        frames: AVAudioFrameCount,
+        sample: (Int, Int) -> Float
+    ) throws -> AVAudioPCMBuffer {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: channelCount))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let channelData = try XCTUnwrap(buffer.floatChannelData)
+        for channel in 0..<Int(channelCount) {
+            for frame in 0..<Int(frames) {
+                channelData[channel][frame] = sample(channel, frame)
+            }
+        }
+        return buffer
+    }
+
     private func amplitude(dbFS: Float) -> Float {
         powf(10, dbFS / 20)
+    }
+
+    private static func dbFS(_ value: Float) -> Float {
+        20 * log10f(max(value, 0.000_001))
     }
 }

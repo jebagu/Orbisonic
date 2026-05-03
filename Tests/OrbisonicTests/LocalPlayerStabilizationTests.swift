@@ -248,6 +248,106 @@ final class LocalPlayerStabilizationTests: XCTestCase {
         XCTAssertTrue(library.load().settings.importsM3UPlaylists)
     }
 
+    @MainActor
+    func testAlbumSortFallsBackToFolderBeforeTitleWhenAlbumIsMissing() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let firstFolderURL = fixture.directory.appendingPathComponent("A Folder", isDirectory: true)
+        let secondFolderURL = fixture.directory.appendingPathComponent("Z Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstFolderURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondFolderURL, withIntermediateDirectories: true)
+
+        let titleFirstURL = secondFolderURL.appendingPathComponent("alpha-title.wav")
+        let folderFirstURL = firstFolderURL.appendingPathComponent("zulu-title.wav")
+        try Data().write(to: titleFirstURL)
+        try Data().write(to: folderFirstURL)
+
+        let titleFirst = Self.track(
+            url: titleFirstURL,
+            rootURL: fixture.directory,
+            title: "Alpha Title",
+            artist: "Artist",
+            album: nil
+        )
+        let folderFirst = Self.track(
+            url: folderFirstURL,
+            rootURL: fixture.directory,
+            title: "Zulu Title",
+            artist: "Artist",
+            album: nil
+        )
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        library.save(LocalMusicDatabase(settings: LocalMusicSettings(), tracks: [titleFirst, folderFirst], playlists: []))
+
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library,
+            preloadFirstLocalMusicTrack: false
+        )
+        model.localMusicSortMode = .album
+
+        XCTAssertEqual(model.visibleLocalMusicTracks.map(\.displayTitle), ["Zulu Title", "Alpha Title"])
+    }
+
+    @MainActor
+    func testAlbumSortKeepsAlbumTagsAndExistingSecondaryFallbacks() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let folderURL = fixture.directory.appendingPathComponent("Shared Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        let albumZURL = fixture.directory.appendingPathComponent("album-z.wav")
+        let albumAURL = fixture.directory.appendingPathComponent("album-a.wav")
+        let missingArtistZURL = folderURL.appendingPathComponent("artist-z.wav")
+        let missingArtistAURL = folderURL.appendingPathComponent("artist-a.wav")
+        try Data().write(to: albumZURL)
+        try Data().write(to: albumAURL)
+        try Data().write(to: missingArtistZURL)
+        try Data().write(to: missingArtistAURL)
+
+        let albumZ = Self.track(url: albumZURL, rootURL: fixture.directory, title: "Album Z Track", artist: "Artist", album: "Z Album")
+        let albumA = Self.track(url: albumAURL, rootURL: fixture.directory, title: "Album A Track", artist: "Artist", album: "A Album")
+        let missingArtistZ = Self.track(url: missingArtistZURL, rootURL: fixture.directory, title: "Missing Z Artist Track", artist: "Zulu Artist", album: nil)
+        let missingArtistA = Self.track(url: missingArtistAURL, rootURL: fixture.directory, title: "Missing A Artist Track", artist: "Alpha Artist", album: nil)
+        let library = LocalMusicLibrary(supportURL: fixture.supportDirectory)
+        library.save(LocalMusicDatabase(
+            settings: LocalMusicSettings(),
+            tracks: [albumZ, albumA, missingArtistZ, missingArtistA],
+            playlists: []
+        ))
+
+        let model = OrbisonicViewModel(
+            localAudioLoader: Self.delayedLoader(delays: [:]),
+            localMusicLibrary: library,
+            preloadFirstLocalMusicTrack: false
+        )
+        model.localMusicSortMode = .album
+
+        XCTAssertEqual(model.visibleLocalMusicTracks.map(\.displayTitle), [
+            "Album A Track",
+            "Missing A Artist Track",
+            "Missing Z Artist Track",
+            "Album Z Track"
+        ])
+
+        model.localMusicSortMode = .name
+        XCTAssertEqual(model.visibleLocalMusicTracks.map(\.displayTitle), [
+            "Album A Track",
+            "Album Z Track",
+            "Missing A Artist Track",
+            "Missing Z Artist Track"
+        ])
+
+        model.localMusicSortMode = .artist
+        XCTAssertEqual(model.visibleLocalMusicTracks.map(\.displayArtist), [
+            "Alpha Artist",
+            "Artist",
+            "Artist",
+            "Zulu Artist"
+        ])
+    }
+
     func testMatroskaScanUsesAttachedCoverInsteadOfFirstVideoFrame() throws {
         guard let ffmpegURL = FFmpegToolLocator.ffmpegURL(),
               FFmpegToolLocator.ffprobeURL() != nil
@@ -832,6 +932,124 @@ final class LocalPlayerStabilizationTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testLocalGaplessLogicalTrackStartCommitsQueueIndexWithoutLoadingNext() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let currentURL = fixture.directory.appendingPathComponent("current.wav")
+        let nextURL = fixture.directory.appendingPathComponent("next.wav")
+        try Self.writeSilentAudioFile(to: currentURL)
+        try Self.writeSilentAudioFile(to: nextURL)
+
+        let recorder = LocalLoadRecorder()
+        let loader: @Sendable (URL) throws -> LoadedAudioFile = { url in
+            try recorder.load(url: url)
+        }
+        let model = OrbisonicViewModel(localAudioLoader: loader)
+        let current = Self.track(url: currentURL)
+        let next = Self.track(url: nextURL)
+        model.replaceLocalMusicQueueForTesting(
+            tracks: [current, next],
+            currentIndex: nil,
+            selectedIndex: nil
+        )
+        try await model.loadQueueIndexForTesting(0, isPlaying: true)
+        recorder.reset()
+
+        model.triggerLocalGaplessLogicalTrackStartedForTesting(Self.descriptor(for: next, queueIndex: 1))
+
+        XCTAssertTrue(model.isLocalGaplessEngineQueueActiveForTesting)
+        XCTAssertEqual(model.sessionQueueIndex, 1)
+        XCTAssertEqual(model.selectedSessionQueueIndex, 1)
+        XCTAssertEqual(model.currentFileURL?.path, next.path)
+        XCTAssertEqual(model.currentQueueTrack?.id, next.id)
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertFalse(model.isLocalFileLoading)
+        XCTAssertNil(model.pendingSessionQueueIndex)
+        XCTAssertEqual(recorder.fileNames, [])
+    }
+
+    @MainActor
+    func testLocalGaplessPlaybackEndedDoesNotNaturalAdvanceAgain() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let urls = (0..<3).map { fixture.directory.appendingPathComponent("track-\($0).wav") }
+        try urls.forEach { try Self.writeSilentAudioFile(to: $0) }
+
+        let recorder = LocalLoadRecorder()
+        let loader: @Sendable (URL) throws -> LoadedAudioFile = { url in
+            try recorder.load(url: url)
+        }
+        let model = OrbisonicViewModel(localAudioLoader: loader)
+        let tracks = urls.map { Self.track(url: $0) }
+        model.replaceLocalMusicQueueForTesting(
+            tracks: tracks,
+            currentIndex: nil,
+            selectedIndex: nil
+        )
+        try await model.loadQueueIndexForTesting(0, isPlaying: true)
+        recorder.reset()
+
+        model.triggerLocalGaplessLogicalTrackStartedForTesting(Self.descriptor(for: tracks[1], queueIndex: 1))
+        model.triggerLocalGaplessQueueEndedForTesting()
+        model.triggerPlaybackEndedForTesting()
+
+        XCTAssertFalse(model.isLocalGaplessEngineQueueActiveForTesting)
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertEqual(model.sessionQueueIndex, 1)
+        XCTAssertEqual(model.currentFileURL?.path, tracks[1].path)
+        XCTAssertEqual(model.currentQueueTrack?.id, tracks[1].id)
+        XCTAssertNil(model.pendingSessionQueueIndex)
+        XCTAssertFalse(model.isLocalFileLoading)
+        XCTAssertEqual(recorder.fileNames, [])
+    }
+
+    @MainActor
+    func testLocalGaplessLogicalTrackEndedFinalizesProgressWithoutStopping() async throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let currentURL = fixture.directory.appendingPathComponent("current.wav")
+        let nextURL = fixture.directory.appendingPathComponent("next.wav")
+        try Self.writeSilentAudioFile(to: currentURL)
+        try Self.writeSilentAudioFile(to: nextURL)
+
+        let model = OrbisonicViewModel()
+        let current = Self.track(url: currentURL)
+        let next = Self.track(url: nextURL)
+        model.replaceLocalMusicQueueForTesting(
+            tracks: [current, next],
+            currentIndex: nil,
+            selectedIndex: nil
+        )
+        try await model.loadQueueIndexForTesting(0, isPlaying: true)
+
+        model.currentTime = 0.25
+        model.scrubProgress = 0.25
+        model.triggerLocalGaplessLogicalTrackStartedForTesting(Self.descriptor(for: current, queueIndex: 0))
+        model.currentTime = 0.25
+        model.scrubProgress = 0.25
+        model.triggerLocalGaplessLogicalTrackEndedForTesting(Self.descriptor(for: current, queueIndex: 0))
+
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertEqual(model.sessionQueueIndex, 0)
+        XCTAssertEqual(model.currentTime, current.duration)
+        XCTAssertEqual(model.scrubProgress, 1)
+
+        model.triggerLocalGaplessLogicalTrackEndedForTesting(Self.descriptor(for: current, queueIndex: 0))
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertEqual(model.sessionQueueIndex, 0)
+
+        model.triggerLocalGaplessLogicalTrackStartedForTesting(Self.descriptor(for: next, queueIndex: 1))
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertEqual(model.sessionQueueIndex, 1)
+        XCTAssertEqual(model.currentFileURL?.path, next.path)
+        XCTAssertEqual(model.currentTime, 0)
+        XCTAssertEqual(model.scrubProgress, 0)
+    }
+
     func testPausedEngineDefersRendererGraphRebuildAndReschedulesAfterPausedSeek() throws {
         let fixture = try TemporaryLocalMusicFixture()
         defer { fixture.remove() }
@@ -1212,19 +1430,47 @@ final class LocalPlayerStabilizationTests: XCTestCase {
     }
 
     private static func track(url: URL) -> LocalMusicTrack {
-        LocalMusicTrack(
-            path: url.path,
-            rootPath: url.deletingLastPathComponent().path,
-            fileName: url.lastPathComponent,
+        track(
+            url: url,
+            rootURL: url.deletingLastPathComponent(),
             title: url.deletingPathExtension().lastPathComponent,
             artist: nil,
-            album: nil,
+            album: nil
+        )
+    }
+
+    private static func track(
+        url: URL,
+        rootURL: URL,
+        title: String?,
+        artist: String?,
+        album: String?
+    ) -> LocalMusicTrack {
+        LocalMusicTrack(
+            path: url.path,
+            rootPath: rootURL.path,
+            fileName: url.lastPathComponent,
+            title: title,
+            artist: artist,
+            album: album,
             channelCount: 2,
             channelSummary: "FL, FR",
             layoutName: "Stereo",
             sampleRate: 48_000,
             duration: 1,
             artworkPath: nil
+        )
+    }
+
+    private static func descriptor(
+        for track: LocalMusicTrack,
+        queueIndex: Int
+    ) -> LocalGaplessTrackDescriptor {
+        LocalGaplessTrackDescriptor(
+            id: track.id,
+            url: track.url,
+            queueIndex: queueIndex,
+            displayName: track.displayTitle
         )
     }
 

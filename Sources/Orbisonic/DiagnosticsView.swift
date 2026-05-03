@@ -560,6 +560,8 @@ struct DiagnosticsView: View {
         }
 
         rows.append(contentsOf: [
+            DiagnosticsRow(label: "Local gapless scheduler", value: model.isLocalGaplessSchedulerEnabled ? "Enabled" : "Off"),
+            DiagnosticsRow(label: "Compressed trim metadata", value: model.isLocalGaplessCompressedTrimEnabled ? "Enabled" : "Off"),
             DiagnosticsRow(label: "Local library database health", value: model.localMusicSettings.watchFolderPaths.isEmpty && model.localMusicSettings.m3uPlaylistPaths.isEmpty ? "No library sources configured" : "Configured"),
             DiagnosticsRow(label: "Track count", value: "\(model.localMusicTracks.count)"),
             DiagnosticsRow(label: "Playlist count", value: "\(model.localMusicPlaylists.count)"),

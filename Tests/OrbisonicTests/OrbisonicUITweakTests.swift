@@ -32,8 +32,13 @@ final class OrbisonicUITweakTests: XCTestCase {
         XCTAssertFalse(source.contains("infoRow(title: \"M3U\""))
         XCTAssertTrue(source.contains("Label(\"Add Folder\""))
         XCTAssertTrue(source.contains("Search subfolders"))
+        XCTAssertTrue(source.contains("Enhance Metadata"))
+        XCTAssertTrue(source.contains("Use Orbisonic’s cached online names and artwork for missing local music info."))
         XCTAssertTrue(source.contains("infoRow(title: \"Folders\""))
         XCTAssertTrue(source.contains("settingsPanel(title: \"Max Volume Limiter\""))
+        XCTAssertTrue(source.contains("settingsPanel(title: \"Local Playback QA\""))
+        XCTAssertTrue(source.contains("Gapless local playback"))
+        XCTAssertTrue(source.contains("Compressed trim metadata"))
     }
 
     func testPlaylistContextMenusCanAddCurrentAndQueuedTracksToPlaylist() throws {
@@ -67,6 +72,46 @@ final class OrbisonicUITweakTests: XCTestCase {
         XCTAssertFalse(selectedPlaylistPanel.contains("Label(\"Move Down\""))
     }
 
+    func testLocalMusicListsPlaylistsAndQueueUseSpotifyStyleAlbumArtThumbnails() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let thumbnailStart = try XCTUnwrap(source.range(of: "private struct LocalMusicThumbnailView"))
+        let thumbnailEnd = try XCTUnwrap(source.range(of: "struct ContentView", range: thumbnailStart.upperBound..<source.endIndex))
+        let thumbnailView = String(source[thumbnailStart.lowerBound..<thumbnailEnd.lowerBound])
+        let trackLibraryStart = try XCTUnwrap(source.range(of: "private func trackLibraryRow"))
+        let trackLibraryEnd = try XCTUnwrap(source.range(of: "private func playlistLibraryRow", range: trackLibraryStart.upperBound..<source.endIndex))
+        let trackLibraryRow = String(source[trackLibraryStart.lowerBound..<trackLibraryEnd.lowerBound])
+        let playlistLibraryStart = try XCTUnwrap(source.range(of: "private func playlistLibraryRow"))
+        let playlistLibraryEnd = try XCTUnwrap(source.range(of: "private func playlistTrackRow", range: playlistLibraryStart.upperBound..<source.endIndex))
+        let playlistLibraryRow = String(source[playlistLibraryStart.lowerBound..<playlistLibraryEnd.lowerBound])
+        let playlistTrackStart = playlistLibraryEnd
+        let playlistTrackEnd = try XCTUnwrap(source.range(of: "private func queueTrackRow", range: playlistTrackStart.upperBound..<source.endIndex))
+        let playlistTrackRow = String(source[playlistTrackStart.lowerBound..<playlistTrackEnd.lowerBound])
+        let queueTrackStart = playlistTrackEnd
+        let queueTrackEnd = try XCTUnwrap(source.range(of: "private func playlistArtworkPath", range: queueTrackStart.upperBound..<source.endIndex))
+        let queueTrackRow = String(source[queueTrackStart.lowerBound..<queueTrackEnd.lowerBound])
+        let playlistArtworkStart = queueTrackEnd
+        let playlistArtworkEnd = try XCTUnwrap(source.range(of: "@ViewBuilder", range: playlistArtworkStart.upperBound..<source.endIndex))
+        let playlistArtworkHelper = String(source[playlistArtworkStart.lowerBound..<playlistArtworkEnd.lowerBound])
+
+        XCTAssertTrue(thumbnailView.contains("let artworkPath: String?"))
+        XCTAssertTrue(thumbnailView.contains("private let size: CGFloat = 40"))
+        XCTAssertTrue(thumbnailView.contains("NSImage(contentsOf: URL(fileURLWithPath: path))"))
+        XCTAssertTrue(thumbnailView.contains("fallbackSystemImage"))
+        XCTAssertTrue(trackLibraryRow.contains("LocalMusicThumbnailView(artworkPath: track.artworkPath)"))
+        XCTAssertTrue(trackLibraryRow.contains(".frame(height: 56)"))
+        XCTAssertTrue(playlistLibraryRow.contains("LocalMusicThumbnailView("))
+        XCTAssertTrue(playlistLibraryRow.contains("playlistArtworkPath(for: playlist)"))
+        XCTAssertTrue(playlistLibraryRow.contains(".frame(height: 56)"))
+        XCTAssertTrue(playlistTrackRow.contains("LocalMusicThumbnailView(artworkPath: track?.artworkPath)"))
+        XCTAssertTrue(playlistTrackRow.contains(".frame(height: 56)"))
+        XCTAssertTrue(playlistTrackRow.contains("Button(\"Remove From Playlist\")"))
+        XCTAssertTrue(queueTrackRow.contains("LocalMusicThumbnailView(artworkPath: track.artworkPath)"))
+        XCTAssertTrue(queueTrackRow.contains(".frame(height: 56)"))
+        XCTAssertTrue(queueTrackRow.contains("addToPlaylistMenu(for: track)"))
+        XCTAssertTrue(playlistArtworkHelper.contains("model.localMusicTracks.first"))
+        XCTAssertTrue(playlistArtworkHelper.contains("track.artworkPath?.trimmedNilIfBlank"))
+    }
+
     func testDiagnosticsClosablePanelsDefaultCollapsed() throws {
         let source = try source("Sources/Orbisonic/DiagnosticsView.swift")
 
@@ -88,7 +133,7 @@ final class OrbisonicUITweakTests: XCTestCase {
     func testPlayerArtworkUsesLargeVerticalMediaLayout() throws {
         let source = try source("Sources/Orbisonic/ContentView.swift")
         let artworkStart = try XCTUnwrap(source.range(of: "private struct PlayerArtworkView"))
-        let artworkEnd = try XCTUnwrap(source.range(of: "struct ContentView", range: artworkStart.upperBound..<source.endIndex))
+        let artworkEnd = try XCTUnwrap(source.range(of: "private struct LocalMusicThumbnailView", range: artworkStart.upperBound..<source.endIndex))
         let artworkView = String(source[artworkStart.lowerBound..<artworkEnd.lowerBound])
         let mediaStart = try XCTUnwrap(source.range(of: "private var nowPlayingMediaBlock"))
         let mediaEnd = try XCTUnwrap(source.range(of: "private var playerTransportControls", range: mediaStart.upperBound..<source.endIndex))

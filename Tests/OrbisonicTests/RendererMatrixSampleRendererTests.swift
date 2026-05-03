@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Orbisonic
 
@@ -137,6 +138,30 @@ final class RendererMatrixSampleRendererTests: XCTestCase {
         assertSamples(output, equals: secondInput)
     }
 
+    func testMatrixRendererRendersWindowFromMultichannelPCMBuffer() throws {
+        let matrix = RendererMatrix(gains: [
+            [1, 0],
+            [0, 1]
+        ])
+        let buffer = try Self.makeMultichannelBuffer(samples: [
+            [1, 2, 3, 4, 5],
+            [10, 20, 30, 40, 50]
+        ])
+
+        let rendered = RendererMatrixSampleRenderer.renderSampleBuffers(
+            matrix: matrix,
+            sourceBuffer: buffer,
+            startFrame: 1,
+            frameCount: 3
+        )
+
+        XCTAssertEqual(rendered.frameCount, 3)
+        assertSamples(rendered.sampleBuffers, equals: [
+            [2, 3, 4],
+            [20, 30, 40]
+        ])
+    }
+
     func testMatrixRendererDoesNotMutateInputs() {
         let matrix = RendererMatrix(gains: [
             [0.25, 0.75],
@@ -262,6 +287,21 @@ final class RendererMatrixSampleRendererTests: XCTestCase {
             }
         }
         return output
+    }
+
+    private static func makeMultichannelBuffer(samples: [[Float]]) throws -> AVAudioPCMBuffer {
+        let channelCount = AVAudioChannelCount(samples.count)
+        let frames = AVAudioFrameCount(samples.first?.count ?? 0)
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: channelCount))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let channelData = try XCTUnwrap(buffer.floatChannelData)
+        for channel in samples.indices {
+            for frame in samples[channel].indices {
+                channelData[channel][frame] = samples[channel][frame]
+            }
+        }
+        return buffer
     }
 
     private func assertSamples(

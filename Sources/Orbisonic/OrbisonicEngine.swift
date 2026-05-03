@@ -117,8 +117,123 @@ private final class StreamingPlaybackContext {
     }
 }
 
+private final class LocalGaplessMultiNodeSchedulingPlayer: LocalGaplessPlayerScheduling {
+    private let players: [AVAudioPlayerNode]
+    private let monoFormat: AVAudioFormat
+    private let callbackQueue = DispatchQueue(label: "com.orbisonic.local-gapless.player-callback")
+    private let retainedLock = NSLock()
+    private var retainedBuffers: [UUID: [AVAudioPCMBuffer]] = [:]
+
+    init(players: [AVAudioPlayerNode], monoFormat: AVAudioFormat) {
+        self.players = players
+        self.monoFormat = monoFormat
+    }
+
+    func scheduleGaplessBuffer(
+        _ buffer: AVAudioPCMBuffer,
+        completion: @escaping (AVAudioPlayerNodeCompletionCallbackType) -> Void
+    ) {
+        guard !players.isEmpty,
+              buffer.frameLength > 0
+        else { return }
+
+        let id = UUID()
+        let monoBuffers = makeMonoBuffers(from: buffer)
+        retainedLock.lock()
+        retainedBuffers[id] = monoBuffers
+        retainedLock.unlock()
+
+        for (index, player) in players.enumerated() {
+            let monoBuffer = monoBuffers[index]
+            if index == 0 {
+                player.scheduleBuffer(monoBuffer, completionCallbackType: .dataPlayedBack) { [weak self] callbackType in
+                    guard let self else { return }
+                    self.releaseBuffers(id: id)
+                    self.callbackQueue.async {
+                        completion(callbackType)
+                    }
+                }
+            } else {
+                player.scheduleBuffer(monoBuffer, completionCallbackType: .dataPlayedBack)
+            }
+        }
+    }
+
+    func playGapless() {
+        let hostTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.03)
+        let startTime = AVAudioTime(hostTime: hostTime)
+        players.forEach { $0.play(at: startTime) }
+    }
+
+    func pauseGapless() {
+        players.forEach { $0.pause() }
+    }
+
+    func stopGapless() {
+        players.forEach { $0.stop() }
+        retainedLock.lock()
+        retainedBuffers.removeAll()
+        retainedLock.unlock()
+    }
+
+    private func makeMonoBuffers(from buffer: AVAudioPCMBuffer) -> [AVAudioPCMBuffer] {
+        let frameCount = buffer.frameLength
+        let sourceChannelCount = Int(buffer.format.channelCount)
+        let sourceChannels = buffer.floatChannelData
+
+        return players.indices.map { channelIndex in
+            let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frameCount)!
+            monoBuffer.frameLength = frameCount
+            guard let destination = monoBuffer.floatChannelData?[0] else {
+                return monoBuffer
+            }
+
+            if let sourceChannels,
+               channelIndex < sourceChannelCount {
+                destination.update(from: sourceChannels[channelIndex], count: Int(frameCount))
+            } else {
+                destination.initialize(repeating: 0, count: Int(frameCount))
+            }
+            return monoBuffer
+        }
+    }
+
+    private func releaseBuffers(id: UUID) {
+        retainedLock.lock()
+        retainedBuffers.removeValue(forKey: id)
+        retainedLock.unlock()
+    }
+}
+
+struct LocalGaplessEngineQueueSnapshot: Equatable, Sendable {
+    let tracks: [LocalGaplessTrackDescriptor]
+    let startIndex: Int
+
+    init(
+        tracks: [LocalGaplessTrackDescriptor],
+        startIndex: Int
+    ) {
+        self.tracks = tracks
+        self.startIndex = startIndex
+    }
+
+    var currentTrack: LocalGaplessTrackDescriptor? {
+        guard tracks.indices.contains(startIndex) else { return nil }
+        return tracks[startIndex]
+    }
+
+    var nextTrack: LocalGaplessTrackDescriptor? {
+        let nextIndex = startIndex + 1
+        guard tracks.indices.contains(nextIndex) else { return nil }
+        return tracks[nextIndex]
+    }
+}
+
 final class OrbisonicEngine {
     var onPlaybackEnded: (() -> Void)?
+    var onLocalGaplessLogicalTrackStarted: ((LocalGaplessTrackDescriptor) -> Void)?
+    var onLocalGaplessLogicalTrackEnded: ((LocalGaplessTrackDescriptor) -> Void)?
+    var onLocalGaplessQueueEnded: (() -> Void)?
 
     private static let maxStreamingScheduledAheadSeconds: TimeInterval = 2
     private static let maxStreamingScheduledPCMBytes = 64 * 1_024 * 1_024
@@ -129,6 +244,10 @@ final class OrbisonicEngine {
     private let loader = AudioFileLoader()
     private let diagnosticMonitorEngine = AVAudioEngine()
     private let meteringService = MeteringService()
+    private let fixedLocalGaplessConfig: LocalGaplessSchedulerConfig?
+    private var localGaplessConfig: LocalGaplessSchedulerConfig {
+        fixedLocalGaplessConfig ?? LocalGaplessSchedulerConfig()
+    }
 
     private(set) var loadedFile: LoadedAudioFile?
     private(set) var state: TransportState = .idle
@@ -147,6 +266,12 @@ final class OrbisonicEngine {
     private var rendererMode: RendererRenderMode = .automatic
     private var rendererScene: RendererSceneModel = .empty
     private var streamingPlayback: StreamingPlaybackContext?
+    private var localGaplessQueueSnapshot: LocalGaplessEngineQueueSnapshot?
+    private var localGaplessScheduler: LocalGaplessScheduler?
+    private var localGaplessTrackFrameCounts: [String: AVAudioFramePosition] = [:]
+    private var localGaplessCurrentTrack: LocalGaplessTrackDescriptor?
+    private var localGaplessCurrentTrackFrameCount: AVAudioFramePosition?
+    private var localGaplessTrackStartPlayerSampleTime: AVAudioFramePosition = 0
     private var currentStartFrame: AVAudioFramePosition = 0
     private var completionToken = UUID()
     private var pausedPlaybackNeedsReschedule = false
@@ -156,7 +281,8 @@ final class OrbisonicEngine {
     var debugPausedPlaybackNeedsReschedule: Bool { pausedPlaybackNeedsReschedule }
 #endif
 
-    init() {
+    init(localGaplessConfig: LocalGaplessSchedulerConfig? = nil) {
+        self.fixedLocalGaplessConfig = localGaplessConfig
         configureGraph()
         applyTuning(.default)
         AppLogger.shared.notice(category: "engine", "Engine initialized. outputType=normal-monitor-stereo logFile=\(AppLogger.logFilePath)")
@@ -172,11 +298,16 @@ final class OrbisonicEngine {
         return loadPreparedFile(loaded)
     }
 
-    func loadPreparedFile(_ loaded: LoadedAudioFile, debugTiming: DebugTimingContext? = nil) -> LoadedAudioFile {
+    func loadPreparedFile(
+        _ loaded: LoadedAudioFile,
+        debugTiming: DebugTimingContext? = nil,
+        localGaplessQueue: LocalGaplessEngineQueueSnapshot? = nil
+    ) -> LoadedAudioFile {
         let commitStart = DispatchTime.now().uptimeNanoseconds
         debugTiming?.log("commit start", fileURL: loaded.url)
         AppLogger.shared.info(category: "engine", "Loading prepared file into engine: \(loaded.url.lastPathComponent)")
 
+        cancelLocalGaplessScheduler(reason: "prepared file loaded")
         cancelStreamingPlayback(reason: "prepared file loaded")
         debugTiming?.log(
             "stop old local playback start",
@@ -189,6 +320,11 @@ final class OrbisonicEngine {
 
         debugTiming?.log("replace current source start", fileURL: loaded.url)
         loadedFile = loaded
+        localGaplessQueueSnapshot = localGaplessQueue
+        localGaplessCurrentTrack = localGaplessQueue?.currentTrack
+        localGaplessCurrentTrackFrameCount = loaded.frameCount
+        localGaplessTrackStartPlayerSampleTime = 0
+        localGaplessTrackFrameCounts = localGaplessFrameCounts(for: localGaplessQueue, loadedFile: loaded)
         liveInputSource = nil
         currentStartFrame = 0
         pausedPlaybackNeedsReschedule = false
@@ -241,6 +377,7 @@ final class OrbisonicEngine {
 
         stopLiveInput()
         stopTestTone()
+        cancelLocalGaplessScheduler(reason: "streaming source started")
         cancelStreamingPlayback(reason: "new streaming source")
         detachSourceNodes()
 
@@ -384,6 +521,7 @@ final class OrbisonicEngine {
     ) throws -> LiveInputSource {
         stopTestTone()
         stop()
+        cancelLocalGaplessScheduler(reason: "live input started")
         detachPlayerNodes()
         detachSourceNodes()
         cancelStreamingPlayback(reason: "live input started")
@@ -519,7 +657,10 @@ final class OrbisonicEngine {
 
         switch state {
         case .paused:
-            if pausedPlaybackNeedsReschedule {
+            if localGaplessScheduler != nil {
+                localGaplessScheduler?.resume()
+                AppLogger.shared.debug(category: LocalGaplessSchedulerLog.category, "Resumed local gapless playback at frame=\(currentStartFrame).")
+            } else if pausedPlaybackNeedsReschedule {
                 scheduleFromCurrentPosition(debugTiming: debugTiming)
                 startPlayers()
                 AppLogger.shared.notice(category: "transport", "Rescheduled paused playback at frame=\(currentStartFrame).")
@@ -532,16 +673,27 @@ final class OrbisonicEngine {
         case .playing:
             AppLogger.shared.debug(category: "transport", "Play requested while already playing.")
         case .idle, .ready:
-            scheduleFromCurrentPosition(debugTiming: debugTiming)
-            debugTiming?.log(
-                "playback scheduled",
-                fileURL: loadedFile.url,
-                extra: [
-                    "startFrame=\(currentStartFrame)",
-                    "preparedBytes=\(loadedFile.preparedPCMByteCount)"
-                ]
-            )
-            startPlayers()
+            if try startLocalGaplessPlaybackIfPossible(for: loadedFile, debugTiming: debugTiming) {
+                debugTiming?.log(
+                    "gapless playback scheduled",
+                    fileURL: loadedFile.url,
+                    extra: [
+                        "startFrame=\(currentStartFrame)",
+                        "queueCount=\(localGaplessQueueSnapshot?.tracks.count ?? 0)"
+                    ]
+                )
+            } else {
+                scheduleFromCurrentPosition(debugTiming: debugTiming)
+                debugTiming?.log(
+                    "playback scheduled",
+                    fileURL: loadedFile.url,
+                    extra: [
+                        "startFrame=\(currentStartFrame)",
+                        "preparedBytes=\(loadedFile.preparedPCMByteCount)"
+                    ]
+                )
+                startPlayers()
+            }
             state = .playing
             debugTiming?.log(
                 "playback started",
@@ -562,7 +714,10 @@ final class OrbisonicEngine {
         guard state == .playing else { return }
         currentStartFrame = playbackFrame()
         pausedPlaybackNeedsReschedule = false
-        if streamingPlayback != nil {
+        if localGaplessScheduler != nil {
+            localGaplessTrackStartPlayerSampleTime = currentLocalGaplessPlayerSampleTime() ?? localGaplessTrackStartPlayerSampleTime
+            localGaplessScheduler?.pause()
+        } else if streamingPlayback != nil {
             playerNodes.forEach { $0.pause() }
         } else {
             playerNodes.forEach { $0.pause() }
@@ -588,6 +743,7 @@ final class OrbisonicEngine {
 
         if engine.isRunning {
             markPausedPlaybackNeedsReschedule(reason: "output device change")
+            cancelLocalGaplessScheduler(reason: "output device change")
             engine.stop()
             resetMonitorMeterLevels()
         }
@@ -631,6 +787,7 @@ final class OrbisonicEngine {
 
     func stop() {
         let hadStreamingPlayback = streamingPlayback != nil
+        cancelLocalGaplessScheduler(reason: "transport stop")
         playerNodes.forEach { $0.stop() }
         cancelStreamingPlayback(reason: "transport stop")
         if liveInputSource != nil {
@@ -647,6 +804,7 @@ final class OrbisonicEngine {
     }
 
     func playTestTone(_ point: TestTonePipelinePoint, monitorDownmix: Bool = false) throws {
+        cancelLocalGaplessScheduler(reason: "test tone started")
         playerNodes.forEach { $0.stop() }
         if liveInputSource != nil {
             stopLiveInput()
@@ -698,6 +856,7 @@ final class OrbisonicEngine {
             throw OutputDeviceSelectionError.invalidDiagnosticChannel(channelIndex, channelCount)
         }
 
+        cancelLocalGaplessScheduler(reason: "diagnostic channel tone started")
         playerNodes.forEach { $0.stop() }
         if liveInputSource != nil {
             stopLiveInput()
@@ -844,13 +1003,67 @@ final class OrbisonicEngine {
         )
 
         if state == .playing {
-            playerNodes.forEach { $0.stop() }
-            scheduleFromCurrentPosition()
-            startPlayers()
+            if let localGaplessScheduler {
+                do {
+                    try rebuildLocalGaplessScheduleAfterSeek(using: localGaplessScheduler)
+                } catch {
+                    AppLogger.shared.error(category: LocalGaplessSchedulerLog.category, "Local gapless seek failed error=\(error.localizedDescription)")
+                    cancelLocalGaplessScheduler(reason: "gapless seek failed")
+                    scheduleFromCurrentPosition()
+                    startPlayers()
+                }
+                localGaplessTrackStartPlayerSampleTime = 0
+            } else {
+                playerNodes.forEach { $0.stop() }
+                scheduleFromCurrentPosition()
+                startPlayers()
+            }
         } else if state == .paused {
-            playerNodes.forEach { $0.stop() }
-            markPausedPlaybackNeedsReschedule(reason: "seek while paused")
+            if let localGaplessScheduler {
+                do {
+                    try rebuildLocalGaplessScheduleAfterSeek(using: localGaplessScheduler)
+                } catch {
+                    AppLogger.shared.error(category: LocalGaplessSchedulerLog.category, "Paused local gapless seek failed error=\(error.localizedDescription)")
+                    cancelLocalGaplessScheduler(reason: "paused gapless seek failed")
+                    markPausedPlaybackNeedsReschedule(reason: "seek while paused")
+                }
+                localGaplessTrackStartPlayerSampleTime = 0
+            } else {
+                playerNodes.forEach { $0.stop() }
+                markPausedPlaybackNeedsReschedule(reason: "seek while paused")
+            }
         }
+    }
+
+    private func rebuildLocalGaplessScheduleAfterSeek(using scheduler: LocalGaplessScheduler) throws {
+        let queue = localGaplessQueueSnapshot?.tracks
+            ?? localGaplessCurrentTrack.map { [$0] }
+            ?? []
+        guard !queue.isEmpty else {
+            throw LocalGaplessSchedulerError.invalidQueue("cannot seek without a local gapless queue")
+        }
+
+        let preferredIndex = localGaplessCurrentTrack?.queueIndex
+        let currentIndex: Int
+        if let preferredIndex,
+           queue.indices.contains(preferredIndex) {
+            currentIndex = preferredIndex
+        } else if let currentTrack = localGaplessCurrentTrack,
+                  let matchedIndex = queue.firstIndex(where: { $0.id == currentTrack.id }) {
+            currentIndex = matchedIndex
+        } else if let snapshotIndex = localGaplessQueueSnapshot?.startIndex,
+                  queue.indices.contains(snapshotIndex) {
+            currentIndex = snapshotIndex
+        } else {
+            currentIndex = 0
+        }
+
+        try scheduler.rebuildQueue(
+            queue: queue,
+            currentIndex: currentIndex,
+            seekFrame: currentStartFrame,
+            preserveCurrentTrackStart: true
+        )
     }
 
     func currentTime() -> TimeInterval {
@@ -876,6 +1089,13 @@ final class OrbisonicEngine {
             return streamingPlayback.durationSeconds
         }
 
+        if localGaplessScheduler != nil,
+           let loadedFile,
+           let frameCount = localGaplessCurrentTrackFrameCount {
+            guard loadedFile.sampleRate > 0 else { return 0 }
+            return Double(frameCount) / loadedFile.sampleRate
+        }
+
         return loadedFile?.duration ?? 0
     }
 
@@ -895,6 +1115,23 @@ final class OrbisonicEngine {
             }
             ingestStreamingInputMeters(streamingPlayback)
             return meteringService.levels(signal: .input, channelCount: streamingPlayback.layout.channelCount)
+        }
+
+        if localGaplessScheduler != nil {
+            let channelCount = max(loadedFile?.layout.channelCount ?? 1, 1)
+            let sampleRate = loadedFile?.sampleRate ?? 48_000
+            let sampleWindow = max(Int(sampleRate * 0.015), 512)
+            guard let snapshot = localGaplessMeterSnapshot(sampleWindow: sampleWindow) else {
+                meteringService.setInactive(signal: .input, channelCount: channelCount)
+                return meteringService.levels(signal: .input, channelCount: channelCount)
+            }
+            meteringService.ingest(
+                signal: .input,
+                buffer: snapshot.buffer,
+                startFrame: Int(snapshot.bufferFrameOffset),
+                frameCount: Int(snapshot.frameCount)
+            )
+            return meteringService.levels(signal: .input, channelCount: channelCount)
         }
 
         guard let loadedFile else {
@@ -1026,6 +1263,397 @@ final class OrbisonicEngine {
         AppLogger.shared.debug(category: "transport", "Paused playback will reschedule on resume. reason=\(reason) frame=\(currentStartFrame)")
     }
 
+    private func startLocalGaplessPlaybackIfPossible(
+        for loadedFile: LoadedAudioFile,
+        debugTiming: DebugTimingContext?
+    ) throws -> Bool {
+        guard localGaplessConfig.isEnabled else { return false }
+        guard let snapshot = localGaplessQueueSnapshot else {
+            AppLogger.shared.debug(category: LocalGaplessSchedulerLog.category, "Prepared local fallback reason=\"missing queue snapshot\"")
+            return false
+        }
+        guard let fallbackReason = localGaplessFallbackReason(snapshot: snapshot, loadedFile: loadedFile) else {
+            guard let outputFormat = localGaplessOutputFormat(for: loadedFile) else {
+                AppLogger.shared.info(
+                    category: LocalGaplessSchedulerLog.category,
+                    "Prepared local fallback reason=\"could not create gapless output format\" file=\(loadedFile.url.lastPathComponent)"
+                )
+                return false
+            }
+
+            let player = playerNodes[0]
+            let token = UUID()
+            completionToken = token
+            localGaplessCurrentTrack = snapshot.currentTrack
+            localGaplessCurrentTrackFrameCount = loadedFile.frameCount
+            localGaplessTrackStartPlayerSampleTime = 0
+
+            let expectedSampleRate = loadedFile.sampleRate
+            let expectedChannelCount = loadedFile.layout.channelCount
+            let schedulingPlayer = LocalGaplessMultiNodeSchedulingPlayer(
+                players: playerNodes,
+                monoFormat: loadedFile.monoFormat
+            )
+            let scheduler = LocalGaplessScheduler(
+                playerNode: player,
+                format: outputFormat,
+                config: localGaplessConfig,
+                schedulingPlayer: schedulingPlayer,
+                sourceFactory: { track, outputFormat, config in
+                    guard Self.localGaplessTrackIsCompatible(
+                        track,
+                        expectedSampleRate: expectedSampleRate,
+                        expectedChannelCount: expectedChannelCount
+                    ) else {
+                        throw LocalGaplessSchedulerError.invalidQueue("incompatible local source for current gapless graph")
+                    }
+                    return try LocalAudioFileSource(track: track, outputFormat: outputFormat, config: config)
+                }
+            )
+            scheduler.onEvent = { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.handleLocalGaplessSchedulerEvent(event, token: token)
+                }
+            }
+            localGaplessScheduler = scheduler
+
+            AppLogger.shared.notice(
+                category: LocalGaplessSchedulerLog.category,
+                LocalGaplessSchedulerLog.message(
+                    .schedulerEnabled,
+                    fileName: loadedFile.url.lastPathComponent,
+                    reason: "queueCount=\(snapshot.tracks.count) startIndex=\(snapshot.startIndex)"
+                )
+            )
+            debugTiming?.log(
+                "gapless scheduler enabled",
+                fileURL: loadedFile.url,
+                extra: ["queueCount=\(snapshot.tracks.count)", "startIndex=\(snapshot.startIndex)"]
+            )
+            try scheduler.start(queue: snapshot.tracks, startIndex: snapshot.startIndex)
+            return true
+        }
+
+        AppLogger.shared.info(
+            category: LocalGaplessSchedulerLog.category,
+            "Prepared local fallback reason=\"\(fallbackReason)\" file=\(loadedFile.url.lastPathComponent)"
+        )
+        debugTiming?.log("gapless scheduler fallback", fileURL: loadedFile.url, extra: ["reason=\"\(fallbackReason)\""])
+        return false
+    }
+
+    private func localGaplessFallbackReason(
+        snapshot: LocalGaplessEngineQueueSnapshot,
+        loadedFile: LoadedAudioFile
+    ) -> String? {
+        guard snapshot.tracks.indices.contains(snapshot.startIndex) else {
+            return "invalid queue start index"
+        }
+        guard let currentTrack = snapshot.currentTrack else {
+            return "missing current queue item"
+        }
+        guard snapshot.nextTrack != nil else {
+            return "missing next queue item"
+        }
+        guard currentTrack.url.isFileURL,
+              snapshot.tracks[snapshot.startIndex + 1].url.isFileURL
+        else {
+            return "queue contains non-file URL"
+        }
+        guard currentTrack.url.standardizedFileURL.path == loadedFile.url.standardizedFileURL.path else {
+            return "queue current item does not match loaded file"
+        }
+        guard streamingPlayback == nil,
+              liveInputSource == nil,
+              sourceNodes.isEmpty,
+              testToneNodes.isEmpty
+        else {
+            return "another audio source is active"
+        }
+        guard playerNodes.count == loadedFile.layout.channelCount,
+              !playerNodes.isEmpty
+        else {
+            return "normal monitor graph channel count does not match the local source"
+        }
+        guard localGaplessOutputFormat(for: loadedFile) != nil else {
+            return "could not create gapless output format"
+        }
+        guard Self.localGaplessTrackIsCompatible(
+            currentTrack,
+            expectedSampleRate: loadedFile.sampleRate,
+            expectedChannelCount: loadedFile.layout.channelCount
+        ) else {
+            return "current source cannot be reopened in the canonical local format"
+        }
+        guard let nextTrack = snapshot.nextTrack,
+              Self.localGaplessTrackIsCompatible(
+                nextTrack,
+                expectedSampleRate: loadedFile.sampleRate,
+                expectedChannelCount: loadedFile.layout.channelCount
+              )
+        else {
+            return "next source is not compatible with the current local graph"
+        }
+        return nil
+    }
+
+    private func localGaplessOutputFormat(for loadedFile: LoadedAudioFile) -> AVAudioFormat? {
+        let channelCount = loadedFile.layout.channelCount
+        let layoutTag = AudioChannelLayoutTag(kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channelCount))
+        guard let channelLayout = AVAudioChannelLayout(layoutTag: layoutTag) else {
+            return nil
+        }
+        return AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: loadedFile.sampleRate,
+            interleaved: false,
+            channelLayout: channelLayout
+        )
+    }
+
+    @discardableResult
+    func rebuildLocalGaplessQueue(
+        _ snapshot: LocalGaplessEngineQueueSnapshot,
+        reason: String
+    ) -> Bool {
+        guard localGaplessConfig.isEnabled,
+              let scheduler = localGaplessScheduler,
+              let loadedFile
+        else { return false }
+
+        if let rejectionReason = localGaplessQueueRebuildRejectionReason(
+            snapshot: snapshot,
+            loadedFile: loadedFile
+        ) {
+            AppLogger.shared.info(
+                category: LocalGaplessSchedulerLog.category,
+                "Local gapless queue rebuild rejected reason=\"\(reason)\" fallback=\"\(rejectionReason)\""
+            )
+            return false
+        }
+
+        let frame = playbackFrame()
+        let currentTrack = snapshot.currentTrack ?? localGaplessCurrentTrack
+        let currentFrameCount = currentTrack.flatMap { localGaplessFrameCount(for: $0) }
+            ?? localGaplessCurrentTrackFrameCount
+            ?? loadedFile.frameCount
+        let seekFrame = min(max(frame, 0), max(currentFrameCount - 1, 0))
+
+        do {
+            localGaplessQueueSnapshot = snapshot
+            localGaplessTrackFrameCounts = localGaplessFrameCounts(for: snapshot, loadedFile: loadedFile)
+            localGaplessCurrentTrack = currentTrack
+            localGaplessCurrentTrackFrameCount = currentFrameCount
+            localGaplessTrackStartPlayerSampleTime = 0
+            currentStartFrame = seekFrame
+            try scheduler.rebuildQueue(
+                queue: snapshot.tracks,
+                currentIndex: snapshot.startIndex,
+                seekFrame: seekFrame,
+                preserveCurrentTrackStart: true
+            )
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                "Rebuilt local gapless queue reason=\"\(reason)\" startIndex=\(snapshot.startIndex) frame=\(seekFrame) queueCount=\(snapshot.tracks.count)"
+            )
+            return true
+        } catch {
+            AppLogger.shared.error(
+                category: LocalGaplessSchedulerLog.category,
+                "Local gapless queue rebuild failed reason=\"\(reason)\" error=\(error.localizedDescription)"
+            )
+            cancelLocalGaplessScheduler(reason: "queue rebuild failed")
+            return false
+        }
+    }
+
+    private func localGaplessQueueRebuildRejectionReason(
+        snapshot: LocalGaplessEngineQueueSnapshot,
+        loadedFile: LoadedAudioFile
+    ) -> String? {
+        guard snapshot.tracks.indices.contains(snapshot.startIndex) else {
+            return "invalid queue start index"
+        }
+        guard let currentTrack = localGaplessCurrentTrack else {
+            return "missing current gapless track"
+        }
+        guard snapshot.tracks[snapshot.startIndex].id == currentTrack.id else {
+            return "queue start item does not match current logical track"
+        }
+        guard playerNodes.count == loadedFile.layout.channelCount,
+              !playerNodes.isEmpty
+        else {
+            return "normal monitor graph channel count does not match the local source"
+        }
+        guard localGaplessOutputFormat(for: loadedFile) != nil else {
+            return "could not create gapless output format"
+        }
+
+        let tracksToSchedule = snapshot.tracks[snapshot.startIndex...]
+        for track in tracksToSchedule {
+            guard track.url.isFileURL else {
+                return "queue contains non-file URL"
+            }
+            guard Self.localGaplessTrackIsCompatible(
+                track,
+                expectedSampleRate: loadedFile.sampleRate,
+                expectedChannelCount: loadedFile.layout.channelCount
+            ) else {
+                return "queue item is not compatible with the current local graph"
+            }
+        }
+
+        return nil
+    }
+
+    @MainActor
+    private func handleLocalGaplessSchedulerEvent(
+        _ event: LocalGaplessSchedulerEvent,
+        token: UUID
+    ) {
+        guard completionToken == token,
+              localGaplessScheduler != nil
+        else {
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                LocalGaplessSchedulerLog.message(.generationInvalidated)
+            )
+            return
+        }
+
+        switch event {
+        case .logicalTrackStarted(let track):
+            localGaplessCurrentTrack = track
+            localGaplessCurrentTrackFrameCount = localGaplessFrameCount(for: track)
+            localGaplessTrackStartPlayerSampleTime = currentLocalGaplessPlayerSampleTime() ?? 0
+            currentStartFrame = 0
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                "Logical local gapless track started file=\(track.url.lastPathComponent) queueIndex=\(track.queueIndex.map(String.init) ?? "-")"
+            )
+            onLocalGaplessLogicalTrackStarted?(track)
+        case .logicalTrackEnded(let track):
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                "Logical local gapless track ended file=\(track.url.lastPathComponent) queueIndex=\(track.queueIndex.map(String.init) ?? "-")"
+            )
+            onLocalGaplessLogicalTrackEnded?(track)
+        case .queueEnded:
+            AppLogger.shared.notice(
+                category: LocalGaplessSchedulerLog.category,
+                LocalGaplessSchedulerLog.message(.queueExhausted, fileName: localGaplessCurrentTrack?.url.lastPathComponent)
+            )
+            finishLocalGaplessPlaybackNaturally(token: token)
+        case .gaplessMiss(let track, let reason):
+            AppLogger.shared.notice(
+                category: LocalGaplessSchedulerLog.category,
+                LocalGaplessSchedulerLog.message(.gaplessMiss, fileName: track?.url.lastPathComponent, reason: reason)
+            )
+        case .sourceFailed(let track, let message):
+            AppLogger.shared.error(
+                category: LocalGaplessSchedulerLog.category,
+                LocalGaplessSchedulerLog.message(.sourceOpenFailed, fileName: track.url.lastPathComponent, reason: message)
+            )
+            finishLocalGaplessPlaybackNaturally(token: token)
+        case .schedulerStopped(let reason):
+            AppLogger.shared.debug(category: LocalGaplessSchedulerLog.category, "Local gapless scheduler stopped reason=\"\(reason)\"")
+        }
+    }
+
+    private func finishLocalGaplessPlaybackNaturally(token: UUID) {
+        guard completionToken == token,
+              localGaplessScheduler != nil,
+              state == .playing
+        else { return }
+
+        AppLogger.shared.debug(category: LocalGaplessSchedulerLog.category, "Local gapless playback finished naturally.")
+        onLocalGaplessQueueEnded?()
+        stop()
+        onPlaybackEnded?()
+    }
+
+    private func cancelLocalGaplessScheduler(reason: String, clearQueue: Bool = true) {
+        guard let scheduler = localGaplessScheduler else {
+            if clearQueue {
+                localGaplessQueueSnapshot = nil
+                localGaplessTrackFrameCounts = [:]
+                localGaplessCurrentTrack = nil
+                localGaplessCurrentTrackFrameCount = nil
+                localGaplessTrackStartPlayerSampleTime = 0
+            }
+            return
+        }
+
+        scheduler.onEvent = nil
+        scheduler.stop(reason: reason)
+        localGaplessScheduler = nil
+        localGaplessCurrentTrack = nil
+        localGaplessCurrentTrackFrameCount = nil
+        localGaplessTrackStartPlayerSampleTime = 0
+        if clearQueue {
+            localGaplessQueueSnapshot = nil
+            localGaplessTrackFrameCounts = [:]
+        }
+        AppLogger.shared.debug(category: LocalGaplessSchedulerLog.category, "Canceled local gapless scheduler reason=\"\(reason)\"")
+    }
+
+    private func currentLocalGaplessPlayerSampleTime() -> AVAudioFramePosition? {
+        guard let player = playerNodes.first,
+              let renderTime = player.lastRenderTime,
+              let playerTime = player.playerTime(forNodeTime: renderTime)
+        else { return nil }
+        return AVAudioFramePosition(playerTime.sampleTime)
+    }
+
+    private func localGaplessFrameCounts(
+        for snapshot: LocalGaplessEngineQueueSnapshot?,
+        loadedFile: LoadedAudioFile
+    ) -> [String: AVAudioFramePosition] {
+        guard let snapshot else { return [:] }
+        var counts: [String: AVAudioFramePosition] = [:]
+        let loadedPath = loadedFile.url.standardizedFileURL.path
+        for track in snapshot.tracks {
+            if track.url.standardizedFileURL.path == loadedPath {
+                counts[track.id] = loadedFile.frameCount
+            } else if let frameCount = Self.localGaplessFrameCount(for: track) {
+                counts[track.id] = frameCount
+            }
+        }
+        return counts
+    }
+
+    private func localGaplessFrameCount(for track: LocalGaplessTrackDescriptor) -> AVAudioFramePosition? {
+        if let frameCount = localGaplessTrackFrameCounts[track.id] {
+            return frameCount
+        }
+        guard let frameCount = Self.localGaplessFrameCount(for: track) else { return nil }
+        localGaplessTrackFrameCounts[track.id] = frameCount
+        return frameCount
+    }
+
+    private static func localGaplessFrameCount(for track: LocalGaplessTrackDescriptor) -> AVAudioFramePosition? {
+        guard track.url.isFileURL,
+              let file = try? AVAudioFile(forReading: track.url)
+        else { return nil }
+        return max(0, file.length)
+    }
+
+    private static func localGaplessTrackIsCompatible(
+        _ track: LocalGaplessTrackDescriptor,
+        expectedSampleRate: Double,
+        expectedChannelCount: Int
+    ) -> Bool {
+        guard track.url.isFileURL,
+              expectedSampleRate > 0,
+              expectedChannelCount > 0,
+              let file = try? AVAudioFile(forReading: track.url)
+        else { return false }
+
+        let format = file.processingFormat
+        return abs(format.sampleRate - expectedSampleRate) < 0.5 &&
+            Int(format.channelCount) == expectedChannelCount
+    }
+
     private func rebuildStreamingPlaybackGraph(
         for context: StreamingPlaybackContext,
         debugTiming: DebugTimingContext? = nil
@@ -1135,6 +1763,23 @@ final class OrbisonicEngine {
             return
         }
 
+        if localGaplessScheduler != nil {
+            let sampleRate = loadedFile?.sampleRate ?? 48_000
+            let sampleWindow = max(Int(sampleRate * 0.015), 512)
+            guard let snapshot = localGaplessMeterSnapshot(sampleWindow: sampleWindow) else {
+                meteringService.setInactive(signal: .sonicSphere, channelCount: channelCount)
+                return
+            }
+            let rendered = RendererMatrixSampleRenderer.renderSampleBuffers(
+                matrix: matrix,
+                sourceBuffer: snapshot.buffer,
+                startFrame: Int(snapshot.bufferFrameOffset),
+                frameCount: Int(snapshot.frameCount)
+            )
+            ingestRenderedSonicSphereMeters(rendered, channelCount: channelCount)
+            return
+        }
+
         guard let loadedFile else {
             meteringService.setInactive(signal: .sonicSphere, channelCount: channelCount)
             return
@@ -1148,6 +1793,15 @@ final class OrbisonicEngine {
             frameCount: sampleWindow
         )
         ingestRenderedSonicSphereMeters(rendered, channelCount: channelCount)
+    }
+
+    private func localGaplessMeterSnapshot(sampleWindow: Int) -> LocalGaplessMeterSnapshot? {
+        guard let localGaplessScheduler else { return nil }
+        return localGaplessScheduler.meteringSnapshot(
+            trackID: localGaplessCurrentTrack?.id,
+            frame: playbackFrame(),
+            frameCount: AVAudioFrameCount(max(sampleWindow, 0))
+        )
     }
 
     private func ingestStreamingSonicSphereMeters(_ context: StreamingPlaybackContext, channelCount: Int) {
@@ -1758,6 +2412,17 @@ final class OrbisonicEngine {
 
         guard let loadedFile else { return 0 }
 
+        if localGaplessScheduler != nil {
+            let currentFrameCount = localGaplessCurrentTrackFrameCount ?? loadedFile.frameCount
+            if state == .playing,
+               let playerSampleTime = currentLocalGaplessPlayerSampleTime() {
+                let playedFrames = max(playerSampleTime - localGaplessTrackStartPlayerSampleTime, 0)
+                let frame = currentStartFrame + playedFrames
+                return min(max(frame, 0), currentFrameCount)
+            }
+            return min(currentStartFrame, currentFrameCount)
+        }
+
         if state == .playing,
            let renderTime = playerNodes.first?.lastRenderTime,
            let playerTime = playerNodes.first?.playerTime(forNodeTime: renderTime) {
@@ -1792,6 +2457,7 @@ final class OrbisonicEngine {
     }
 
     private func detachPlayerNodes() {
+        cancelLocalGaplessScheduler(reason: "player graph detached", clearQueue: false)
         markPausedPlaybackNeedsReschedule(reason: "player graph detached")
         playerNodes.forEach { player in
             player.stop()

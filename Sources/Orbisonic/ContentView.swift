@@ -695,6 +695,38 @@ private struct PlayerArtworkView: View {
     }
 }
 
+private struct LocalMusicThumbnailView: View {
+    let artworkPath: String?
+    var fallbackSystemImage = "music.note"
+    private let size: CGFloat = 40
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(LabTheme.line.opacity(0.82), lineWidth: 1)
+                )
+
+            if let path = artworkPath?.trimmedNilIfBlank,
+               let image = NSImage(contentsOf: URL(fileURLWithPath: path)) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipped()
+            } else {
+                Image(systemName: fallbackSystemImage)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft.opacity(0.78))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
 struct ContentView: View {
     @StateObject private var model = OrbisonicViewModel()
     @AppStorage("Orbisonic.hasConfirmedLoopbackSetup") private var hasConfirmedLoopbackSetup = false
@@ -3297,10 +3329,7 @@ struct ContentView: View {
 
     private func trackLibraryRow(_ track: LocalMusicTrack, isSelected: Bool) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: model.currentFileURL?.path == track.id ? "speaker.wave.2.fill" : "music.note")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(model.currentFileURL?.path == track.id ? LabTheme.cyan : LabTheme.textSoft.opacity(isSelected ? 0.86 : 0.56))
-                .frame(width: 22, height: 22)
+            LocalMusicThumbnailView(artworkPath: track.artworkPath)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(track.displayTitle)
@@ -3332,7 +3361,7 @@ struct ContentView: View {
                     .frame(width: 58, alignment: .trailing)
             }
         }
-        .frame(height: 48)
+        .frame(height: 56)
         .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -3346,10 +3375,10 @@ struct ContentView: View {
 
     private func playlistLibraryRow(_ playlist: LocalMusicPlaylist, trackCount: Int, isSelected: Bool, isEditable: Bool) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: isEditable ? "music.note.list" : "lock")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(isSelected ? LabTheme.cyan : LabTheme.textSoft.opacity(0.72))
-                .frame(width: 22, height: 22)
+            LocalMusicThumbnailView(
+                artworkPath: playlistArtworkPath(for: playlist),
+                fallbackSystemImage: isEditable ? "music.note.list" : "lock"
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(playlist.name)
@@ -3377,7 +3406,7 @@ struct ContentView: View {
                 .foregroundStyle(LabTheme.cyan)
                 .frame(width: 42, alignment: .trailing)
         }
-        .frame(height: 58)
+        .frame(height: 56)
         .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -3409,6 +3438,8 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(LabTheme.panelSoft)
                 )
+
+            LocalMusicThumbnailView(artworkPath: track?.artworkPath)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -3461,7 +3492,7 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(height: 46)
+        .frame(height: 56)
         .padding(.horizontal, 10)
         .contentShape(Rectangle())
         .contextMenu {
@@ -3504,6 +3535,8 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(isCurrent ? LabTheme.cyan : (isPending ? LabTheme.amber : LabTheme.panelSoft))
                 )
+
+            LocalMusicThumbnailView(artworkPath: track.artworkPath)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(track.displayTitle)
@@ -3554,7 +3587,7 @@ struct ContentView: View {
                 .buttonStyle(LabButtonStyle())
             }
         }
-        .frame(height: 46)
+        .frame(height: 56)
         .padding(.horizontal, 10)
         .contentShape(Rectangle())
         .onTapGesture {
@@ -3578,6 +3611,16 @@ struct ContentView: View {
                         .stroke(isCurrent ? LabTheme.cyan.opacity(0.45) : (isPending ? LabTheme.amber.opacity(0.45) : (isSelected ? LabTheme.blue.opacity(0.42) : Color.clear)), lineWidth: 1)
                 )
         )
+    }
+
+    private func playlistArtworkPath(for playlist: LocalMusicPlaylist) -> String? {
+        for path in playlist.trackPaths {
+            if let track = model.localMusicTracks.first(where: { $0.path == path }),
+               let artworkPath = track.artworkPath?.trimmedNilIfBlank {
+                return artworkPath
+            }
+        }
+        return nil
     }
 
     @ViewBuilder
@@ -3630,6 +3673,23 @@ struct ContentView: View {
                         .tint(LabTheme.cyan)
                     }
 
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(
+                            "Enhance Metadata",
+                            isOn: Binding(
+                                get: { model.localMusicSettings.enhancesMetadata },
+                                set: model.setLocalMusicEnhancesMetadata
+                            )
+                        )
+                        .toggleStyle(.switch)
+                        .tint(LabTheme.cyan)
+
+                        Text("Use Orbisonic’s cached online names and artwork for missing local music info.")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(LabTheme.textSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     infoRow(title: "Folders", value: model.localMusicWatchFolderText)
                     settingsPathList(
                         paths: model.localMusicSettings.watchFolderPaths,
@@ -3650,6 +3710,36 @@ struct ContentView: View {
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+
+            settingsPanel(title: "Local Playback QA") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("Gapless local playback", isOn: $model.isLocalGaplessSchedulerEnabled)
+                        .toggleStyle(.switch)
+                        .tint(LabTheme.cyan)
+
+                    Text("Uses the feature-gated local gapless scheduler for compatible local queues. Keep it off for normal fallback playback.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Toggle("Compressed trim metadata", isOn: $model.isLocalGaplessCompressedTrimEnabled)
+                        .toggleStyle(.switch)
+                        .tint(LabTheme.cyan)
+                        .disabled(!model.isLocalGaplessSchedulerEnabled)
+
+                    Text("Only applies trusted Core Audio trim metadata on future gapless playback starts; it does not use silence detection.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(model.isLocalGaplessSchedulerEnabled ? LabTheme.textSoft : LabTheme.textSoft.opacity(0.58))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    infoRow(
+                        title: "State",
+                        value: model.isLocalGaplessSchedulerEnabled
+                            ? "Enabled for compatible local queues"
+                            : "Off; using fallback local playback"
+                    )
+                }
             }
         }
     }

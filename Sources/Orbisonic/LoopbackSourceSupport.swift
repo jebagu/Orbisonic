@@ -343,7 +343,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
     }
 
     static var musicInputs: [SourceMode] {
-        [.off, .roon, .spotify, .aux, .filePlayback]
+        [.filePlayback, .spotify, .roon, .aux, .off]
     }
 }
 

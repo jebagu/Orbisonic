@@ -781,6 +781,37 @@ final class OrbisonicViewModel: ObservableObject {
             AppLogger.shared.notice(category: "local-music", "Sort mode set to \(localMusicSortMode.rawValue)")
         }
     }
+    @Published var isLocalGaplessSchedulerEnabled: Bool = LocalGaplessPlaybackPolicy.enableLocalGaplessScheduler {
+        didSet {
+            guard oldValue != isLocalGaplessSchedulerEnabled else { return }
+            LocalGaplessPlaybackPolicy.setEnableLocalGaplessScheduler(isLocalGaplessSchedulerEnabled)
+            AppLogger.shared.notice(
+                category: LocalGaplessSchedulerLog.category,
+                "Local gapless scheduler preference set to \(isLocalGaplessSchedulerEnabled ? "enabled" : "disabled")"
+            )
+            if !isLocalGaplessSchedulerEnabled, isLocalGaplessEngineQueueActive {
+                stop()
+                statusMessage = "Local gapless playback is off. Restart the local queue to use the fallback path."
+            } else {
+                statusMessage = isLocalGaplessSchedulerEnabled
+                    ? "Local gapless playback is on for compatible local queues."
+                    : "Local gapless playback is off. Local files use the fallback path."
+            }
+        }
+    }
+    @Published var isLocalGaplessCompressedTrimEnabled: Bool = LocalGaplessPlaybackPolicy.localGaplessEnableCompressedTrim {
+        didSet {
+            guard oldValue != isLocalGaplessCompressedTrimEnabled else { return }
+            LocalGaplessPlaybackPolicy.setLocalGaplessEnableCompressedTrim(isLocalGaplessCompressedTrimEnabled)
+            AppLogger.shared.notice(
+                category: LocalGaplessSchedulerLog.category,
+                "Local gapless compressed trim preference set to \(isLocalGaplessCompressedTrimEnabled ? "enabled" : "disabled")"
+            )
+            statusMessage = isLocalGaplessCompressedTrimEnabled
+                ? "Compressed gapless trim is on for future local gapless playback."
+                : "Compressed gapless trim is off for future local gapless playback."
+        }
+    }
     @Published private(set) var sessionQueue: [LocalMusicTrack] = []
     @Published private(set) var sessionQueueIndex: Int?
     @Published private(set) var selectedSessionQueueIndex: Int?
@@ -818,6 +849,9 @@ final class OrbisonicViewModel: ObservableObject {
     private let engine = OrbisonicEngine()
     private let localAudioLoader: @Sendable (URL, DebugTimingContext?) throws -> LoadedAudioFile
     private let localMusicLibrary: LocalMusicLibrary
+    private var localMusicBaseTracks: [LocalMusicTrack] = []
+    private var localMusicMetadataOverlays: [String: LocalMusicMetadataOverlay] = [:]
+    private var localMusicMetadataEnricher: LocalMusicMetadataEnriching?
     private let preloadsFirstLocalMusicTrack: Bool
     private let preloadsAdjacentLocalMusicTracks: Bool
     private let preloadsAdjacentLocalMetadata: Bool
@@ -850,6 +884,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var rendererDiagnosticsUsingNormalMonitor = false
     private var rendererDiagnosticsMonitorDownmixAvailable = false
     private var localMusicScanTask: Task<Void, Never>?
+    private var localMusicMetadataEnrichmentTask: Task<Void, Never>?
     private var localPlayNowTask: Task<Void, Never>?
     private var localPlayNowSequence: UInt64 = 0
     private var localFileLoadTask: Task<Void, Never>?
@@ -869,6 +904,9 @@ final class OrbisonicViewModel: ObservableObject {
     private var localFileLoadSequence: UInt64 = 0
     private var currentLocalFileLoadGeneration: UInt64 = 0
     private var pendingLocalPresentationGeneration: UInt64?
+    private var isLocalGaplessEngineQueueActive = false
+    private var localGaplessQueueEndAwaitingPlaybackEnded = false
+    private var finalizedLocalGaplessQueueIndices: Set<Int> = []
     private var activeLocalFileLoadRequest: LocalFileLoadRequest?
     private var queuedLocalFileLoadRequest: LocalFileLoadRequest?
     private var readyQueuedLocalFileLoadGeneration: UInt64?
@@ -914,12 +952,14 @@ final class OrbisonicViewModel: ObservableObject {
             maxBytes: Self.maxPreparedCacheBytes
         )
         self.localAudioDescriptorCache = LocalAudioDescriptorCache(capacity: Self.maxAdjacentMetadataCacheEntries)
+        self.localMusicMetadataEnricher = Self.isRunningUnitTests ? nil : LocalMusicMetadataEnricher(library: localMusicLibrary)
         finishInitialization()
     }
 
     init(
         localAudioLoader: @escaping @Sendable (URL) throws -> LoadedAudioFile,
         localMusicLibrary: LocalMusicLibrary = LocalMusicLibrary(),
+        localMusicMetadataEnricher: LocalMusicMetadataEnriching? = nil,
         preloadFirstLocalMusicTrack: Bool? = nil,
         preloadAdjacentLocalMusicTracks: Bool? = nil,
         preloadAdjacentLocalMetadata: Bool? = nil,
@@ -941,6 +981,7 @@ final class OrbisonicViewModel: ObservableObject {
             maxBytes: preparedCacheByteLimit ?? Self.maxPreparedCacheBytes
         )
         self.localAudioDescriptorCache = LocalAudioDescriptorCache(capacity: Self.maxAdjacentMetadataCacheEntries)
+        self.localMusicMetadataEnricher = localMusicMetadataEnricher ?? (Self.isRunningUnitTests ? nil : LocalMusicMetadataEnricher(library: localMusicLibrary))
         finishInitialization()
     }
 
@@ -949,6 +990,15 @@ final class OrbisonicViewModel: ObservableObject {
 
         engine.onPlaybackEnded = { [weak self] in
             self?.handlePlaybackEnded()
+        }
+        engine.onLocalGaplessLogicalTrackStarted = { [weak self] track in
+            self?.handleLocalGaplessLogicalTrackStarted(track)
+        }
+        engine.onLocalGaplessLogicalTrackEnded = { [weak self] track in
+            self?.handleLocalGaplessLogicalTrackEnded(track)
+        }
+        engine.onLocalGaplessQueueEnded = { [weak self] in
+            self?.handleLocalGaplessQueueEnded()
         }
         applyEffectiveOutputVolume(log: false)
 
@@ -1095,6 +1145,7 @@ final class OrbisonicViewModel: ObservableObject {
         diagnosticSequenceTask?.cancel()
         diagnosticsLogRefreshTask?.cancel()
         localMusicScanTask?.cancel()
+        localMusicMetadataEnrichmentTask?.cancel()
         localPlayNowTask?.cancel()
         localFileLoadTask?.cancel()
         localFileDecodeTask?.cancel()
@@ -2284,6 +2335,21 @@ final class OrbisonicViewModel: ObservableObject {
         updateLocalMusicSettings(nextSettings, rescan: true)
     }
 
+    func setLocalMusicEnhancesMetadata(_ enhancesMetadata: Bool) {
+        var nextSettings = localMusicSettings
+        nextSettings.enhancesMetadata = enhancesMetadata
+        updateLocalMusicSettings(nextSettings, rescan: false)
+        statusMessage = enhancesMetadata
+            ? "Local music metadata enhancement enabled."
+            : "Local music metadata enhancement disabled."
+        if enhancesMetadata {
+            scheduleLocalMusicMetadataEnhancement(reason: "setting enabled")
+        } else {
+            localMusicMetadataEnrichmentTask?.cancel()
+            localMusicMetadataEnrichmentTask = nil
+        }
+    }
+
     func rescanLocalMusicLibrary() {
         localMusicScanTask?.cancel()
         let settings = localMusicSettings
@@ -2301,7 +2367,11 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func applyLocalMusicScanResult(_ result: LocalMusicScanResult) {
         clearLocalPreparedFilePreloads(reason: "local music scan result applied")
-        localMusicTracks = result.tracks
+        localMusicBaseTracks = result.tracks
+        localMusicMetadataOverlays = localMusicMetadataOverlays.filter { overlay in
+            result.tracks.contains { $0.id == overlay.key }
+        }
+        refreshEffectiveLocalMusicTracks()
         localMusicPlaylists = orderedLocalMusicPlaylistsAfterScan(result.playlists)
 
         if let selectedLibraryTrackID,
@@ -2322,6 +2392,7 @@ final class OrbisonicViewModel: ObservableObject {
         if let pendingSessionQueueIndex, sessionQueue.indices.contains(pendingSessionQueueIndex) == false {
             self.pendingSessionQueueIndex = nil
         }
+        rebuildLocalGaplessQueueAfterSessionMutation(reason: "local music scan result applied")
 
         persistLocalMusicDatabase()
         if result.skippedMissingFiles > 0 {
@@ -2334,6 +2405,7 @@ final class OrbisonicViewModel: ObservableObject {
             "Scanned watchFolders=\(localMusicSettings.watchFolderPaths.count) explicitPlaylists=\(localMusicSettings.m3uPlaylistPaths.count) tracks=\(localMusicTracks.count) playlists=\(localMusicPlaylists.count) skippedMissing=\(result.skippedMissingFiles)"
         )
         preloadFirstLocalMusicTrackIfNeeded(reason: "local music scan completed")
+        scheduleLocalMusicMetadataEnhancement(reason: "local music scan completed")
     }
 
     func loadSelectedLocalMusicTrack() {
@@ -2717,6 +2789,7 @@ final class OrbisonicViewModel: ObservableObject {
             selectedSessionQueueIndex = 0
         }
 
+        rebuildLocalGaplessQueueAfterSessionMutation(reason: "session queue item added")
         statusMessage = "Added \(track.displayTitle) to the session queue."
     }
 
@@ -2901,6 +2974,7 @@ final class OrbisonicViewModel: ObservableObject {
             selectedSessionQueueIndex = 0
         }
 
+        rebuildLocalGaplessQueueAfterSessionMutation(reason: "playlist appended to session queue")
         statusMessage = "Added \(tracks.count) track\(tracks.count == 1 ? "" : "s") from \(playlist.name) to the session queue."
     }
 
@@ -3053,6 +3127,7 @@ final class OrbisonicViewModel: ObservableObject {
         sessionQueueIndex = nil
         selectedSessionQueueIndex = nil
         pendingSessionQueueIndex = nil
+        rebuildLocalGaplessQueueAfterSessionMutation(reason: "session queue cleared")
         statusMessage = "Session queue cleared."
     }
 
@@ -3098,6 +3173,7 @@ final class OrbisonicViewModel: ObservableObject {
             }
         }
 
+        rebuildLocalGaplessQueueAfterSessionMutation(reason: "session queue item removed")
         statusMessage = "Removed \(removed.displayTitle) from the session queue."
     }
 
@@ -3266,6 +3342,7 @@ final class OrbisonicViewModel: ObservableObject {
         selectedIndex: Int?
     ) {
         clearLocalPreparedFilePreloads(reason: "test local music queue replaced")
+        localMusicBaseTracks = tracks
         localMusicTracks = tracks
         sessionQueue = tracks
         sessionQueueIndex = currentIndex
@@ -3376,6 +3453,30 @@ final class OrbisonicViewModel: ObservableObject {
     func triggerPlaybackEndedForTesting() {
         handlePlaybackEnded()
     }
+
+    func triggerLocalGaplessLogicalTrackStartedForTesting(_ descriptor: LocalGaplessTrackDescriptor) {
+        handleLocalGaplessLogicalTrackStarted(descriptor)
+    }
+
+    func triggerLocalGaplessLogicalTrackEndedForTesting(_ descriptor: LocalGaplessTrackDescriptor) {
+        handleLocalGaplessLogicalTrackEnded(descriptor)
+    }
+
+    func triggerLocalGaplessQueueEndedForTesting() {
+        handleLocalGaplessQueueEnded()
+    }
+
+    var isLocalGaplessEngineQueueActiveForTesting: Bool {
+        isLocalGaplessEngineQueueActive
+    }
+
+    func waitForLocalMusicMetadataEnrichmentForTesting() async {
+        await localMusicMetadataEnrichmentTask?.value
+    }
+
+    var localMusicMetadataOverlaysForTesting: [String: LocalMusicMetadataOverlay] {
+        localMusicMetadataOverlays
+    }
 #endif
 
     private var sortedLocalMusicTracks: [LocalMusicTrack] {
@@ -3399,6 +3500,7 @@ final class OrbisonicViewModel: ObservableObject {
             startPolicy: startPolicy,
             debugTiming: debugTiming
         )
+        resetLocalGaplessHandoffState(reason: "new local file request")
         pendingSessionQueueIndex = queueCommit?.index
         logLocalTransportTiming(
             debugTiming,
@@ -3616,6 +3718,193 @@ final class OrbisonicViewModel: ObservableObject {
             album: track?.album?.trimmedNilIfBlank,
             artist: track?.artist?.trimmedNilIfBlank,
             formatNote: "Descriptor ready; preparing full playback buffers."
+        )
+    }
+
+    private func localGaplessQueueSnapshot(for queueCommit: LocalFileQueueCommit?) -> LocalGaplessEngineQueueSnapshot? {
+        guard LocalGaplessPlaybackPolicy.enableLocalGaplessScheduler,
+              let queueCommit,
+              sessionQueue.indices.contains(queueCommit.index),
+              sessionQueue[queueCommit.index].id == queueCommit.trackID
+        else { return nil }
+
+        return localGaplessQueueSnapshot(startIndex: queueCommit.index)
+    }
+
+    private func localGaplessQueueSnapshot(startIndex: Int) -> LocalGaplessEngineQueueSnapshot? {
+        guard LocalGaplessPlaybackPolicy.enableLocalGaplessScheduler,
+              sessionQueue.indices.contains(startIndex)
+        else { return nil }
+
+        let descriptors = sessionQueue.enumerated().map { index, track in
+            LocalGaplessTrackDescriptor(
+                id: track.id,
+                url: track.url,
+                queueIndex: index,
+                displayName: track.displayTitle
+            )
+        }
+        return LocalGaplessEngineQueueSnapshot(tracks: descriptors, startIndex: startIndex)
+    }
+
+    private func resetLocalGaplessHandoffState(reason: String) {
+        guard isLocalGaplessEngineQueueActive
+            || localGaplessQueueEndAwaitingPlaybackEnded
+            || !finalizedLocalGaplessQueueIndices.isEmpty
+        else { return }
+
+        AppLogger.shared.debug(
+            category: LocalGaplessSchedulerLog.category,
+            "Reset local gapless handoff state reason=\"\(reason)\""
+        )
+        isLocalGaplessEngineQueueActive = false
+        localGaplessQueueEndAwaitingPlaybackEnded = false
+        finalizedLocalGaplessQueueIndices.removeAll()
+    }
+
+    private func rebuildLocalGaplessQueueAfterSessionMutation(reason: String) {
+        guard LocalGaplessPlaybackPolicy.enableLocalGaplessScheduler,
+              isLocalGaplessEngineQueueActive,
+              sourceMode == .filePlayback
+        else { return }
+
+        localGaplessQueueEndAwaitingPlaybackEnded = false
+        finalizedLocalGaplessQueueIndices.removeAll()
+
+        guard let currentTrackID = currentFileURL?.path,
+              let currentIndex = sessionQueue.firstIndex(where: { $0.id == currentTrackID }),
+              let snapshot = localGaplessQueueSnapshot(startIndex: currentIndex)
+        else {
+            AppLogger.shared.notice(
+                category: LocalGaplessSchedulerLog.category,
+                "Stopping local gapless playback after queue mutation removed the current logical track. reason=\"\(reason)\""
+            )
+            stop()
+            return
+        }
+
+        sessionQueueIndex = currentIndex
+        if engine.rebuildLocalGaplessQueue(snapshot, reason: reason) {
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                "Rebuilt view-model local gapless queue reason=\"\(reason)\" currentIndex=\(currentIndex) queueCount=\(sessionQueue.count)"
+            )
+        } else {
+            AppLogger.shared.notice(
+                category: LocalGaplessSchedulerLog.category,
+                "Stopping local gapless playback after queue mutation rebuild was rejected. reason=\"\(reason)\""
+            )
+            stop()
+        }
+    }
+
+    private func handleLocalGaplessLogicalTrackStarted(_ descriptor: LocalGaplessTrackDescriptor) {
+        guard sourceMode == .filePlayback,
+              let queueIndex = descriptor.queueIndex,
+              sessionQueue.indices.contains(queueIndex),
+              sessionQueue[queueIndex].id == descriptor.id
+        else {
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                "Ignored local gapless logical start for stale queue item file=\(descriptor.url.lastPathComponent)"
+            )
+            return
+        }
+
+        if !isLocalGaplessEngineQueueActive {
+            finalizedLocalGaplessQueueIndices.removeAll()
+        }
+        isLocalGaplessEngineQueueActive = true
+        localGaplessQueueEndAwaitingPlaybackEnded = false
+        finalizedLocalGaplessQueueIndices.remove(queueIndex)
+
+        let track = sessionQueue[queueIndex]
+        clearPendingLocalPresentation()
+        pendingSessionQueueIndex = nil
+        sessionQueueIndex = queueIndex
+        selectedSessionQueueIndex = queueIndex
+        loadedFileName = track.fileName
+        currentFileURL = track.url
+        sourceMetadata = localGaplessMetadata(for: track)
+        loadedChannels = SurroundLayoutDetector.fallbackLayout(for: track.channelCount).channels
+        duration = track.duration
+        currentTime = 0
+        scrubProgress = 0
+        meterStore.configure(channels: loadedChannels)
+        meterStore.reset()
+        monitorMeterStore.reset()
+        updateRendererMeters(from: Array(repeating: 0, count: max(track.channelCount, 1)))
+        isPlaying = true
+        statusMessage = "Playing \(track.displayTitle) through \(routeDisplayName) with \(rendererScene.renderMode.displayName)."
+        scheduleAdjacentLocalFilePreloads(reason: "gapless logical start \(track.fileName)")
+        AppLogger.shared.debug(
+            category: LocalGaplessSchedulerLog.category,
+            "Committed local gapless logical track file=\(track.fileName) queueIndex=\(queueIndex)"
+        )
+    }
+
+    private func handleLocalGaplessLogicalTrackEnded(_ descriptor: LocalGaplessTrackDescriptor) {
+        guard sourceMode == .filePlayback,
+              isLocalGaplessEngineQueueActive,
+              let queueIndex = descriptor.queueIndex,
+              sessionQueue.indices.contains(queueIndex),
+              sessionQueue[queueIndex].id == descriptor.id
+        else {
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                "Ignored local gapless logical end for stale queue item file=\(descriptor.url.lastPathComponent)"
+            )
+            return
+        }
+
+        guard finalizedLocalGaplessQueueIndices.insert(queueIndex).inserted else {
+            AppLogger.shared.debug(
+                category: LocalGaplessSchedulerLog.category,
+                "Ignored duplicate local gapless logical end file=\(descriptor.url.lastPathComponent) queueIndex=\(queueIndex)"
+            )
+            return
+        }
+
+        if sessionQueueIndex == queueIndex {
+            currentTime = duration
+            if duration > 0 {
+                scrubProgress = 1
+            }
+        }
+
+        AppLogger.shared.debug(
+            category: LocalGaplessSchedulerLog.category,
+            "Finalized local gapless logical track file=\(descriptor.url.lastPathComponent) queueIndex=\(queueIndex)"
+        )
+    }
+
+    private func handleLocalGaplessQueueEnded() {
+        guard sourceMode == .filePlayback,
+              isLocalGaplessEngineQueueActive
+        else { return }
+
+        localGaplessQueueEndAwaitingPlaybackEnded = true
+        AppLogger.shared.debug(
+            category: LocalGaplessSchedulerLog.category,
+            "Local gapless queue ended; awaiting physical playback completion."
+        )
+    }
+
+    private func localGaplessMetadata(for track: LocalMusicTrack) -> AudioSourceMetadata {
+        AudioSourceMetadata(
+            fileName: track.fileName,
+            containerName: track.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
+            codecName: "Local file",
+            layoutName: track.layoutName,
+            channelSummary: track.channelSummary,
+            channelCount: track.channelCount,
+            sampleRate: track.sampleRate,
+            bitDepth: 0,
+            duration: track.duration,
+            title: track.title?.trimmedNilIfBlank,
+            album: track.album?.trimmedNilIfBlank,
+            artist: track.artist?.trimmedNilIfBlank,
+            formatNote: "Gapless local playback; decoded in bounded chunks."
         )
     }
 
@@ -4418,7 +4707,11 @@ final class OrbisonicViewModel: ObservableObject {
             track: queueCommit.flatMap { queueTrack(for: $0.index) },
             fileURL: loaded.url
         )
-        _ = engine.loadPreparedFile(loaded, debugTiming: debugTiming)
+        _ = engine.loadPreparedFile(
+            loaded,
+            debugTiming: debugTiming,
+            localGaplessQueue: localGaplessQueueSnapshot(for: queueCommit)
+        )
         logLocalTransportTiming(
             debugTiming,
             "engine commit finished",
@@ -4771,7 +5064,9 @@ final class OrbisonicViewModel: ObservableObject {
     private func loadLocalMusicDatabase() {
         let database = localMusicLibrary.load()
         localMusicSettings = Self.normalizedLocalMusicSettings(database.settings)
-        localMusicTracks = database.tracks
+        localMusicBaseTracks = database.tracks
+        localMusicMetadataOverlays = database.metadataOverlays
+        refreshEffectiveLocalMusicTracks()
         localMusicPlaylists = database.playlists
         sessionQueue = []
         sessionQueueIndex = nil
@@ -4786,6 +5081,7 @@ final class OrbisonicViewModel: ObservableObject {
             persistLocalMusicDatabase()
         }
         preloadFirstLocalMusicTrackIfNeeded(reason: "local music database loaded")
+        scheduleLocalMusicMetadataEnhancement(reason: "local music database loaded")
     }
 
     private func preloadFirstLocalMusicTrackIfNeeded(reason: String) {
@@ -5214,13 +5510,15 @@ final class OrbisonicViewModel: ObservableObject {
     private func persistLocalMusicDatabase() {
         localMusicLibrary.save(LocalMusicDatabase(
             settings: localMusicSettings,
-            tracks: localMusicTracks,
-            playlists: localMusicPlaylists
+            tracks: localMusicBaseTracks,
+            playlists: localMusicPlaylists,
+            metadataOverlays: localMusicMetadataOverlays
         ))
     }
 
     private func updateLocalMusicSettings(_ settings: LocalMusicSettings, rescan: Bool) {
         localMusicSettings = Self.normalizedLocalMusicSettings(settings)
+        refreshEffectiveLocalMusicTracks()
         persistLocalMusicDatabase()
         if rescan {
             rescanLocalMusicLibrary()
@@ -5232,6 +5530,71 @@ final class OrbisonicViewModel: ObservableObject {
         normalized.extractsAlbumArt = true
         normalized.importsM3UPlaylists = true
         return normalized
+    }
+
+    private func refreshEffectiveLocalMusicTracks() {
+        guard localMusicSettings.enhancesMetadata else {
+            localMusicTracks = localMusicBaseTracks
+            refreshSessionQueueMetadata()
+            return
+        }
+
+        localMusicTracks = Self.applyMetadataOverlays(
+            localMusicMetadataOverlays,
+            to: localMusicBaseTracks
+        )
+        refreshSessionQueueMetadata()
+    }
+
+    private static func applyMetadataOverlays(
+        _ overlays: [String: LocalMusicMetadataOverlay],
+        to tracks: [LocalMusicTrack]
+    ) -> [LocalMusicTrack] {
+        tracks.map { track in
+            track.applyingMetadataOverlay(overlays[track.id])
+        }
+    }
+
+    private func refreshSessionQueueMetadata() {
+        guard !sessionQueue.isEmpty else { return }
+
+        let effectiveTracksByID = Dictionary(uniqueKeysWithValues: localMusicTracks.map { ($0.id, $0) })
+        sessionQueue = sessionQueue.map { track in
+            effectiveTracksByID[track.id] ?? track.applyingMetadataOverlay(
+                localMusicSettings.enhancesMetadata ? localMusicMetadataOverlays[track.id] : nil
+            )
+        }
+    }
+
+    private func scheduleLocalMusicMetadataEnhancement(reason: String) {
+        localMusicMetadataEnrichmentTask?.cancel()
+        guard localMusicSettings.enhancesMetadata,
+              let localMusicMetadataEnricher,
+              !localMusicBaseTracks.isEmpty
+        else { return }
+
+        let tracks = localMusicBaseTracks
+        let existingOverlays = localMusicMetadataOverlays
+        localMusicMetadataEnrichmentTask = Task { @MainActor [weak self] in
+            let enrichedOverlays = await localMusicMetadataEnricher.enrich(
+                tracks: tracks,
+                existingOverlays: existingOverlays
+            )
+            guard let self, !Task.isCancelled else { return }
+            self.localMusicMetadataEnrichmentTask = nil
+            guard self.localMusicSettings.enhancesMetadata else { return }
+            guard enrichedOverlays != self.localMusicMetadataOverlays else { return }
+
+            let previousDisplayTracks = self.localMusicTracks
+            self.localMusicMetadataOverlays = enrichedOverlays
+            self.refreshEffectiveLocalMusicTracks()
+            self.persistLocalMusicDatabase()
+            let changedCount = zip(previousDisplayTracks, self.localMusicTracks).filter { $0 != $1 }.count
+            AppLogger.shared.notice(
+                category: "local-music",
+                "Applied metadata enhancement reason=\(reason) changedTracks=\(changedCount)"
+            )
+        }
     }
 
     private func startSessionQueue(
@@ -5414,6 +5777,8 @@ final class OrbisonicViewModel: ObservableObject {
                 pendingSessionQueueIndex = sourceIndex
             }
         }
+
+        rebuildLocalGaplessQueueAfterSessionMutation(reason: "session queue reordered")
     }
 
     private func refreshSessionQueueIndexForCurrentFile() {
@@ -5981,6 +6346,7 @@ final class OrbisonicViewModel: ObservableObject {
         diagnosticSequenceTask?.cancel()
         diagnosticSequenceTask = nil
         cancelPendingLocalFileLoad()
+        resetLocalGaplessHandoffState(reason: "stop")
         diagnosticReturnContext = nil
         engine.stop()
         isPlaying = false
@@ -8159,6 +8525,23 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
+        if localGaplessQueueEndAwaitingPlaybackEnded {
+            finishLocalGaplessQueueAfterPlaybackEnded(stateBefore: stateBefore)
+            return
+        }
+
+        if isLocalGaplessEngineQueueActive {
+            logTransportDebug(
+                command: "playback-ended",
+                allowed: false,
+                handler: "handlePlaybackEnded:ignoredForLocalGaplessQueue",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: "ignored because local gapless scheduler owns queue advancement"
+            )
+            return
+        }
+
         if playNextLocalMusicTrackAfterNaturalEnd() {
             logTransportDebug(
                 command: "playback-ended",
@@ -8185,8 +8568,32 @@ final class OrbisonicViewModel: ObservableObject {
         )
     }
 
+    private func finishLocalGaplessQueueAfterPlaybackEnded(stateBefore: String) {
+        isPlaying = false
+        if duration > 0 {
+            currentTime = duration
+            scrubProgress = 1
+        }
+        meterStore.reset()
+        monitorMeterStore.reset()
+        rendererMeterStore.reset()
+        reevaluateAutomaticRendererMode(reason: "local gapless queue ended")
+        statusMessage = "Playback finished."
+        resetLocalGaplessHandoffState(reason: "queue ended")
+        logTransportDebug(
+            command: "playback-ended",
+            allowed: true,
+            handler: "handlePlaybackEnded:localGaplessQueueEnd",
+            stateBefore: stateBefore,
+            stateAfter: debugPlaybackStateSnapshot()
+        )
+    }
+
     private func playNextLocalMusicTrackAfterNaturalEnd() -> Bool {
-        guard sourceMode == .filePlayback else { return false }
+        guard sourceMode == .filePlayback,
+              !isLocalGaplessEngineQueueActive,
+              !localGaplessQueueEndAwaitingPlaybackEnded
+        else { return false }
 
         if let sessionQueueIndex, sessionQueue.indices.contains(sessionQueueIndex + 1) {
             return playQueueIndex(sessionQueueIndex + 1, isNaturalAdvance: true)
@@ -8217,8 +8624,35 @@ final class OrbisonicViewModel: ObservableObject {
         case .artist:
             return compareLocalMusic(lhs, rhs, primary: \.sortArtist, secondary: \.sortAlbum, tertiary: \.sortName)
         case .album:
-            return compareLocalMusic(lhs, rhs, primary: \.sortAlbum, secondary: \.sortArtist, tertiary: \.sortName)
+            return compareLocalMusicForAlbum(lhs, rhs)
         }
+    }
+
+    private func compareLocalMusicForAlbum(_ lhs: LocalMusicTrack, _ rhs: LocalMusicTrack) -> Bool {
+        if let result = localMusicStringSortResult(lhs.sortAlbumOrFolder, rhs.sortAlbumOrFolder) {
+            return result
+        }
+
+        if lhs.sortDiscNumber != rhs.sortDiscNumber {
+            return lhs.sortDiscNumber < rhs.sortDiscNumber
+        }
+
+        switch (lhs.effectiveTrackNumber, rhs.effectiveTrackNumber) {
+        case let (lhsTrack?, rhsTrack?) where lhsTrack != rhsTrack:
+            return lhsTrack < rhsTrack
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            break
+        }
+
+        if let result = localMusicStringSortResult(lhs.sortFilePath, rhs.sortFilePath) {
+            return result
+        }
+
+        return compareLocalMusic(lhs, rhs, primary: \.sortName, secondary: \.sortArtist, tertiary: \.sortAlbum)
     }
 
     private func compareLocalMusic(
@@ -8229,19 +8663,24 @@ final class OrbisonicViewModel: ObservableObject {
         tertiary: KeyPath<LocalMusicTrack, String>
     ) -> Bool {
         for keyPath in [primary, secondary, tertiary] {
-            let lhsValue = lhs[keyPath: keyPath]
-            let rhsValue = rhs[keyPath: keyPath]
-            let lhsBlank = lhsValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let rhsBlank = rhsValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            if lhsBlank != rhsBlank {
-                return !lhsBlank
+            if let result = localMusicStringSortResult(lhs[keyPath: keyPath], rhs[keyPath: keyPath]) {
+                return result
             }
-            let comparison = lhsValue.localizedStandardCompare(rhsValue)
-            if comparison == .orderedAscending { return true }
-            if comparison == .orderedDescending { return false }
         }
 
         return lhs.fileName.localizedStandardCompare(rhs.fileName) == .orderedAscending
+    }
+
+    private func localMusicStringSortResult(_ lhsValue: String, _ rhsValue: String) -> Bool? {
+        let lhsBlank = lhsValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let rhsBlank = rhsValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if lhsBlank != rhsBlank {
+            return !lhsBlank
+        }
+        let comparison = lhsValue.localizedStandardCompare(rhsValue)
+        if comparison == .orderedAscending { return true }
+        if comparison == .orderedDescending { return false }
+        return nil
     }
 
     private func refreshTransport() {

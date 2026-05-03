@@ -7,12 +7,76 @@ struct LocalMusicSettings: Codable, Equatable, Sendable {
     var scansSubfolders = true
     var importsM3UPlaylists = true
     var extractsAlbumArt = true
+    var enhancesMetadata = true
+
+    init(
+        watchFolderPaths: [String] = [],
+        m3uPlaylistPaths: [String] = [],
+        scansSubfolders: Bool = true,
+        importsM3UPlaylists: Bool = true,
+        extractsAlbumArt: Bool = true,
+        enhancesMetadata: Bool = true
+    ) {
+        self.watchFolderPaths = watchFolderPaths
+        self.m3uPlaylistPaths = m3uPlaylistPaths
+        self.scansSubfolders = scansSubfolders
+        self.importsM3UPlaylists = importsM3UPlaylists
+        self.extractsAlbumArt = extractsAlbumArt
+        self.enhancesMetadata = enhancesMetadata
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case watchFolderPaths
+        case m3uPlaylistPaths
+        case scansSubfolders
+        case importsM3UPlaylists
+        case extractsAlbumArt
+        case enhancesMetadata
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        watchFolderPaths = try container.decodeIfPresent([String].self, forKey: .watchFolderPaths) ?? []
+        m3uPlaylistPaths = try container.decodeIfPresent([String].self, forKey: .m3uPlaylistPaths) ?? []
+        scansSubfolders = try container.decodeIfPresent(Bool.self, forKey: .scansSubfolders) ?? true
+        importsM3UPlaylists = try container.decodeIfPresent(Bool.self, forKey: .importsM3UPlaylists) ?? true
+        extractsAlbumArt = try container.decodeIfPresent(Bool.self, forKey: .extractsAlbumArt) ?? true
+        enhancesMetadata = try container.decodeIfPresent(Bool.self, forKey: .enhancesMetadata) ?? true
+    }
 }
 
 struct LocalMusicDatabase: Codable, Equatable, Sendable {
     var settings = LocalMusicSettings()
     var tracks: [LocalMusicTrack] = []
     var playlists: [LocalMusicPlaylist] = []
+    var metadataOverlays: [String: LocalMusicMetadataOverlay] = [:]
+
+    init(
+        settings: LocalMusicSettings = LocalMusicSettings(),
+        tracks: [LocalMusicTrack] = [],
+        playlists: [LocalMusicPlaylist] = [],
+        metadataOverlays: [String: LocalMusicMetadataOverlay] = [:]
+    ) {
+        self.settings = settings
+        self.tracks = tracks
+        self.playlists = playlists
+        self.metadataOverlays = metadataOverlays
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case settings
+        case tracks
+        case playlists
+        case metadataOverlays
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        settings = try container.decodeIfPresent(LocalMusicSettings.self, forKey: .settings) ?? LocalMusicSettings()
+        tracks = try container.decodeIfPresent([LocalMusicTrack].self, forKey: .tracks) ?? []
+        playlists = try container.decodeIfPresent([LocalMusicPlaylist].self, forKey: .playlists) ?? []
+        metadataOverlays = try container.decodeIfPresent([String: LocalMusicMetadataOverlay].self, forKey: .metadataOverlays) ?? [:]
+    }
 }
 
 struct LocalMusicTrack: Identifiable, Codable, Equatable, Sendable {
@@ -22,12 +86,46 @@ struct LocalMusicTrack: Identifiable, Codable, Equatable, Sendable {
     let title: String?
     let artist: String?
     let album: String?
+    let trackNumber: Int?
+    let discNumber: Int?
     let channelCount: Int
     let channelSummary: String
     let layoutName: String
     let sampleRate: Double
     let duration: TimeInterval
     let artworkPath: String?
+
+    init(
+        path: String,
+        rootPath: String?,
+        fileName: String,
+        title: String?,
+        artist: String?,
+        album: String?,
+        trackNumber: Int? = nil,
+        discNumber: Int? = nil,
+        channelCount: Int,
+        channelSummary: String,
+        layoutName: String,
+        sampleRate: Double,
+        duration: TimeInterval,
+        artworkPath: String?
+    ) {
+        self.path = path
+        self.rootPath = rootPath
+        self.fileName = fileName
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.trackNumber = trackNumber
+        self.discNumber = discNumber
+        self.channelCount = channelCount
+        self.channelSummary = channelSummary
+        self.layoutName = layoutName
+        self.sampleRate = sampleRate
+        self.duration = duration
+        self.artworkPath = artworkPath
+    }
 
     var id: String { path }
     var url: URL { URL(fileURLWithPath: path) }
@@ -75,6 +173,26 @@ struct LocalMusicTrack: Identifiable, Codable, Equatable, Sendable {
     var sortName: String { displayTitle }
     var sortArtist: String { artist?.trimmedNilIfBlank ?? "" }
     var sortAlbum: String { album?.trimmedNilIfBlank ?? "" }
+    var sortFolder: String { displayPath }
+    var sortAlbumOrFolder: String { album?.trimmedNilIfBlank ?? sortFolder }
+    var sortDiscNumber: Int { effectiveDiscNumber ?? 1 }
+    var sortTrackNumber: Int { effectiveTrackNumber ?? Int.max }
+    var sortFilePath: String { path }
+    var effectiveTrackNumber: Int? {
+        trackNumber ?? Self.trackNumber(fromFileName: fileName)
+    }
+    var effectiveDiscNumber: Int? {
+        discNumber ?? Self.discNumber(
+            fromFileName: fileName,
+            parentFolderName: url.deletingLastPathComponent().lastPathComponent
+        )
+    }
+    var needsMetadataEnhancement: Bool {
+        title?.trimmedNilIfBlank == nil ||
+            artist?.trimmedNilIfBlank == nil ||
+            album?.trimmedNilIfBlank == nil ||
+            artworkPath?.trimmedNilIfBlank == nil
+    }
 
     var displayPath: String {
         let folderPath = URL(fileURLWithPath: path).deletingLastPathComponent().path
@@ -106,6 +224,27 @@ struct LocalMusicTrack: Identifiable, Codable, Equatable, Sendable {
         return fields.contains { $0.localizedCaseInsensitiveContains(query) }
     }
 
+    func applyingMetadataOverlay(_ overlay: LocalMusicMetadataOverlay?) -> LocalMusicTrack {
+        guard let overlay, overlay.isDisplayEligible else { return self }
+
+        return LocalMusicTrack(
+            path: path,
+            rootPath: rootPath,
+            fileName: fileName,
+            title: title?.trimmedNilIfBlank ?? overlay.title?.trimmedNilIfBlank,
+            artist: artist?.trimmedNilIfBlank ?? overlay.artist?.trimmedNilIfBlank,
+            album: album?.trimmedNilIfBlank ?? overlay.album?.trimmedNilIfBlank,
+            trackNumber: trackNumber ?? overlay.trackNumber,
+            discNumber: discNumber ?? overlay.discNumber,
+            channelCount: channelCount,
+            channelSummary: channelSummary,
+            layoutName: layoutName,
+            sampleRate: sampleRate,
+            duration: duration,
+            artworkPath: artworkPath?.trimmedNilIfBlank ?? overlay.artworkPath?.trimmedNilIfBlank
+        )
+    }
+
     private static func formatDuration(_ value: TimeInterval) -> String {
         let totalSeconds = max(Int(value.rounded(.down)), 0)
         let hours = totalSeconds / 3_600
@@ -116,6 +255,65 @@ struct LocalMusicTrack: Identifiable, Codable, Equatable, Sendable {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    static func trackNumber(fromFileName fileName: String) -> Int? {
+        let stem = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        if let match = firstCaptureGroups(in: stem, pattern: #"^\s*(\d{1,2})[-._](\d{1,3})(?=\D|$)"#),
+           match.count >= 2,
+           let track = positiveTrackNumber(match[1]) {
+            return track
+        }
+        if let match = firstCaptureGroups(in: stem, pattern: #"^\s*(\d{1,3})(?:\s*/\s*\d{1,3})?(?=\s*[-._ ]+)"#),
+           let raw = match.first,
+           let track = positiveTrackNumber(raw) {
+            return track
+        }
+        return nil
+    }
+
+    static func discNumber(fromFileName fileName: String, parentFolderName: String? = nil) -> Int? {
+        let stem = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        if let match = firstCaptureGroups(in: stem, pattern: #"^\s*(\d{1,2})[-._](\d{1,3})(?=\D|$)"#),
+           let raw = match.first,
+           let disc = positiveDiscNumber(raw) {
+            return disc
+        }
+        if let parentFolderName,
+           let match = firstCaptureGroups(in: parentFolderName, pattern: #"(?i)\b(?:disc|disk|cd)\s*(\d{1,2})\b"#),
+           let raw = match.first,
+           let disc = positiveDiscNumber(raw) {
+            return disc
+        }
+        return nil
+    }
+
+    private static func positiveTrackNumber(_ value: String) -> Int? {
+        guard let number = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...999).contains(number)
+        else { return nil }
+        return number
+    }
+
+    private static func positiveDiscNumber(_ value: String) -> Int? {
+        guard let number = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...99).contains(number)
+        else { return nil }
+        return number
+    }
+
+    private static func firstCaptureGroups(in value: String, pattern: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = regex.firstMatch(in: value, options: [], range: range) else { return nil }
+        let groups = (1..<match.numberOfRanges).compactMap { index -> String? in
+            let nsRange = match.range(at: index)
+            guard nsRange.location != NSNotFound,
+                  let swiftRange = Range(nsRange, in: value)
+            else { return nil }
+            return String(value[swiftRange])
+        }
+        return groups.isEmpty ? nil : groups
     }
 }
 
@@ -246,6 +444,7 @@ final class LocalMusicLibrary {
     private let fileManager: FileManager
     private let databaseURL: URL
     private let artworkDirectoryURL: URL
+    private let enrichedArtworkDirectoryURL: URL
     private let playlistDirectoryURL: URL
 
     init(fileManager: FileManager = .default, supportURL: URL? = nil) {
@@ -254,8 +453,10 @@ final class LocalMusicLibrary {
         try? fileManager.createDirectory(at: supportURL, withIntermediateDirectories: true)
         databaseURL = supportURL.appendingPathComponent("local-music-library.json", isDirectory: false)
         artworkDirectoryURL = supportURL.appendingPathComponent("Album Artwork", isDirectory: true)
+        enrichedArtworkDirectoryURL = supportURL.appendingPathComponent("Enriched Artwork", isDirectory: true)
         playlistDirectoryURL = supportURL.appendingPathComponent("Playlists", isDirectory: true)
         try? fileManager.createDirectory(at: artworkDirectoryURL, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: enrichedArtworkDirectoryURL, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: playlistDirectoryURL, withIntermediateDirectories: true)
     }
 
@@ -265,6 +466,10 @@ final class LocalMusicLibrary {
 
     var artworkDirectoryPath: String {
         artworkDirectoryURL.path
+    }
+
+    var enrichedArtworkDirectoryPath: String {
+        enrichedArtworkDirectoryURL.path
     }
 
     var playlistDirectoryPath: String {
@@ -284,10 +489,11 @@ final class LocalMusicLibrary {
             let database = try JSONDecoder().decode(LocalMusicDatabase.self, from: data)
             let pruned = pruneMissingFiles(in: database)
             let repaired = repairStaleMatroskaMetadata(in: pruned)
-            if repaired != database {
-                save(repaired)
+            let indexed = repairMissingTrackIndexMetadata(in: repaired)
+            if indexed != database {
+                save(indexed)
             }
-            return repaired
+            return indexed
         } catch {
             AppLogger.shared.error(category: "local-music", "Failed to decode local music database: \(error.localizedDescription)")
             return LocalMusicDatabase()
@@ -303,6 +509,27 @@ final class LocalMusicLibrary {
             try data.write(to: databaseURL, options: .atomic)
         } catch {
             AppLogger.shared.error(category: "local-music", "Failed to save local music database: \(error.localizedDescription)")
+        }
+    }
+
+    func cacheEnrichedArtwork(
+        _ data: Data,
+        sourceURL: URL?,
+        trackID: String
+    ) -> String? {
+        guard !data.isEmpty else { return nil }
+
+        let ext = Self.artworkExtension(for: data, sourceURL: sourceURL)
+        let filename = "\(Self.stableIdentifier(for: trackID))-metadata.\(ext)"
+        let destinationURL = enrichedArtworkDirectoryURL.appendingPathComponent(filename, isDirectory: false)
+
+        do {
+            try fileManager.createDirectory(at: enrichedArtworkDirectoryURL, withIntermediateDirectories: true)
+            try data.write(to: destinationURL, options: .atomic)
+            return destinationURL.path
+        } catch {
+            AppLogger.shared.error(category: "local-music", "Metadata artwork cache failed track=\(trackID) error=\(error.localizedDescription)")
+            return nil
         }
     }
 
@@ -582,6 +809,17 @@ final class LocalMusicLibrary {
         let title = Self.metadataString(for: .commonKeyTitle, in: commonMetadata)
         let artist = Self.metadataString(for: .commonKeyArtist, in: commonMetadata)
         let album = Self.metadataString(for: .commonKeyAlbumName, in: commonMetadata)
+        let trackNumber = Self.metadataOrdinal(
+            for: [.iTunesMetadataTrackNumber, .id3MetadataTrackNumber],
+            in: asset.metadata
+        ) ?? LocalMusicTrack.trackNumber(fromFileName: url.lastPathComponent)
+        let discNumber = Self.metadataOrdinal(
+            for: [.iTunesMetadataDiscNumber],
+            in: asset.metadata
+        ) ?? LocalMusicTrack.discNumber(
+            fromFileName: url.lastPathComponent,
+            parentFolderName: url.deletingLastPathComponent().lastPathComponent
+        )
         let artworkPath = extractsAlbumArt ? extractArtwork(for: url, metadata: commonMetadata) : nil
 
         do {
@@ -596,6 +834,8 @@ final class LocalMusicLibrary {
                 title: title,
                 artist: artist,
                 album: album,
+                trackNumber: trackNumber,
+                discNumber: discNumber,
                 channelCount: Int(file.processingFormat.channelCount),
                 channelSummary: layout.channelSummary,
                 layoutName: layout.name,
@@ -612,6 +852,8 @@ final class LocalMusicLibrary {
                 title: title,
                 artist: artist,
                 album: album,
+                trackNumber: trackNumber,
+                discNumber: discNumber,
                 channelCount: 0,
                 channelSummary: "",
                 layoutName: "-",
@@ -650,6 +892,40 @@ final class LocalMusicLibrary {
         return changed ? repaired : database
     }
 
+    private func repairMissingTrackIndexMetadata(in database: LocalMusicDatabase) -> LocalMusicDatabase {
+        var repaired = database
+        var changed = false
+        repaired.tracks = database.tracks.map { track in
+            let inferredTrackNumber = track.trackNumber ?? LocalMusicTrack.trackNumber(fromFileName: track.fileName)
+            let inferredDiscNumber = track.discNumber ?? LocalMusicTrack.discNumber(
+                fromFileName: track.fileName,
+                parentFolderName: track.url.deletingLastPathComponent().lastPathComponent
+            )
+            guard inferredTrackNumber != track.trackNumber ||
+                inferredDiscNumber != track.discNumber
+            else { return track }
+
+            changed = true
+            return LocalMusicTrack(
+                path: track.path,
+                rootPath: track.rootPath,
+                fileName: track.fileName,
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                trackNumber: inferredTrackNumber,
+                discNumber: inferredDiscNumber,
+                channelCount: track.channelCount,
+                channelSummary: track.channelSummary,
+                layoutName: track.layoutName,
+                sampleRate: track.sampleRate,
+                duration: track.duration,
+                artworkPath: track.artworkPath
+            )
+        }
+        return changed ? repaired : database
+    }
+
     private func pruneMissingFiles(in database: LocalMusicDatabase) -> LocalMusicDatabase {
         let existingTracks = database.tracks.filter { fileManager.fileExists(atPath: $0.path) }
         let existingTrackPaths = Set(existingTracks.map(\.path))
@@ -674,7 +950,8 @@ final class LocalMusicLibrary {
         return LocalMusicDatabase(
             settings: database.settings,
             tracks: existingTracks,
-            playlists: playlists
+            playlists: playlists,
+            metadataOverlays: database.metadataOverlays.filter { existingTrackPaths.contains($0.key) }
         )
     }
 
@@ -689,6 +966,11 @@ final class LocalMusicLibrary {
                 title: streamInfo.tags.title,
                 artist: streamInfo.tags.artist,
                 album: streamInfo.tags.album,
+                trackNumber: LocalMusicTrack.trackNumber(fromFileName: url.lastPathComponent),
+                discNumber: LocalMusicTrack.discNumber(
+                    fromFileName: url.lastPathComponent,
+                    parentFolderName: url.deletingLastPathComponent().lastPathComponent
+                ),
                 channelCount: streamInfo.channelCount,
                 channelSummary: layout.channelSummary,
                 layoutName: layout.name,
@@ -705,6 +987,11 @@ final class LocalMusicLibrary {
                 title: nil,
                 artist: nil,
                 album: nil,
+                trackNumber: LocalMusicTrack.trackNumber(fromFileName: url.lastPathComponent),
+                discNumber: LocalMusicTrack.discNumber(
+                    fromFileName: url.lastPathComponent,
+                    parentFolderName: url.deletingLastPathComponent().lastPathComponent
+                ),
                 channelCount: 0,
                 channelSummary: "",
                 layoutName: "-",
@@ -850,6 +1137,69 @@ final class LocalMusicLibrary {
             .trimmedNilIfBlank
     }
 
+    private static func metadataOrdinal(for identifiers: [AVMetadataIdentifier], in metadata: [AVMetadataItem]) -> Int? {
+        for identifier in identifiers {
+            for item in AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: identifier) {
+                if let number = ordinalValue(from: item) {
+                    return number
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func ordinalValue(from item: AVMetadataItem) -> Int? {
+        if let number = item.numberValue?.intValue,
+           number > 0 {
+            return number
+        }
+        if let string = item.stringValue,
+           let number = firstPositiveInteger(in: string) {
+            return number
+        }
+        if let number = (item.value as? NSNumber)?.intValue,
+           number > 0 {
+            return number
+        }
+        if let string = item.value as? String,
+           let number = firstPositiveInteger(in: string) {
+            return number
+        }
+        if let data = item.dataValue,
+           let number = ordinalValue(from: data) {
+            return number
+        }
+        return nil
+    }
+
+    private static func firstPositiveInteger(in value: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: #"\d+"#) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = regex.firstMatch(in: value, options: [], range: range),
+              let swiftRange = Range(match.range, in: value)
+        else { return nil }
+        let number = Int(value[swiftRange]) ?? 0
+        return number > 0 ? number : nil
+    }
+
+    private static func ordinalValue(from data: Data) -> Int? {
+        guard data.count >= 2 else { return nil }
+        let bytes = [UInt8](data)
+        if bytes.count >= 4 {
+            let iTunesOrdinal = Int(bytes[2]) << 8 | Int(bytes[3])
+            if iTunesOrdinal > 0 {
+                return iTunesOrdinal
+            }
+        }
+        for index in 0..<(bytes.count - 1) {
+            let value = Int(bytes[index]) << 8 | Int(bytes[index + 1])
+            if value > 0 {
+                return value
+            }
+        }
+        return nil
+    }
+
     static func isSupportedAudioFile(_ url: URL) -> Bool {
         let supportedExtensions: Set<String> = [
             "wav", "wave", "flac", "aif", "aiff", "m4a", "caf", "mp3", "mkv", "mka"
@@ -863,9 +1213,18 @@ final class LocalMusicLibrary {
         return supportedExtensions.contains(url.pathExtension.lowercased())
     }
 
-    private static func artworkExtension(for data: Data) -> String {
+    static func artworkExtension(for data: Data, sourceURL: URL? = nil) -> String {
+        if let sourceExtension = sourceURL?.pathExtension.lowercased(),
+           ["png", "jpg", "jpeg", "webp"].contains(sourceExtension) {
+            return sourceExtension == "jpeg" ? "jpg" : sourceExtension
+        }
         if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
             return "png"
+        }
+        if data.count >= 12,
+           data.starts(with: [0x52, 0x49, 0x46, 0x46]),
+           Array(data[8..<12]) == [0x57, 0x45, 0x42, 0x50] {
+            return "webp"
         }
         return "jpg"
     }

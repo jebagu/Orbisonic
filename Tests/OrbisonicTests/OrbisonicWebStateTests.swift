@@ -191,8 +191,8 @@ final class OrbisonicWebStateTests: XCTestCase {
 
         let state = model.webStateForTesting(controlEnabled: true)
 
-        XCTAssertEqual(state.input.sourceButtons.map(\.title), ["Off", "Roon", "Spotify", "Aux Cable", "Local Music"])
-        XCTAssertEqual(state.input.sourceButtons.map(\.value), ["Off", "Roon", "Spotify", "Aux Cable", "Local Files"])
+        XCTAssertEqual(state.input.sourceButtons.map(\.title), ["Local Music", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(state.input.sourceButtons.map(\.value), ["Local Files", "Spotify", "Roon", "Aux Cable", "Off"])
         XCTAssertEqual(state.input.sourceButtons.map(\.subtitle), ["", "", "", "", ""])
         XCTAssertFalse(state.input.sourceButtons.map(\.title).contains("Test Tone"))
         XCTAssertEqual(state.input.sourcePanel.title, "Local Music")

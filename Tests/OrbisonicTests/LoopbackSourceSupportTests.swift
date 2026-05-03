@@ -3,10 +3,10 @@ import XCTest
 @testable import Orbisonic
 
 final class LoopbackSourceSupportTests: XCTestCase {
-    func testMusicInputsExposeExactlyOffRoonSpotifyAuxCableAndLocalFiles() {
-        XCTAssertEqual(SourceMode.musicInputs, [.off, .roon, .spotify, .aux, .filePlayback])
-        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Off", "Roon", "Spotify", "Aux Cable", "Local Files"])
-        XCTAssertEqual(SourceMode.musicInputs.map(\.displayName), ["Off", "Roon", "Spotify", "Aux Cable", "Local Music"])
+    func testMusicInputsExposeRequestedPlayerFirstOrder() {
+        XCTAssertEqual(SourceMode.musicInputs, [.filePlayback, .spotify, .roon, .aux, .off])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Local Files", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.displayName), ["Local Music", "Spotify", "Roon", "Aux Cable", "Off"])
         XCTAssertTrue(SourceMode.musicInputs.allSatisfy(\.isUserFacingMusicInput))
         XCTAssertFalse(SourceMode.musicInputs.contains(.testTone))
     }

@@ -76,6 +76,69 @@ enum StreamingLocalPlaybackPolicy {
     static let hardPCMByteCap = 128 * 1_024 * 1_024
 }
 
+enum LocalGaplessPlaybackPolicy {
+    static let enableLocalGaplessSchedulerKey = "Orbisonic.localGapless.enableScheduler"
+    static let localGaplessEnableCompressedTrimKey = "Orbisonic.localGapless.enableCompressedTrim"
+    static let defaultEnableLocalGaplessScheduler = false
+    static let defaultLocalGaplessEnableCompressedTrim = false
+    static let localGaplessTargetAheadSeconds: TimeInterval = 4
+    static let localGaplessChunkFrames: AVAudioFrameCount = 16_384
+    static let localGaplessMaxRetainedPCMBytes = 32 * 1_024 * 1_024
+
+    static var enableLocalGaplessScheduler: Bool {
+        bool(forKey: enableLocalGaplessSchedulerKey, defaultValue: defaultEnableLocalGaplessScheduler)
+    }
+
+    static var localGaplessEnableCompressedTrim: Bool {
+        bool(forKey: localGaplessEnableCompressedTrimKey, defaultValue: defaultLocalGaplessEnableCompressedTrim)
+    }
+
+    static func setEnableLocalGaplessScheduler(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: enableLocalGaplessSchedulerKey)
+    }
+
+    static func setLocalGaplessEnableCompressedTrim(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: localGaplessEnableCompressedTrimKey)
+    }
+
+    static func bool(forKey key: String, defaultValue: Bool, defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: key) != nil else {
+            return defaultValue
+        }
+        return defaults.bool(forKey: key)
+    }
+}
+
+enum LocalGaplessSchedulerLogEvent: String, CaseIterable, Sendable {
+    case schedulerEnabled = "gapless scheduler enabled"
+    case sourceOpenFailed = "source open failed"
+    case decoderUnderrun = "decoder underrun"
+    case queueExhausted = "queue exhausted"
+    case gaplessMiss = "gapless miss"
+    case generationInvalidated = "generation invalidated"
+    case compressedTrimApplied = "compressed trim applied"
+    case compressedTrimUnavailable = "compressed trim unavailable"
+}
+
+enum LocalGaplessSchedulerLog {
+    static let category = "gapless"
+
+    static func message(
+        _ event: LocalGaplessSchedulerLogEvent,
+        fileName: String? = nil,
+        reason: String? = nil
+    ) -> String {
+        var fields = ["event=\"\(event.rawValue)\""]
+        if let fileName, !fileName.isEmpty {
+            fields.append("file=\"\(fileName)\"")
+        }
+        if let reason, !reason.isEmpty {
+            fields.append("reason=\"\(reason)\"")
+        }
+        return fields.joined(separator: " ")
+    }
+}
+
 enum StreamingAudioFileSourceError: LocalizedError, Equatable {
     case invalidConfiguration(String)
     case unsupportedFormat(String)

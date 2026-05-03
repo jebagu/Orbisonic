@@ -54,6 +54,34 @@ enum RendererMatrixSampleRenderer {
         return (outputBuffers, renderedFrames)
     }
 
+    static func renderSampleBuffers(
+        matrix: RendererMatrix,
+        sourceBuffer: AVAudioPCMBuffer,
+        startFrame: Int,
+        frameCount: Int
+    ) -> (sampleBuffers: [[Float]], frameCount: Int) {
+        let frames = renderedFrameCount(
+            matrix: matrix,
+            sourceBuffer: sourceBuffer,
+            startFrame: startFrame,
+            requestedFrameCount: frameCount
+        )
+        guard frames > 0 else { return ([], 0) }
+
+        var outputBuffers = Array(
+            repeating: Array(repeating: Float(0), count: frames),
+            count: matrix.outputCount
+        )
+        let renderedFrames = render(
+            matrix: matrix,
+            sourceBuffer: sourceBuffer,
+            startFrame: startFrame,
+            frameCount: frames,
+            outputBuffers: &outputBuffers
+        )
+        return (outputBuffers, renderedFrames)
+    }
+
     @discardableResult
     static func render(
         matrix: RendererMatrix,
@@ -195,6 +223,49 @@ enum RendererMatrixSampleRenderer {
         return frames
     }
 
+    @discardableResult
+    static func render(
+        matrix: RendererMatrix,
+        sourceBuffer: AVAudioPCMBuffer,
+        startFrame: Int,
+        frameCount: Int,
+        outputBuffers: inout [[Float]]
+    ) -> Int {
+        let frames = renderedFrameCount(
+            matrix: matrix,
+            sourceBuffer: sourceBuffer,
+            startFrame: startFrame,
+            requestedFrameCount: frameCount
+        )
+        guard frames > 0 else {
+            outputBuffers.removeAll()
+            return 0
+        }
+
+        normalize(outputBuffers: &outputBuffers, outputCount: matrix.outputCount, frameCount: frames)
+        let outputLimit = min(outputBuffers.count, matrix.outputCount)
+        guard outputLimit > 0,
+              let channelData = sourceBuffer.floatChannelData
+        else { return 0 }
+
+        let sourceOffset = max(startFrame, 0)
+        for inputIndex in 0..<matrix.inputCount {
+            let input = channelData[inputIndex].advanced(by: sourceOffset)
+            let gains = matrix.gains[inputIndex]
+            for outputIndex in 0..<outputLimit {
+                guard gains.indices.contains(outputIndex) else { continue }
+                let gain = Float(gains[outputIndex])
+                guard abs(gain) > 0.000_001 else { continue }
+
+                for frame in 0..<frames {
+                    outputBuffers[outputIndex][frame] += input[frame] * gain
+                }
+            }
+        }
+
+        return frames
+    }
+
     private static func renderedFrameCount(
         matrix: RendererMatrix,
         sourceBuffers: [AVAudioPCMBuffer],
@@ -217,6 +288,27 @@ enum RendererMatrixSampleRenderer {
             frames = min(frames, availableFrames)
         }
         return max(frames, 0)
+    }
+
+    private static func renderedFrameCount(
+        matrix: RendererMatrix,
+        sourceBuffer: AVAudioPCMBuffer,
+        startFrame: Int,
+        requestedFrameCount: Int
+    ) -> Int {
+        guard requestedFrameCount > 0,
+              matrix.inputCount > 0,
+              matrix.outputCount > 0,
+              Int(sourceBuffer.format.channelCount) == matrix.inputCount,
+              sourceBuffer.floatChannelData != nil
+        else {
+            return 0
+        }
+
+        let sourceOffset = max(startFrame, 0)
+        let availableFrames = Int(sourceBuffer.frameLength) - sourceOffset
+        guard availableFrames > 0 else { return 0 }
+        return min(requestedFrameCount, availableFrames)
     }
 
     private static func renderedFrameCount(
