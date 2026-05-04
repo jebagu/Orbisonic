@@ -1,5 +1,29 @@
 # Orbisonic Release Notes
 
+## 1.1
+
+Orbisonic 1.1 packages the current app build from commit `8ffa977` and adds a suite installer that bundles the app with Orbisonic Inputs 0.2.0.
+
+### Installation
+
+Install the app only with:
+
+```sh
+installer/Orbisonic-1.1.pkg
+```
+
+Install the app plus Orbisonic virtual input drivers with:
+
+```sh
+installer/OrbisonicSuite-1.1.pkg
+```
+
+The suite installer includes:
+
+- `Orbisonic Roon Input`
+- `Orbisonic Aux Cable`
+- `Orbisonic Spotify Input`
+
 ## 1.0
 
 Orbisonic 1.0 is the first packaged app build for the native macOS Sonic Sphere routing, monitoring, and rendering workflow.

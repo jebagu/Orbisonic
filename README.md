@@ -71,11 +71,12 @@ through LaunchServices with the reopen script above; do not run
 
 ## Installer
 
-The packaged app installer is:
+The packaged installers are:
 
-- `installer/Orbisonic-1.0.pkg`
+- `installer/Orbisonic-1.1.pkg` for the app only
+- `installer/OrbisonicSuite-1.1.pkg` for the app plus Orbisonic virtual input drivers
 
-It installs `Orbisonic.app` into `/Applications`. This app installer does not install the Orbisonic virtual loopback inputs. Install the separate Orbisonic Inputs package as well if you want Roon and Aux Cable live capture through `Orbisonic Roon Input` and `Orbisonic Aux Cable`. Roon itself is optional and is needed only if you want Roon playback.
+The app-only installer installs `Orbisonic.app` into `/Applications`. The suite installer also installs the Orbisonic virtual loopback inputs for Roon, Aux Cable, and Spotify live capture. Roon itself is optional and is needed only if you want Roon playback.
 
 For live player capture, route Roon to `Orbisonic Roon Input` and route general app audio to `Orbisonic Aux Cable`. macOS may present this as a microphone permission prompt because app-level audio input devices share the same privacy gate.
 
