@@ -2024,6 +2024,9 @@ final class OrbisonicViewModel: ObservableObject {
         switch mode {
         case .off:
             updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
+            currentFileURL = nil
+            clearLoadedSourceSnapshot()
+            roonNowPlaying = nil
             liveSignalStatus = "No audio yet."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
@@ -2073,6 +2076,9 @@ final class OrbisonicViewModel: ObservableObject {
             }
         case .testTone:
             updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
+            currentFileURL = nil
+            clearLoadedSourceSnapshot()
+            roonNowPlaying = nil
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
@@ -7500,6 +7506,31 @@ final class OrbisonicViewModel: ObservableObject {
         return roonLoopbackSampleRateMismatchText
     }
 
+    var liveLoopbackDiagnostics: LiveLoopbackDiagnosticSnapshot {
+        LiveLoopbackDiagnostics.snapshot(
+            sourceMode: sourceMode,
+            inputRoute: inputRoute,
+            availableInputRoutes: availableInputRoutes,
+            activeChannelCount: activeLiveChannelCount,
+            signalState: liveAudioSignalState,
+            silenceDuration: liveAudioSignalSilenceDuration,
+            bufferDiagnostic: livePipeStatus.map {
+                LiveLoopbackBufferDiagnostic(
+                    minimumBufferedFrames: $0.minimumBufferedFrames,
+                    maximumBufferedFrames: $0.maximumBufferedFrames,
+                    targetLatencyFrames: $0.targetLatencyFrames,
+                    isPriming: $0.isPriming,
+                    underflowCount: $0.underflowCount,
+                    underflowFrames: $0.underflowFrames,
+                    overflowDropFrames: $0.overflowDropFrames
+                )
+            },
+            sampleRateMismatchText: liveSourceSampleRateMismatchText,
+            permissionStatusText: inputPermissionStatusText,
+            playerActivityText: liveLoopbackPlayerActivityText
+        )
+    }
+
     var spotifySourceHealthLines: [SpotifySourceHealthLine] {
         guard sourceMode == .spotify else { return [] }
 
@@ -7533,10 +7564,11 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         let streamRead: String
+        let spotifyChannelCount = SourceMode.spotify.fixedLiveChannelCount ?? activeLiveChannelCount
         if let metadata = sourceMetadata, inputRoute.isSpotifyLoopback {
-            streamRead = "Receiving format: \(metadata.channelCount) channels, \(metadata.sampleRateText) \(metadata.layoutName.lowercased())"
+            streamRead = "Receiving format: \(spotifyChannelCount) channels, \(metadata.sampleRateText) stereo"
         } else if inputRoute.isSpotifyLoopback, liveMonitorState.isCapturing || liveMonitorState.isMuted {
-            streamRead = "Monitoring format: \(activeLiveChannelCount) channels, \(formatSampleRate(inputRoute.nominalSampleRate)) stereo"
+            streamRead = "Monitoring format: \(spotifyChannelCount) channels, \(formatSampleRate(inputRoute.nominalSampleRate)) stereo"
         } else {
             streamRead = "Waiting for stream"
         }
@@ -9330,9 +9362,10 @@ final class OrbisonicViewModel: ObservableObject {
            elapsedSecond != lastLiveSilenceWarningSecond,
            elapsedSecond % 5 == 0 {
             lastLiveSilenceWarningSecond = elapsedSecond
+            let diagnosis = liveLoopbackDiagnostics.logSummary
             AppLogger.shared.warning(
                 category: "live-input",
-                "Selected input is silent elapsed=\(elapsedSecond)s peak=\(String(format: "%.2f", peak)) input=\(inputRoute.deviceName) inputRate=\(formatSampleRate(inputRoute.nominalSampleRate)) roonRate=\(roonNowPlaying?.outputSampleRate.map(formatSampleRate) ?? "unknown") output=\(outputRoute.deviceName)"
+                "Selected input is silent elapsed=\(elapsedSecond)s peak=\(String(format: "%.2f", peak)) input=\(inputRoute.deviceName) inputRate=\(formatSampleRate(inputRoute.nominalSampleRate)) roonRate=\(roonNowPlaying?.outputSampleRate.map(formatSampleRate) ?? "unknown") output=\(outputRoute.deviceName) diagnosis=\"\(diagnosis)\""
             )
         }
     }
@@ -9401,6 +9434,39 @@ final class OrbisonicViewModel: ObservableObject {
             return true
         }
         return roonNowPlaying?.state.caseInsensitiveCompare("PAUSED") == .orderedSame
+    }
+
+    private var liveLoopbackPlayerActivityText: String {
+        switch sourceMode {
+        case .roon:
+            if roonPlaybackIsActiveForSignalStatus {
+                return "Roon playback: playing."
+            }
+            if roonPlaybackIsPausedForSignalStatus {
+                return "Roon playback: paused."
+            }
+            if roonBridgeSnapshot.isReadyForTransport {
+                return "Roon bridge: paired, playback state unknown."
+            }
+            return "Roon playback: unknown."
+        case .spotify:
+            if spotifyHasReceivingAudioForStatus {
+                return "Spotify playback: receiving audio."
+            }
+            if let nowPlaying = spotifyNowPlayingForActiveStatus {
+                return nowPlaying.isPlaying
+                    ? "Spotify playback: playing."
+                    : "Spotify playback: paused."
+            }
+            if spotifyReceiverStatus.isRunning {
+                return "Spotify receiver: running, no captured audio yet."
+            }
+            return "Spotify receiver: \(spotifyReceiverStatus.message)."
+        case .aux:
+            return "Aux source: no transport metadata; verify the source app is routed to Orbisonic Aux Cable."
+        case .off, .filePlayback, .testTone:
+            return "No external live playback source selected."
+        }
     }
 
     private func repairBlackHoleSampleRateIfNeeded(force: Bool = false) {

@@ -104,6 +104,27 @@ final class NormalMonitorRouteBranchRemovalTests: XCTestCase {
         assertNormalMonitor(noSphere)
     }
 
+    func testNormalMonitorDoesNotDependOnAnyRendererModeIncludingDirectBypass() {
+        let reference = selectRoute(
+            rendererMode: .automatic,
+            activeOutputRoute: builtInStereoRoute,
+            rendererOutputRoute: rendererCapableRoute,
+            requiredSonicSphereOutputChannelCount: 31
+        )
+
+        for mode in rendererModesIncludingDirectBypass {
+            let selected = selectRoute(
+                rendererMode: mode,
+                activeOutputRoute: builtInStereoRoute,
+                rendererOutputRoute: rendererCapableRoute,
+                requiredSonicSphereOutputChannelCount: 31
+            )
+
+            XCTAssertEqual(selected, reference, mode.displayName)
+            assertNormalMonitor(selected)
+        }
+    }
+
     func testAudibleRouteSelectionHasSingleTerminalRenderer() throws {
         XCTAssertEqual(NormalMonitorTerminalRenderer.allCases, [.normalMonitorStereoDownmixer])
 
@@ -131,6 +152,25 @@ final class NormalMonitorRouteBranchRemovalTests: XCTestCase {
             rendererOutputRoute: rendererOutputRoute,
             requiredSonicSphereOutputChannelCount: requiredSonicSphereOutputChannelCount
         )
+    }
+
+    private var rendererModesIncludingDirectBypass: [RendererRenderMode] {
+        [
+            .automatic,
+            .mono,
+            .stereo,
+            .quad,
+            .surround51,
+            .auro80,
+            .auro91,
+            .auro101,
+            .auro111714h,
+            .auro111515hT,
+            .auro121,
+            .auro131,
+            .direct30,
+            .direct31
+        ]
     }
 
     private var builtInStereoRoute: OutputRouteInfo {

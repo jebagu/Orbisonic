@@ -386,7 +386,15 @@ struct DiagnosticsView: View {
         ]
 
         if model.sourceMode.isLiveInput {
+            let diagnosis = model.liveLoopbackDiagnostics
             rows.append(contentsOf: [
+                DiagnosticsRow(label: "Capture diagnosis", value: diagnosis.summary, tone: diagnosticsTone(for: diagnosis.severity)),
+                DiagnosticsRow(label: "Route diagnosis", value: diagnosis.routeStatus),
+                DiagnosticsRow(label: "Sample-rate diagnosis", value: diagnosis.sampleRateStatus),
+                DiagnosticsRow(label: "Channel diagnosis", value: diagnosis.channelStatus),
+                DiagnosticsRow(label: "Signal diagnosis", value: diagnosis.signalStatus),
+                DiagnosticsRow(label: "Buffer diagnosis", value: diagnosis.bufferStatus, monospace: true),
+                DiagnosticsRow(label: "Player/source activity", value: diagnosis.playerActivityStatus),
                 DiagnosticsRow(label: "Capture format", value: liveCaptureFormatText),
                 DiagnosticsRow(label: "Active input channels", value: "\(model.activeLiveChannelCount) active of \(model.inputRoute.inputChannelCount) available"),
                 DiagnosticsRow(label: "Signal state", value: signalStateText),
@@ -411,6 +419,16 @@ struct DiagnosticsView: View {
 
     private var inputHealthWarnings: [DiagnosticsRow] {
         var rows: [DiagnosticsRow] = []
+        if model.sourceMode.isLiveInput {
+            let diagnosis = model.liveLoopbackDiagnostics
+            if diagnosis.severity == .warning || diagnosis.severity == .error {
+                rows.append(DiagnosticsRow(
+                    label: "Capture diagnosis",
+                    value: diagnosis.summary,
+                    tone: diagnosticsTone(for: diagnosis.severity)
+                ))
+            }
+        }
         if model.sourceMode.isLiveInput, !model.sourceMode.acceptsInputRoute(model.inputRoute) {
             rows.append(DiagnosticsRow(
                 label: "Warning",
@@ -425,6 +443,19 @@ struct DiagnosticsView: View {
             rows.append(DiagnosticsRow(label: "Warning", value: "macOS input permission may block loopback capture.", tone: .warning))
         }
         return rows
+    }
+
+    private func diagnosticsTone(for severity: LiveLoopbackDiagnosticSeverity) -> DiagnosticsRowTone {
+        switch severity {
+        case .error:
+            return .error
+        case .warning:
+            return .warning
+        case .idle, .waiting:
+            return .secondary
+        case .healthy:
+            return .normal
+        }
     }
 
     private var roonRows: [DiagnosticsRow] {

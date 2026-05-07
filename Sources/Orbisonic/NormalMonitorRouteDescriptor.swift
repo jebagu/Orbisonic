@@ -78,6 +78,9 @@ enum NormalMonitorAudibleRouteSelector {
         rendererOutputRoute: OutputRouteInfo,
         requiredSonicSphereOutputChannelCount: Int
     ) -> NormalMonitorRouteDescriptor {
+        // Normal monitor route selection is a stereo preview branch. Production
+        // renderer mode, output route capability, and Sonic Sphere channel count
+        // must not alter this audible monitor path.
         _ = rendererMode
         _ = activeOutputRoute
         _ = rendererOutputRoute

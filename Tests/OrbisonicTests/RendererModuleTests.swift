@@ -1,3 +1,4 @@
+import CoreAudio
 import CoreGraphics
 import XCTest
 @testable import Orbisonic
@@ -19,6 +20,62 @@ final class RendererModuleTests: XCTestCase {
         XCTAssertEqual(speakers.compactMap(\.speakerId), Array(1...30))
         XCTAssertEqual(speakers.filter { !$0.isLFE }.map(\.index), Array(0..<30))
         XCTAssertEqual(speakers.last?.index, 30)
+    }
+
+    func testNormalMonitorPlanningLeavesProductionSonicSphereSceneUnchanged() {
+        let layout = SurroundLayoutDetector.fallbackLayout(for: 6)
+        let baselineTopology = RendererPreset.sonicSphere30Point1.outputTopology
+        let baselineSpeakers = SonicSphereTopology.outputSpeakers(for: .sonicSphere30Point1)
+        let baselineScene = RendererMatrixBuilder.sceneModel(
+            for: layout,
+            preset: .sonicSphere30Point1,
+            renderMode: .automatic
+        )
+
+        XCTAssertEqual(baselineTopology.fullRangeCount, 30)
+        XCTAssertEqual(baselineTopology.lfeCount, 1)
+        XCTAssertEqual(baselineScene.matrix.outputCount, RendererOutputTopology.fey30Point1.outputCount)
+
+        for sourceFamily in NormalMonitorSourceFamily.allCases {
+            let topology = NormalMonitorGraphTopology.audible(sourceFamily: sourceFamily)
+            let route = NormalMonitorRoutePlanner.audibleRoute(
+                sourceFamily: sourceFamily,
+                sourceLayoutDescription: "Synthetic monitor boundary fixture"
+            )
+
+            XCTAssertTrue(topology.hasExactlyOneAudiblePath, "\(sourceFamily)")
+            XCTAssertFalse(topology.containsAudibleSonicSphereMatrixNode, "\(sourceFamily)")
+            XCTAssertTrue(route.usesNormalMonitor, "\(sourceFamily)")
+            XCTAssertEqual(route.outputChannelCount, 2, "\(sourceFamily)")
+        }
+
+        for mode in rendererModesIncludingDirectBypass {
+            let route = NormalMonitorAudibleRouteSelector.select(
+                sourceFamily: .localFile,
+                sourceLayoutDescription: "Synthetic monitor boundary fixture",
+                rendererMode: mode,
+                activeOutputRoute: rendererCapableRoute,
+                rendererOutputRoute: rendererCapableRoute,
+                requiredSonicSphereOutputChannelCount: RendererOutputTopology.fey30Point1.outputCount
+            )
+
+            XCTAssertTrue(route.usesNormalMonitor, mode.displayName)
+            XCTAssertEqual(route.outputChannelCount, 2, mode.displayName)
+            XCTAssertFalse(route.usesAudibleDirectSonicSphereMatrix, mode.displayName)
+        }
+
+        let currentScene = RendererMatrixBuilder.sceneModel(
+            for: layout,
+            preset: .sonicSphere30Point1,
+            renderMode: .automatic
+        )
+
+        XCTAssertEqual(RendererPreset.sonicSphere30Point1.outputTopology, baselineTopology)
+        XCTAssertEqual(currentScene.preset.outputTopology, baselineTopology)
+        XCTAssertEqual(SonicSphereTopology.outputSpeakers(for: .sonicSphere30Point1), baselineSpeakers)
+        XCTAssertEqual(currentScene.outputSpeakers, baselineScene.outputSpeakers)
+        XCTAssertEqual(currentScene.matrix, baselineScene.matrix)
+        XCTAssertEqual(currentScene.matrix.outputMajorGains.count, RendererOutputTopology.fey30Point1.outputCount)
     }
 
     func testRendererValidationAcceptsDefaultLayoutAndMatrices() {
@@ -520,6 +577,37 @@ final class RendererModuleTests: XCTestCase {
             for: SurroundLayoutDetector.fallbackLayout(for: channelCount),
             preset: .sonicSphere30Point1,
             renderMode: .automatic
+        )
+    }
+
+    private var rendererModesIncludingDirectBypass: [RendererRenderMode] {
+        [
+            .automatic,
+            .mono,
+            .stereo,
+            .quad,
+            .surround51,
+            .auro80,
+            .auro91,
+            .auro101,
+            .auro111714h,
+            .auro111515hT,
+            .auro121,
+            .auro131,
+            .direct30,
+            .direct31
+        ]
+    }
+
+    private var rendererCapableRoute: OutputRouteInfo {
+        OutputRouteInfo(
+            deviceID: AudioDeviceID(64),
+            uid: "dante-vsc",
+            deviceName: "Dante Virtual Soundcard",
+            manufacturer: "Audinate",
+            transportName: "Virtual",
+            outputChannelCount: 64,
+            nominalSampleRate: 48_000
         )
     }
 

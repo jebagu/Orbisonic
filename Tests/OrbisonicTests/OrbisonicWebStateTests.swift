@@ -428,9 +428,14 @@ final class OrbisonicWebStateTests: XCTestCase {
             "Playing"
         )
         XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Roon input" }?.value,
+            "Ready"
+        )
+        XCTAssertEqual(
             state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
             "No signal"
         )
+        XCTAssertEqual(state.input.sourcePanel.severity, "waiting")
         XCTAssertTrue(state.input.sourcePanel.body.contains("playing to Orbisonic"))
         XCTAssertNotEqual(
             state.input.sourcePanel.rows.first { $0.title == "Playback" }?.value,
@@ -459,6 +464,74 @@ final class OrbisonicWebStateTests: XCTestCase {
             state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
             "Waiting for audio"
         )
+    }
+
+    @MainActor
+    func testActiveSpotifySessionWithNoSignalKeepsAudioProblemVisible() {
+        let model = OrbisonicViewModel()
+        let spotifyRoute = Self.inputRoute(for: .spotifyInput)
+        model.setSourceModeForTesting(.spotify)
+        model.setInputRouteForTesting(spotifyRoute, availableRoutes: [spotifyRoute])
+        model.setSpotifyReceiverStatusForTesting(Self.spotifyReceiverRunningStatus())
+        model.setSpotifyNowPlayingForTesting(Self.spotifyNowPlaying(
+            title: "Signal Lost",
+            isPlaying: true,
+            sessionActive: true
+        ))
+        model.setLiveMonitorStateForTesting(.silent)
+        model.setLiveAudioSignalStateForTesting(.noSignal, silenceDuration: 16)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.source, SourceMode.spotify.rawValue)
+        XCTAssertEqual(state.player.status, "Spotify playing")
+        XCTAssertEqual(state.input.sourcePanel.headline, "Spotify is connected - waiting for audio")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Connection" }?.value,
+            "Connected to Orbisonic"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
+            "No signal"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Now playing" }?.value,
+            "Signal Lost - Artist"
+        )
+        XCTAssertEqual(state.input.sourcePanel.severity, "waiting")
+    }
+
+    @MainActor
+    func testAuxReadyWithNoSignalReportsAuxOnlyRouteAndAudioState() {
+        let model = OrbisonicViewModel()
+        let auxRoute = Self.inputRoute(for: .auxCable)
+        model.setSourceModeForTesting(.aux)
+        model.setInputRouteForTesting(auxRoute, availableRoutes: [auxRoute])
+        model.setLiveMonitorStateForTesting(.silent)
+        model.setLiveAudioSignalStateForTesting(.noSignal, silenceDuration: 16)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertEqual(state.player.source, SourceMode.aux.rawValue)
+        XCTAssertEqual(state.player.status, "Aux has no transport")
+        XCTAssertFalse(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.title, "Aux Cable")
+        XCTAssertEqual(state.input.sourcePanel.headline, "Waiting for Aux audio")
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Aux Cable" }?.value,
+            "Ready"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Input" }?.value,
+            "64 channels"
+        )
+        XCTAssertEqual(
+            state.input.sourcePanel.rows.first { $0.title == "Audio" }?.value,
+            "No signal"
+        )
+        XCTAssertFalse(state.input.sourcePanel.rows.contains { $0.title.contains("Roon") })
+        XCTAssertFalse(state.input.sourcePanel.rows.contains { $0.title.contains("Spotify") })
+        XCTAssertEqual(state.player.details.first { $0.title == "Endpoint" }?.value, "Aux input ready")
+        XCTAssertEqual(state.player.details.first { $0.title == "Signal quality" }?.value, "44.1 kHz input")
+        XCTAssertEqual(state.input.sourcePanel.severity, "waiting")
     }
 
     @MainActor
@@ -543,20 +616,86 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertFalse(state.player.isPlaying)
     }
 
+    @MainActor
+    func testSwitchingOffClearsStaleLocalPlaybackSnapshot() async throws {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.filePlayback)
+        model.sourceMetadata = Self.localMetadata(title: "Local Track")
+        model.statusMessage = "Local playback paused"
+        XCTAssertNotNil(model.visibleLocalSourceMetadata)
+
+        model.selectSourceMode(.off, reason: "test", requestedBy: "test")
+        try await Self.waitForSourceMode(model, .off)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertNil(model.visibleLocalSourceMetadata)
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertEqual(state.player.source, SourceMode.off.rawValue)
+        XCTAssertEqual(state.player.title, "Nothing playing right now")
+        XCTAssertFalse(state.player.title.localizedCaseInsensitiveContains("Local Track"))
+        XCTAssertFalse(state.player.details.contains { $0.value.localizedCaseInsensitiveContains("Local Track") })
+    }
+
+    @MainActor
+    func testSwitchingToTestToneClearsStaleLocalPlaybackSnapshot() async throws {
+        let model = OrbisonicViewModel()
+        model.setSourceModeForTesting(.filePlayback)
+        model.sourceMetadata = Self.localMetadata(title: "Local Track")
+        model.statusMessage = "Local playback paused"
+        XCTAssertNotNil(model.visibleLocalSourceMetadata)
+
+        model.selectSourceMode(.testTone, reason: "test", requestedBy: "test")
+        try await Self.waitForSourceMode(model, .testTone)
+
+        let state = model.webStateForTesting(controlEnabled: true)
+        XCTAssertNil(model.visibleLocalSourceMetadata)
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertEqual(state.player.source, SourceMode.testTone.rawValue)
+        XCTAssertEqual(state.player.title, model.selectedTestTonePoint.rawValue)
+        XCTAssertFalse(state.player.title.localizedCaseInsensitiveContains("Local Track"))
+        XCTAssertFalse(state.player.details.contains { $0.value.localizedCaseInsensitiveContains("Local Track") })
+    }
+
+    @MainActor
+    func testSpotifyHealthUsesStereoBoundaryWhenLocalMetadataIsStale() {
+        let model = OrbisonicViewModel()
+        let spotifyRoute = Self.inputRoute(for: .spotifyInput)
+        model.setSourceModeForTesting(.spotify)
+        model.setInputRouteForTesting(spotifyRoute, availableRoutes: [spotifyRoute])
+        model.setLiveMonitorStateForTesting(.monitoring)
+        model.sourceMetadata = Self.localMetadata(
+            title: "Local 5.1 Track",
+            layoutName: "5.1",
+            channelCount: 6,
+            sampleRate: 96_000
+        )
+
+        let streamRead = model.spotifySourceHealthLines
+            .first { $0.title == "Spotify input stream" }?
+            .value
+
+        XCTAssertEqual(streamRead, "Receiving format: 2 channels, 96.0 kHz stereo")
+        XCTAssertFalse(streamRead?.contains("6 channels") == true)
+        XCTAssertFalse(streamRead?.contains("5.1") == true)
+    }
+
     private static func localMetadata(
         title: String,
         fileExtension: String = "wav",
         containerName: String = "WAV",
-        codecName: String = "PCM"
+        codecName: String = "PCM",
+        layoutName: String = "Stereo",
+        channelCount: Int = 2,
+        sampleRate: Double = 48_000
     ) -> AudioSourceMetadata {
         AudioSourceMetadata(
             fileName: "\(title).\(fileExtension)",
             containerName: containerName,
             codecName: codecName,
-            layoutName: "Stereo",
+            layoutName: layoutName,
             channelSummary: "FL, FR",
-            channelCount: 2,
-            sampleRate: 48_000,
+            channelCount: channelCount,
+            sampleRate: sampleRate,
             bitDepth: 24,
             duration: 180,
             title: title,
@@ -628,6 +767,21 @@ final class OrbisonicWebStateTests: XCTestCase {
             selectedZone: zone,
             zones: [zone]
         )
+    }
+
+    @MainActor
+    private static func waitForSourceMode(
+        _ model: OrbisonicViewModel,
+        _ mode: SourceMode,
+        timeout: TimeInterval = 8
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while (model.sourceMode != mode || model.isLiveMonitorTransitioning), Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.sourceMode, mode)
+        XCTAssertFalse(model.isLiveMonitorTransitioning)
     }
 
     private static func inputRoute(for device: OrbisonicLoopbackDevice) -> InputRouteInfo {

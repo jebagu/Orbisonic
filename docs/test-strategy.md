@@ -1,0 +1,164 @@
+# Orbisonic Test Strategy And Verification Map
+
+## Purpose
+
+This document maps the current Orbisonic tests to the contracts and audio risks described in `docs/contracts.md` and `docs/system-flows.md`. It is a retrofit control document, not a claim that all hardware paths have been verified.
+
+## Testing Goals
+
+- Protect the selected-source model: Roon, Spotify, Aux, Local Files, and Test Tone must stay separate unless a future mixer contract is accepted.
+- Protect Sonic Sphere 30.1 production output from silent renderer topology drift.
+- Protect the headphone or normal monitor path from mutating Sonic Sphere production output.
+- Keep sample-rate mismatch, channel-count mismatch, route mismatch, underflow, dropped frames, all-zero live input, and missing hardware visible.
+- Keep `AudioContracts`, `AudioImport`, and `AudioCore` independent from app/UI/runtime integration boundaries.
+- Prefer deterministic unit and integration tests for pure logic, and explicit manual verification for hardware and external-service behavior.
+- Avoid private media, personal paths, credentials, tokens, device-specific secrets, and runtime logs in tracked fixtures or docs.
+
+## Test Types
+
+- Contract tests: validate shared value types, sample-rate rules, source-channel caps, conversion ledgers, and forbidden imports.
+- Import policy tests: validate local asset readiness, offline import, managed CAF output, and no hidden realtime production sample-rate conversion.
+- Pure audio planning tests: validate source adapters, session planning, immutable render graph plans, render kernels, output adapters, metering telemetry, and Apple spatial headphone monitor values.
+- App integration tests: validate source switching, local file playback, live loopback policy, Roon/Spotify status models, web state, diagnostics, renderer module behavior, monitor topology, metering isolation, and UI model text.
+- Golden audio tests: validate deterministic monitor downmix, matrix rendering, direct renderer modes, LFE behavior, and no duplicate/stale audible paths.
+- Architecture boundary tests: validate SwiftPM dependency direction, forbidden dependencies, source-integration ownership boundaries, monitor/production topology separation, and prevent lower-level targets from reaching into UI/runtime ownership.
+- Manual hardware checks: validate Sonic Sphere / Dante, loopback devices, Roon, Spotify Connect, Aux capture, microphone permission, app signing/entitlements, and installer behavior in a real environment.
+
+## Existing Test Target Map
+
+| Test target | Current scope | Approximate test count from current files |
+| --- | --- | ---: |
+| `AudioContractsTests` | Shared sample rates, session formats, Dante eligibility, source descriptors, layout fallback, conversion ledger, meter snapshot values, forbidden imports. | 12 |
+| `AudioImportTests` | Local asset gate, sample-rate mismatch policy, stopped-session restart policy, managed import, conversion ledger, layout preservation. | 7 |
+| `AudioCoreTests` | Audio control, session planner, source adapters, render graph plan, render kernels, output adapters, metering telemetry, Apple spatial headphone monitor. | 102 |
+| `OrbisonicTests` | App runtime boundaries: local files, local library, live loopback, Roon, Spotify, Aux, renderer module, monitor path, diagnostics, web state, VU/metering, UI model behavior, build metadata, and architecture rules. | 423 |
+
+Counts are descriptive snapshots from the current repository. The completion rule below controls future work, not the raw count.
+
+## Contract-To-Test Map
+
+| Contract or boundary | Existing tests that protect it | Current coverage read |
+| --- | --- | --- |
+| `AudioContracts` | `Tests/AudioContractsTests/AudioContractsTests.swift`, `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift` | Good coverage for value validation, source cap, sample-rate mismatch, conversion ledger invalidation, meter snapshot values, SwiftPM dependency direction, forbidden imports, app runtime leakage, and filesystem implementation leakage. |
+| `AudioImport` | `Tests/AudioImportTests/LocalAssetImportTests.swift`, `Tests/OrbisonicTests/PureAudioIntegrationHardeningTests.swift`, `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift` | Good coverage for local asset readiness, managed imports, offline conversion ledger, rejection of hidden production SRC, and no app UI/live runtime back-dependency. |
+| `AudioCore` | `Tests/AudioCoreTests/AudioControlTests.swift`, `AudioSessionPlannerTests.swift`, `SourceAdapterTests.swift`, `RenderGraphPlanTests.swift`, `RenderKernelTests.swift`, `OutputAdapterTests.swift`, `MeteringTelemetryTests.swift`, `AppleSpatialHeadphoneMonitorTests.swift`, `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift` | Strong deterministic coverage for planning and offline render boundaries, plus static checks against app runtime ownership leakage; does not prove the live AVAudioEngine path has been fully migrated to AudioCore. |
+| App shell and view model | `Tests/OrbisonicTests/OrbisonicUITweakTests.swift`, `OrbisonicWebStateTests.swift`, `LocalPlayerStabilizationTests.swift`, `VURoutingViewTests.swift`, `AppBuildInfoTests.swift` | Good model and state coverage, including selected-source transition cleanup for Off and Test Tone. GUI rendering and LaunchServices behavior remain manual when app behavior changes. |
+| `OrbisonicEngine` | `LocalPlayerStabilizationTests.swift`, `StreamingAudioFileSourceTests.swift`, `LiveNormalMonitorRouteTests.swift`, `SonicSphereMeteringTests.swift`, `MeteringIsolationTests.swift` | Good deterministic and engine-adjacent coverage. Real output-device and live capture behavior still needs manual runtime verification. |
+| `LiveAudioBridge` | `Tests/OrbisonicTests/LiveAudioBridgeTests.swift`, `LiveNormalMonitorRouteTests.swift`, `MeteringIsolationTests.swift`, `SonicSphereMeteringTests.swift` | Covers source cap, priming, underflow, drop behavior, and non-consuming meter reads. Does not prove a real loopback driver is installed or permissioned. |
+| Local files and library | `AudioFileProbeTests.swift`, `LocalAudioFileSourceTests.swift`, `StreamingAudioFileSourceTests.swift`, `LocalGaplessSchedulerTests.swift`, `LocalGaplessTypesTests.swift`, `LocalGaplessPlaybackPolicyTests.swift`, `LocalPlayerStabilizationTests.swift`, `LocalMusicMetadataEnrichmentTests.swift`, `MatroskaFLACSupportTests.swift` | Broad coverage for file probing, streaming, gapless scheduling, metadata, playlist persistence, FFmpeg fallback fixtures, and source switching. Some fixture tests can skip when FFmpeg tools are unavailable. |
+| Roon boundary | `RoonNowPlayingMonitorTests.swift`, `RoonBridgeClientTests.swift`, `OrbisonicWebStateTests.swift`, `AudioCoreTests/SourceAdapterTests.swift`, `LoopbackSourceSupportTests.swift` | Good parser/client/status coverage, including diagnostic separation between Roon playback activity and captured loopback audio. No automated end-to-end proof that Roon playback reaches a real loopback input. |
+| Spotify boundary | `SpotifyReceiverClientTests.swift`, `OrbisonicWebStateTests.swift`, `AudioCoreTests/SourceAdapterTests.swift`, `LoopbackSourceSupportTests.swift` | Covers configuration, receiver state copy, stale metadata separation, loopback identity, stereo policy, fixed-stereo source health, and wrong-route diagnostic behavior. Real Spotify Connect session remains manual. |
+| Aux boundary | `LoopbackSourceSupportTests.swift`, `LiveNormalMonitorRouteTests.swift`, `AudioCoreTests/SourceAdapterTests.swift`, `OrbisonicWebStateTests.swift` | Covers expected route identity, selected-source policy, channel handling, monitor-only route policy, selected-source no-signal web/control status, channel mismatch, and permission diagnostic behavior. Real external-app audio capture remains manual. |
+| Renderer and Sonic Sphere output | `RendererModuleTests.swift`, `RendererMatrixSampleRendererTests.swift`, `SonicSphereMeteringTests.swift`, `AudioCoreTests/RenderGraphPlanTests.swift`, `RenderKernelTests.swift`, `OutputAdapterTests.swift`, `MeteringTelemetryTests.swift`, `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift` | Strong deterministic renderer/topology coverage, including Direct 30/31, channel 32 silence, and a monitor-planning non-mutation invariant for the Sonic Sphere 30.1 scene. Physical Sonic Sphere / Dante output remains manual. |
+| Headphone or normal monitor | `NormalMonitorStereoDownmixerTests.swift`, `NormalMonitorGraphTopologyTests.swift`, `NormalMonitorRouteDescriptorTests.swift`, `NormalMonitorRouteBranchRemovalTests.swift`, `NormalMonitorConversionLedgerTests.swift`, `NormalMonitorGoldenAudioTests.swift`, `AudioSpatialUsageAuditTests.swift`, `AudioCoreTests/AppleSpatialHeadphoneMonitorTests.swift`, `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift` | Strong monitor isolation coverage, including static checks that monitor files do not own production renderer topology and route-selection coverage that all renderer modes, including Direct 30/31, stay on the same normal monitor path. Route, entitlement, and actual headphone behavior remain manual. |
+| Diagnostics and logging | `DiagnosticsLogStoreTests.swift`, `LoopbackSourceSupportTests.swift`, `OrbisonicWebStateTests.swift`, `VURoutingViewTests.swift`, `MeteringServiceTests.swift`, `AudioCoreTests/MeteringTelemetryTests.swift` | Good coverage for bounded logs, public/control web separation, source status, live loopback diagnostic snapshots, and metering side effects. Runtime log contents still require manual inspection during hardware checks. |
+| Installer and app bundle scripts | `AppBuildInfoTests.swift`; `docs/release-verification.md`; manual script and installer verification | Automated coverage is limited to build metadata. Script behavior, package installation, app signing, LaunchServices reopen, and hardware/service checks are now mapped in the release verification checklist and remain manual unless actually run. |
+
+## Critical Audio Invariants
+
+| Invariant | Existing automated protection | Remaining verification |
+| --- | --- | --- |
+| Source channel count cap and layout handling | `AudioContractsTests`, `LiveAudioBridgeTests`, `RendererModuleTests`, `ChannelRoleLayoutDescriptorTests`, `LocalAssetImportTests`, `SourceAdapterTests` | Real files and live devices above expected channel counts should be manually rejected during release smoke tests when available. |
+| Local file path stays separate from live loopback path | `LocalPlayerStabilizationTests`, `LiveNormalMonitorRouteTests`, `LoopbackSourceSupportTests`, `OrbisonicWebStateTests`, `SourceAdapterTests` | Automated web-state tests now cover stale local snapshot cleanup when switching to Off or Test Tone. Manual source switching with running Roon/Aux/Spotify should verify no stale audible path remains. |
+| Roon, Spotify, Aux, and local sources stay isolated | `LoopbackSourceSupportTests`, `OrbisonicWebStateTests`, `LocalPlayerStabilizationTests`, `SourceAdapterTests` | Automated tests cover inactive Roon/Spotify/local web-state separation, Off/Test Tone local snapshot cleanup, and Spotify's fixed-stereo health boundary. Manual live-player checks should confirm visible source and captured signal match the selected source. |
+| Renderer topology does not drift silently | `RendererModuleTests`, `RendererMatrixSampleRendererTests`, `RenderGraphPlanTests`, `RenderKernelTests`, `OutputAdapterTests`, `SonicSphereMeteringTests` | Automated coverage now includes a monitor-planning invariant proving Sonic Sphere 30.1 scene topology is unchanged by monitor planning. Manual Sonic Sphere / Dante checks should confirm physical channel order and LFE behavior. |
+| Monitor path does not mutate production Sonic Sphere path | `NormalMonitor*Tests`, `AudioSpatialUsageAuditTests`, `AppleSpatialHeadphoneMonitorTests`, `MeteringIsolationTests`, `OutputAdapterTests`, `PureAudioArchitectureBoundaryTests` | Automated coverage now includes every renderer mode, including Direct 30/31, resolving to the same normal-monitor route. Manual monitor route changes should confirm Output 1 Monitor changes do not reroute Output 2 Main Renderer. |
+| Hardware-unavailable behavior is explicit | `LoopbackSourceSupportTests`, `SpotifyReceiverClientTests`, `RoonBridgeClientTests`, `DiagnosticsLogStoreTests`, `OrbisonicWebStateTests` | Manual missing-device, permission, and helper-unavailable cases should be recorded in release verification. |
+| All-zero live input is diagnosed rather than hidden | `LiveAudioBridgeTests`, `LiveNormalMonitorRouteTests`, `LoopbackSourceSupportTests`, `OrbisonicWebStateTests`, `MeteringServiceTests`, `MeteringTelemetryTests` | Automated web/control status tests cover selected Roon, Spotify, and Aux no-signal states, and diagnostic snapshot tests cover player activity separate from silent capture. Manual Roon/Aux/Spotify playback with silent capture should still verify diagnostics show no-signal state and route/sample-rate facts in the real environment. |
+| Sample-rate and channel-count mismatches are visible | `AudioContractsTests`, `AudioImportTests`, `AudioSessionPlannerTests`, `SourceAdapterTests`, `LoopbackSourceSupportTests`, `RenderGraphPlanTests`, `NormalMonitorConversionLedgerTests`, `OutputAdapterTests` | Automated live diagnostic snapshot tests cover sample-rate and active-channel mismatch messages. Manual device sample-rate mismatch should be captured with route names, nominal sample rates, and diagnostics. |
+| Metering cannot affect playback | `MeteringIsolationTests`, `MeteringTelemetryTests`, `SonicSphereMeteringTests`, `NormalMonitorGoldenAudioTests`, `MeteringServiceTests` | Manual visual meter load should not be used as proof of audio correctness; it only supplements route/audio checks. |
+
+## Required Checks
+
+Run the full SwiftPM test suite before accepting source or test changes:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+After changing app code, refresh and verify the app bundle:
+
+```sh
+./scripts/refresh-orbisonic-app.sh
+```
+
+When GUI or audio behavior needs runtime verification, reopen through LaunchServices:
+
+```sh
+./scripts/reopen-orbisonic-app.sh
+```
+
+Do not launch the raw GUI executable for GUI/audio verification.
+
+For docs-only prompts, a build is not required unless source, tests, scripts, installer files, vendor files, or calibration files changed by mistake. The minimum docs-only checks are:
+
+```sh
+git diff --name-only -- AGENTS.md README.md Package.swift Sources Tests scripts installer Vendor calibration
+git diff --check
+```
+
+Privacy checks before committing docs or tests should search for personal paths, local usernames, secrets, tokens, and runtime logs. Fixtures must use generated data, repo-safe relative fixture paths, or temporary directories.
+
+## Manual Verification Requirements
+
+Manual checks must record what hardware, route, source, and app bundle were actually exercised.
+
+- Sonic Sphere / Dante or production output hardware verification: confirm Output 2 Main Renderer route, production channel count, sample rate, channel walk, Direct 30/31 behavior where relevant, LFE behavior, and physical speaker order.
+- Roon loopback device verification: route Roon to `Orbisonic Roon Input`, compare Roon output sample rate, loopback nominal sample rate, selected input route name/channel count, live meter peak, underflow count, dropped-frame count, and no-signal warnings.
+- Aux loopback device verification: route an external app to `Orbisonic Aux Cable`, confirm selected Aux source, route identity, sample rate, active channels, live signal, and no feedback-loop warning.
+- Spotify Connect receiver verification: choose Orbisonic in Spotify Connect, confirm receiver status, dedicated `Orbisonic Spotify Input`, stereo policy, live signal, stale metadata behavior, and control readiness.
+- macOS microphone permission behavior: confirm loopback input capture is permitted and that the OS microphone prompt is treated as expected loopback capture, not proof of physical mic selection.
+- App signing or entitlement gaps: confirm Apple spatial/head-tracking behavior only when the app is signed with the required entitlements; otherwise record disabled/fallback behavior.
+- Installer verification: follow `docs/release-verification.md`; install app-only and suite packages as appropriate, confirm `Orbisonic.app` opens through LaunchServices, helper resources are present, loopback drivers are available when suite-installed, and package behavior matches release notes.
+- Roon bridge verification: install helper dependencies when needed, authorize the Roon extension, verify snapshot/transport controls, and confirm transport metadata does not override live capture truth.
+
+## Test Data Rules
+
+- Use generated audio fixtures, deterministic PCM buffers, temporary directories, or repo-safe fixture data.
+- Do not commit private music files, Roon logs, Spotify credentials, helper tokens, local runtime caches, or local absolute paths.
+- If a fixture depends on FFmpeg or FFprobe, the test may skip when those tools are unavailable, but the skip should be explicit.
+- Golden audio tests should keep expected values deterministic and small enough to review.
+- Hardware-specific facts belong in release verification notes, not unit fixtures.
+- Test data should preserve real source facts: sample rate, channel count, channel role confidence, layout source, and conversion ledger facts.
+
+## Coverage Expectations
+
+- Any change to `AudioContracts` updates or adds `AudioContractsTests`.
+- Any change to local asset readiness, import, or conversion policy updates or adds `AudioImportTests`.
+- Any change to AudioCore source, planner, render, output, meter, or monitor logic updates or adds `AudioCoreTests`.
+- Any change to app source selection, local playback, live loopback, Roon, Spotify, Aux, renderer UI/model, normal monitor, diagnostics, web state, or VU behavior updates or adds focused `OrbisonicTests`.
+- Any renderer topology change must include deterministic matrix/render tests plus at least one invariant that prevents monitor output from redefining production output.
+- Any live source change must include selected-source isolation, route mismatch, sample-rate or channel-count mismatch, no-signal, and diagnostics coverage where practical.
+- Any monitor change must include no direct Sonic Sphere audible route, two-channel monitor output where required, no environment/spatial fallback where forbidden, and no metering side effect.
+- Any SwiftPM target, import-boundary, source-integration, or monitor/production boundary change must update `PureAudioArchitectureBoundaryTests.swift` and keep `ArchitectureBoundaryAllowlist.swift` explicit.
+- Any script, package, signing, or LaunchServices behavior change must update release verification docs and run the smallest safe manual check.
+- Public setup and product claims in `README.md`, `docs/product-brief.md`, and release docs should be included in contract-gap audits when they describe live inputs, source names, installer behavior, supported routes, or operator-facing setup.
+- Public/raw naming pairs such as `Local Files` and `Local Music` should be tested together when they appear in native UI, public web state, or control-state values.
+
+## Completion Rule
+
+A task is not complete until the narrowest relevant automated tests pass, required app bundle refresh or LaunchServices checks have been run when app behavior changed, docs/contracts/flows are updated when behavior changed, and any hardware-only behavior is explicitly marked manual rather than implied by automated tests.
+
+If a change cannot be tested automatically because it depends on Sonic Sphere, Dante, loopback devices, Roon, Spotify, microphone permission, signing entitlements, or installers, the final result must say which manual checks remain.
+
+## Known Test Gaps
+
+- No automated test proves actual Sonic Sphere / Dante hardware output, physical channel order, or acoustic speaker behavior.
+- No automated test proves real Roon audio reaches `Orbisonic Roon Input`; current tests cover parser, bridge, source adapter, status, and web behavior.
+- No automated test proves real Aux capture from an external app through `Orbisonic Aux Cable`.
+- No automated test proves a real Spotify Connect session reaches `Orbisonic Spotify Input`; current tests cover receiver configuration/status, stale metadata separation, and fixed-stereo health reporting.
+- No automated test exercises macOS microphone permission prompts for loopback devices.
+- No automated test proves app signing entitlements enable Apple spatial/head-tracking behavior on real headphones.
+- Installer and package behavior is covered by `docs/release-verification.md` as manual release evidence, not by automated tests.
+- Some local media fixture coverage depends on FFmpeg/FFprobe availability and can skip in a reduced environment.
+- AudioCore output adapters and render kernels are deterministic/offline tests; they do not by themselves prove that the live app runtime is fully using those paths.
+- Current tests are strong around monitor isolation and now cover all renderer modes, including Direct 30/31, against monitor route mutation. Manual runtime route changes are still needed to catch device-specific route behavior.
+- Automated no-signal status coverage now includes selected Roon, Spotify, and Aux web/control-state cases plus live diagnostic snapshot cases for route, sample-rate, channel-count, permission, and buffer-counter diagnostics. Automated source-isolation coverage also includes Off/Test Tone stale local snapshot cleanup and Spotify stale multichannel metadata suppression, but it still does not prove real loopback capture, permission prompts, route, or hardware behavior.
+- No CI policy is documented here beyond the local command because this prompt did not add or inspect a CI system.
+
+## Maintenance Rules
+
+- Keep this file aligned with `docs/contracts.md`, `docs/system-flows.md`, and `docs/implementation-map.md`.
+- Add new test files to the contract-to-test map when they become part of the retrofit.
+- Do not convert manual hardware requirements into automated acceptance claims unless the tests actually exercise the hardware or service.
+- When a contract changes, update this strategy in the same change or explicitly record why no test-strategy change was needed.

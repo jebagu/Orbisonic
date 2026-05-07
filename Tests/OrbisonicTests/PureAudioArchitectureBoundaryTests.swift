@@ -2,6 +2,24 @@ import Foundation
 import XCTest
 
 final class PureAudioArchitectureBoundaryTests: XCTestCase {
+    func testSwiftPMTargetDependenciesRemainOneWay() throws {
+        let package = try packageSource()
+
+        let audioContractsDependencies = try packageTargetDependencies(in: package, targetName: "AudioContracts")
+        let audioImportDependencies = try packageTargetDependencies(in: package, targetName: "AudioImport")
+        let audioCoreDependencies = try packageTargetDependencies(in: package, targetName: "AudioCore")
+        let orbisonicDependencies = try packageTargetDependencies(in: package, targetName: "Orbisonic")
+
+        XCTAssertEqual(audioContractsDependencies, [])
+        XCTAssertEqual(audioImportDependencies, ["AudioContracts"])
+        XCTAssertEqual(audioCoreDependencies, ["AudioContracts", "AudioImport"])
+        XCTAssertEqual(orbisonicDependencies, ["AudioContracts", "AudioImport", "AudioCore"])
+
+        for dependencies in [audioContractsDependencies, audioImportDependencies, audioCoreDependencies] {
+            XCTAssertFalse(dependencies.contains("Orbisonic"), "Shared targets must not depend back on the app target.")
+        }
+    }
+
     func testAudioContractsHasNoAudioImplementationImports() throws {
         let files = try swiftSourceFiles(under: "Sources/AudioContracts")
         XCTAssertFalse(files.isEmpty)
@@ -14,6 +32,45 @@ final class PureAudioArchitectureBoundaryTests: XCTestCase {
                     "UnsafeMutablePointer<Float>"
                 ].contains($0.id)
             }
+
+        let violations = try violations(in: files, patterns: forbiddenPatterns)
+        XCTAssertTrue(violations.isEmpty, formatted(violations))
+    }
+
+    func testAudioContractsDoesNotReachIntoRuntimeIntegrationsOrFilesystem() throws {
+        let files = try swiftSourceFiles(under: "Sources/AudioContracts")
+        XCTAssertFalse(files.isEmpty)
+
+        let forbiddenPatterns = ArchitectureBoundaryAllowlist.sharedPackageBackDependencyImports
+            + ArchitectureBoundaryAllowlist.appRuntimeSymbols
+            + ArchitectureBoundaryAllowlist.filesystemImplementationSymbols
+
+        let violations = try violations(in: files, patterns: forbiddenPatterns)
+        XCTAssertTrue(violations.isEmpty, formatted(violations))
+    }
+
+    func testAudioImportDoesNotDependOnAppUIOrLiveRuntime() throws {
+        let files = try swiftSourceFiles(under: "Sources/AudioImport")
+        XCTAssertFalse(files.isEmpty)
+
+        let forbiddenPatterns = ArchitectureBoundaryAllowlist.sharedPackageBackDependencyImports.filter {
+            ["importAudioCore", "importOrbisonic"].contains($0.id)
+        }
+            + ArchitectureBoundaryAllowlist.uiImports
+            + ArchitectureBoundaryAllowlist.appRuntimeSymbols
+
+        let violations = try violations(in: files, patterns: forbiddenPatterns)
+        XCTAssertTrue(violations.isEmpty, formatted(violations))
+    }
+
+    func testAudioCoreDoesNotReachIntoAppRuntimeOwnership() throws {
+        let files = try swiftSourceFiles(under: "Sources/AudioCore")
+        XCTAssertFalse(files.isEmpty)
+
+        let forbiddenPatterns = ArchitectureBoundaryAllowlist.sharedPackageBackDependencyImports.filter {
+            $0.id == "importOrbisonic"
+        }
+            + ArchitectureBoundaryAllowlist.appRuntimeSymbols
 
         let violations = try violations(in: files, patterns: forbiddenPatterns)
         XCTAssertTrue(violations.isEmpty, formatted(violations))
@@ -68,6 +125,28 @@ final class PureAudioArchitectureBoundaryTests: XCTestCase {
         XCTAssertTrue(violations.isEmpty, formatted(violations))
     }
 
+    func testSourceIntegrationFilesDoNotOwnRendererTopology() throws {
+        let files = try existingFiles(ArchitectureBoundaryAllowlist.sourceIntegrationFiles)
+        XCTAssertFalse(files.isEmpty)
+
+        let violations = try violations(
+            in: files,
+            patterns: ArchitectureBoundaryAllowlist.sourceIntegrationRendererTopologySymbols
+        )
+        XCTAssertTrue(violations.isEmpty, formatted(violations))
+    }
+
+    func testMonitorPathDoesNotOwnProductionRendererTopology() throws {
+        let files = try existingFiles(ArchitectureBoundaryAllowlist.monitorPathFiles)
+        XCTAssertFalse(files.isEmpty)
+
+        let violations = try violations(
+            in: files,
+            patterns: ArchitectureBoundaryAllowlist.monitorProductionTopologySymbols
+        )
+        XCTAssertTrue(violations.isEmpty, formatted(violations))
+    }
+
     func testForbiddenAudioSymbolsAreNotUsedOutsideAllowlist() throws {
         let files = try swiftSourceFiles(under: "Sources")
         let forbiddenPatterns = ArchitectureBoundaryAllowlist.audioImplementationImports
@@ -106,6 +185,80 @@ final class PureAudioArchitectureBoundaryTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+    }
+
+    private func packageSource() throws -> String {
+        let url = packageRoot().appendingPathComponent("Package.swift")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func packageTargetDependencies(in source: String, targetName: String) throws -> [String] {
+        let block = try packageTargetBlock(in: source, targetName: targetName)
+        guard let dependenciesRange = block.range(
+            of: #"dependencies\s*:\s*\[[^\]]*\]"#,
+            options: .regularExpression
+        ) else {
+            return []
+        }
+        return quotedStrings(in: String(block[dependenciesRange]))
+    }
+
+    private func packageTargetBlock(in source: String, targetName: String) throws -> String {
+        guard let targetsSectionRange = source.range(
+            of: #"\n\s*targets\s*:\s*\[\s*\n\s*\.(?:target|executableTarget|testTarget)\("#,
+            options: .regularExpression
+        ) else {
+            throw boundaryTestError("Package.swift does not contain a SwiftPM targets section.")
+        }
+        let targetSearchRange = targetsSectionRange.lowerBound..<source.endIndex
+
+        let targetStartPattern = #"\n\s*\.(?:target|executableTarget|testTarget)\("#
+        let targetEndPattern = #"\n\s*\]\s*\n\s*\)"#
+        var searchStart = targetSearchRange.lowerBound
+        while let startRange = source.range(
+            of: targetStartPattern,
+            options: .regularExpression,
+            range: searchStart..<targetSearchRange.upperBound
+        ) {
+            let searchRange = startRange.upperBound..<targetSearchRange.upperBound
+            let blockEnd = source.range(
+                of: targetStartPattern,
+                options: .regularExpression,
+                range: searchRange
+            )?.lowerBound
+                ?? source.range(
+                    of: targetEndPattern,
+                    options: .regularExpression,
+                    range: searchRange
+                )?.lowerBound
+                ?? targetSearchRange.upperBound
+            let block = String(source[startRange.lowerBound..<blockEnd])
+            if block.range(of: #"name\s*:\s*"\#(targetName)""#, options: .regularExpression) != nil {
+                return block
+            }
+            searchStart = startRange.upperBound
+        }
+
+        throw boundaryTestError("Package.swift does not contain target \(targetName).")
+    }
+
+    private func quotedStrings(in source: String) -> [String] {
+        var results: [String] = []
+        var remaining = source[source.startIndex..<source.endIndex]
+        while let range = remaining.range(of: #""[^"]+""#, options: .regularExpression) {
+            let quoted = String(remaining[range])
+            results.append(String(quoted.dropFirst().dropLast()))
+            remaining = remaining[range.upperBound..<remaining.endIndex]
+        }
+        return results
+    }
+
+    private func boundaryTestError(_ message: String) -> NSError {
+        NSError(
+            domain: "PureAudioArchitectureBoundaryTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
     }
 
     private func swiftSourceFiles(under relativeDirectory: String) throws -> [SourceFile] {

@@ -37,6 +37,141 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertTrue(SourceMode.filePlayback.ownsTransport)
     }
 
+    func testLiveLoopbackDiagnosticsSeparateRoonPlaybackFromSilentCapture() {
+        let roon = inputRoute(
+            uid: OrbisonicLoopbackDevice.roonInput.deviceUID,
+            name: "Orbisonic Roon Input",
+            manufacturer: "Orbisonic"
+        )
+
+        let snapshot = LiveLoopbackDiagnostics.snapshot(
+            sourceMode: .roon,
+            inputRoute: roon,
+            availableInputRoutes: [roon],
+            activeChannelCount: 8,
+            signalState: .noSignal,
+            silenceDuration: 16,
+            bufferDiagnostic: bufferDiagnostic(underflows: 2, underflowFrames: 128, droppedFrames: 64),
+            sampleRateMismatchText: nil,
+            permissionStatusText: "Authorized",
+            playerActivityText: "Roon playback: playing."
+        )
+
+        XCTAssertEqual(snapshot.severity, .warning)
+        XCTAssertEqual(snapshot.signalStatus, "No captured audio from Orbisonic Roon Input after 16s.")
+        XCTAssertEqual(snapshot.summary, "No captured audio from Orbisonic Roon Input after 16s. Roon playback: playing.")
+        XCTAssertEqual(snapshot.bufferStatus, "mode=locked, bufferedFrames=0-256, targetFrames=4800, underflows=2, underflowFrames=128, droppedFrames=64")
+        XCTAssertTrue(snapshot.logSummary.contains("player=Roon playback: playing."))
+    }
+
+    func testLiveLoopbackDiagnosticsReportsWrongSelectedInputBeforeSignalState() {
+        let spotify = inputRoute(
+            uid: OrbisonicLoopbackDevice.spotifyInput.deviceUID,
+            name: "Orbisonic Spotify Input",
+            manufacturer: "Orbisonic"
+        )
+        let aux = inputRoute(
+            uid: OrbisonicLoopbackDevice.auxCable.deviceUID,
+            name: "Orbisonic Aux Cable",
+            manufacturer: "Orbisonic"
+        )
+
+        let snapshot = LiveLoopbackDiagnostics.snapshot(
+            sourceMode: .spotify,
+            inputRoute: aux,
+            availableInputRoutes: [spotify, aux],
+            activeChannelCount: 2,
+            signalState: .receiving,
+            silenceDuration: 0,
+            bufferDiagnostic: bufferDiagnostic(),
+            sampleRateMismatchText: nil,
+            permissionStatusText: "Authorized",
+            playerActivityText: "Spotify playback: receiving audio."
+        )
+
+        XCTAssertEqual(snapshot.severity, .warning)
+        XCTAssertEqual(snapshot.routeStatus, "Wrong input selected: expected Orbisonic Spotify Input but selected Orbisonic Aux Cable.")
+        XCTAssertEqual(snapshot.summary, "Wrong input selected: expected Orbisonic Spotify Input but selected Orbisonic Aux Cable.")
+    }
+
+    func testLiveLoopbackDiagnosticsReportsChannelMismatch() {
+        let aux = inputRoute(
+            uid: OrbisonicLoopbackDevice.auxCable.deviceUID,
+            name: "Orbisonic Aux Cable",
+            manufacturer: "Orbisonic",
+            channels: 2
+        )
+
+        let snapshot = LiveLoopbackDiagnostics.snapshot(
+            sourceMode: .aux,
+            inputRoute: aux,
+            availableInputRoutes: [aux],
+            activeChannelCount: 6,
+            signalState: .receiving,
+            silenceDuration: 0,
+            bufferDiagnostic: bufferDiagnostic(),
+            sampleRateMismatchText: nil,
+            permissionStatusText: "Authorized",
+            playerActivityText: "Aux source: no transport metadata."
+        )
+
+        XCTAssertEqual(snapshot.severity, .error)
+        XCTAssertEqual(snapshot.channelStatus, "Active live channel request is 6, but Orbisonic Aux Cable exposes 2 input channels.")
+        XCTAssertEqual(snapshot.summary, "Active live channel request is 6, but Orbisonic Aux Cable exposes 2 input channels.")
+    }
+
+    func testLiveLoopbackDiagnosticsReportsSampleRateMismatchBeforeNoSignal() {
+        let roon = inputRoute(
+            uid: OrbisonicLoopbackDevice.roonInput.deviceUID,
+            name: "Orbisonic Roon Input",
+            manufacturer: "Orbisonic"
+        )
+        let mismatch = "Roon is streaming 44.1 kHz but Orbisonic Roon Input is 48.0 kHz."
+
+        let snapshot = LiveLoopbackDiagnostics.snapshot(
+            sourceMode: .roon,
+            inputRoute: roon,
+            availableInputRoutes: [roon],
+            activeChannelCount: 8,
+            signalState: .noSignal,
+            silenceDuration: 20,
+            bufferDiagnostic: bufferDiagnostic(),
+            sampleRateMismatchText: mismatch,
+            permissionStatusText: "Authorized",
+            playerActivityText: "Roon playback: playing."
+        )
+
+        XCTAssertEqual(snapshot.severity, .warning)
+        XCTAssertEqual(snapshot.sampleRateStatus, mismatch)
+        XCTAssertEqual(snapshot.signalStatus, "No captured audio from Orbisonic Roon Input after 20s.")
+        XCTAssertEqual(snapshot.summary, mismatch)
+    }
+
+    func testLiveLoopbackDiagnosticsReportsPermissionBeforeSignalState() {
+        let aux = inputRoute(
+            uid: OrbisonicLoopbackDevice.auxCable.deviceUID,
+            name: "Orbisonic Aux Cable",
+            manufacturer: "Orbisonic"
+        )
+
+        let snapshot = LiveLoopbackDiagnostics.snapshot(
+            sourceMode: .aux,
+            inputRoute: aux,
+            availableInputRoutes: [aux],
+            activeChannelCount: 8,
+            signalState: .noSignal,
+            silenceDuration: 12,
+            bufferDiagnostic: bufferDiagnostic(),
+            sampleRateMismatchText: nil,
+            permissionStatusText: "Denied",
+            playerActivityText: "Aux source: no transport metadata."
+        )
+
+        XCTAssertEqual(snapshot.severity, .error)
+        XCTAssertEqual(snapshot.permissionStatus, "Denied")
+        XCTAssertEqual(snapshot.summary, "macOS input permission is Denied. Loopback capture may be blocked.")
+    }
+
     func testLiveSourcesStartListeningWhenSelected() {
         XCTAssertTrue(SourceMode.roon.startsLiveListeningOnSelection)
         XCTAssertTrue(SourceMode.spotify.startsLiveListeningOnSelection)
@@ -417,15 +552,39 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertFalse(current.matchesAudioDevice(.unavailable))
     }
 
-    private func inputRoute(uid: String, name: String, manufacturer: String) -> InputRouteInfo {
+    private func inputRoute(
+        uid: String,
+        name: String,
+        manufacturer: String,
+        channels: Int = 64,
+        sampleRate: Double = 48_000
+    ) -> InputRouteInfo {
         InputRouteInfo(
             deviceID: AudioDeviceID(1),
             uid: uid,
             deviceName: name,
             manufacturer: manufacturer,
             transportName: "Virtual",
-            inputChannelCount: 64,
-            nominalSampleRate: 48_000
+            inputChannelCount: channels,
+            nominalSampleRate: sampleRate
+        )
+    }
+
+    private func bufferDiagnostic(
+        minimumBufferedFrames: Int = 0,
+        maximumBufferedFrames: Int = 256,
+        underflows: Int = 0,
+        underflowFrames: Int = 0,
+        droppedFrames: Int = 0
+    ) -> LiveLoopbackBufferDiagnostic {
+        LiveLoopbackBufferDiagnostic(
+            minimumBufferedFrames: minimumBufferedFrames,
+            maximumBufferedFrames: maximumBufferedFrames,
+            targetLatencyFrames: 4800,
+            isPriming: false,
+            underflowCount: underflows,
+            underflowFrames: underflowFrames,
+            overflowDropFrames: droppedFrames
         )
     }
 

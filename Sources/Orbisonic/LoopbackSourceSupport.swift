@@ -439,6 +439,282 @@ enum LiveAudioSignalState: String, Equatable {
     }
 }
 
+enum LiveLoopbackDiagnosticSeverity: String, Equatable {
+    case idle
+    case healthy
+    case waiting
+    case warning
+    case error
+}
+
+struct LiveLoopbackDiagnosticSnapshot: Equatable {
+    let severity: LiveLoopbackDiagnosticSeverity
+    let expectedDeviceName: String
+    let selectedDeviceName: String
+    let routeStatus: String
+    let sampleRateStatus: String
+    let channelStatus: String
+    let signalStatus: String
+    let bufferStatus: String
+    let permissionStatus: String
+    let playerActivityStatus: String
+    let summary: String
+
+    var logSummary: String {
+        [
+            "summary=\(summary)",
+            "route=\(routeStatus)",
+            "sampleRate=\(sampleRateStatus)",
+            "channels=\(channelStatus)",
+            "signal=\(signalStatus)",
+            "buffer=\(bufferStatus)",
+            "permission=\(permissionStatus)",
+            "player=\(playerActivityStatus)"
+        ].joined(separator: "; ")
+    }
+}
+
+struct LiveLoopbackBufferDiagnostic: Equatable {
+    let minimumBufferedFrames: Int
+    let maximumBufferedFrames: Int
+    let targetLatencyFrames: Int
+    let isPriming: Bool
+    let underflowCount: Int
+    let underflowFrames: Int
+    let overflowDropFrames: Int
+}
+
+enum LiveLoopbackDiagnostics {
+    static func snapshot(
+        sourceMode: SourceMode,
+        inputRoute: InputRouteInfo,
+        availableInputRoutes: [InputRouteInfo],
+        activeChannelCount: Int,
+        signalState: LiveAudioSignalState,
+        silenceDuration: Int?,
+        bufferDiagnostic: LiveLoopbackBufferDiagnostic?,
+        sampleRateMismatchText: String?,
+        permissionStatusText: String,
+        playerActivityText: String
+    ) -> LiveLoopbackDiagnosticSnapshot {
+        guard sourceMode.isLiveInput, let expectedLoopback = sourceMode.expectedLoopback else {
+            return LiveLoopbackDiagnosticSnapshot(
+                severity: .idle,
+                expectedDeviceName: "None",
+                selectedDeviceName: inputRoute.isAvailable ? inputRoute.displayName : "Unavailable",
+                routeStatus: "No live input route required.",
+                sampleRateStatus: "No live sample-rate check required.",
+                channelStatus: "No live channel check required.",
+                signalStatus: "No live loopback capture selected.",
+                bufferStatus: bufferDiagnostic.map(bufferStatusText) ?? "No live buffer status available.",
+                permissionStatus: permissionStatusText,
+                playerActivityStatus: playerActivityText,
+                summary: "No live loopback capture selected."
+            )
+        }
+
+        let expectedDeviceName = expectedLoopback.displayName
+        let selectedDeviceName = inputRoute.isAvailable ? inputRoute.displayName : "Unavailable"
+        let routeStatus = routeStatusText(
+            sourceMode: sourceMode,
+            expectedLoopback: expectedLoopback,
+            inputRoute: inputRoute,
+            availableInputRoutes: availableInputRoutes
+        )
+        let sampleRateStatus = trimmed(sampleRateMismatchText) ?? "Sample rates aligned or not applicable."
+        let channelStatus = channelStatusText(
+            expectedDeviceName: expectedDeviceName,
+            inputRoute: inputRoute,
+            activeChannelCount: activeChannelCount
+        )
+        let signalStatus = signalStatusText(
+            expectedDeviceName: expectedDeviceName,
+            signalState: signalState,
+            silenceDuration: silenceDuration
+        )
+        let bufferStatus = bufferDiagnostic.map(bufferStatusText) ?? "No live buffer status available."
+        let permissionStatus = permissionStatusText
+        let playerActivityStatus = playerActivityText
+
+        let routeProblem = routeProblemSeverity(
+            sourceMode: sourceMode,
+            expectedLoopback: expectedLoopback,
+            inputRoute: inputRoute,
+            availableInputRoutes: availableInputRoutes
+        )
+        let channelProblem = channelProblemSeverity(inputRoute: inputRoute, activeChannelCount: activeChannelCount)
+        let permissionProblem = permissionProblemSeverity(permissionStatusText)
+        let hasSampleRateMismatch = trimmed(sampleRateMismatchText) != nil
+        let hasBufferCounters = (bufferDiagnostic?.underflowCount ?? 0) > 0 || (bufferDiagnostic?.overflowDropFrames ?? 0) > 0
+
+        let severity: LiveLoopbackDiagnosticSeverity
+        let summary: String
+        if let routeProblem {
+            severity = routeProblem
+            summary = routeStatus
+        } else if let channelProblem {
+            severity = channelProblem
+            summary = channelStatus
+        } else if let permissionProblem {
+            severity = permissionProblem
+            summary = "macOS input permission is \(permissionStatusText). Loopback capture may be blocked."
+        } else if hasSampleRateMismatch {
+            severity = .warning
+            summary = sampleRateStatus
+        } else {
+            switch signalState {
+            case .receiving:
+                severity = hasBufferCounters ? .warning : .healthy
+                summary = hasBufferCounters ? "Live buffer underflow/drop counters are non-zero." : "Capturing \(expectedDeviceName)."
+            case .briefSilence:
+                severity = hasBufferCounters ? .warning : .healthy
+                summary = hasBufferCounters ? "Live buffer underflow/drop counters are non-zero." : "\(expectedDeviceName) is briefly silent after recent audio."
+            case .silentPassage:
+                severity = hasBufferCounters ? .warning : .waiting
+                summary = hasBufferCounters ? "Live buffer underflow/drop counters are non-zero." : "\(expectedDeviceName) is in a silent passage."
+            case .noSignal:
+                severity = .warning
+                summary = "\(signalStatus) \(playerActivityStatus)"
+            case .unknown:
+                severity = hasBufferCounters ? .warning : .waiting
+                summary = hasBufferCounters ? "Live buffer underflow/drop counters are non-zero." : signalStatus
+            }
+        }
+
+        return LiveLoopbackDiagnosticSnapshot(
+            severity: severity,
+            expectedDeviceName: expectedDeviceName,
+            selectedDeviceName: selectedDeviceName,
+            routeStatus: routeStatus,
+            sampleRateStatus: sampleRateStatus,
+            channelStatus: channelStatus,
+            signalStatus: signalStatus,
+            bufferStatus: bufferStatus,
+            permissionStatus: permissionStatus,
+            playerActivityStatus: playerActivityStatus,
+            summary: summary
+        )
+    }
+
+    private static func routeStatusText(
+        sourceMode: SourceMode,
+        expectedLoopback: OrbisonicLoopbackDevice,
+        inputRoute: InputRouteInfo,
+        availableInputRoutes: [InputRouteInfo]
+    ) -> String {
+        if sourceMode.acceptsInputRoute(inputRoute) {
+            return "Selected input matches \(expectedLoopback.displayName)."
+        }
+
+        if !expectedLoopbackIsAvailable(expectedLoopback, inputRoute: inputRoute, availableInputRoutes: availableInputRoutes) {
+            return "Missing expected input: \(expectedLoopback.displayName)."
+        }
+
+        guard inputRoute.isAvailable else {
+            return "Selected input unavailable: expected \(expectedLoopback.displayName)."
+        }
+
+        return "Wrong input selected: expected \(expectedLoopback.displayName) but selected \(inputRoute.displayName)."
+    }
+
+    private static func channelStatusText(
+        expectedDeviceName: String,
+        inputRoute: InputRouteInfo,
+        activeChannelCount: Int
+    ) -> String {
+        guard inputRoute.isAvailable else {
+            return "No selected input channels for \(expectedDeviceName)."
+        }
+        guard inputRoute.inputChannelCount > 0 else {
+            return "\(inputRoute.displayName) exposes no input channels."
+        }
+        guard activeChannelCount <= inputRoute.inputChannelCount else {
+            return "Active live channel request is \(activeChannelCount), but \(inputRoute.displayName) exposes \(inputRoute.inputChannelCount) input channels."
+        }
+        return "Active live channel request is \(activeChannelCount) of \(inputRoute.inputChannelCount) input channels."
+    }
+
+    private static func signalStatusText(
+        expectedDeviceName: String,
+        signalState: LiveAudioSignalState,
+        silenceDuration: Int?
+    ) -> String {
+        switch signalState {
+        case .receiving:
+            return "Signal present from \(expectedDeviceName)."
+        case .briefSilence:
+            return "\(expectedDeviceName) is briefly silent after recent audio."
+        case .silentPassage:
+            if let silenceDuration {
+                return "\(expectedDeviceName) is in a silent passage (\(silenceDuration)s)."
+            }
+            return "\(expectedDeviceName) is in a silent passage."
+        case .noSignal:
+            if let silenceDuration {
+                return "No captured audio from \(expectedDeviceName) after \(silenceDuration)s."
+            }
+            return "No captured audio from \(expectedDeviceName)."
+        case .unknown:
+            return "Waiting for captured audio from \(expectedDeviceName)."
+        }
+    }
+
+    private static func bufferStatusText(_ status: LiveLoopbackBufferDiagnostic) -> String {
+        let mode = status.isPriming ? "priming" : "locked"
+        return "mode=\(mode), bufferedFrames=\(status.minimumBufferedFrames)-\(status.maximumBufferedFrames), targetFrames=\(status.targetLatencyFrames), underflows=\(status.underflowCount), underflowFrames=\(status.underflowFrames), droppedFrames=\(status.overflowDropFrames)"
+    }
+
+    private static func routeProblemSeverity(
+        sourceMode: SourceMode,
+        expectedLoopback: OrbisonicLoopbackDevice,
+        inputRoute: InputRouteInfo,
+        availableInputRoutes: [InputRouteInfo]
+    ) -> LiveLoopbackDiagnosticSeverity? {
+        guard !sourceMode.acceptsInputRoute(inputRoute) else { return nil }
+        if !inputRoute.isAvailable {
+            return .error
+        }
+        if expectedLoopbackIsAvailable(expectedLoopback, inputRoute: inputRoute, availableInputRoutes: availableInputRoutes) {
+            return .warning
+        }
+        return .error
+    }
+
+    private static func channelProblemSeverity(
+        inputRoute: InputRouteInfo,
+        activeChannelCount: Int
+    ) -> LiveLoopbackDiagnosticSeverity? {
+        guard inputRoute.isAvailable else { return .error }
+        guard inputRoute.inputChannelCount > 0 else { return .error }
+        guard activeChannelCount <= inputRoute.inputChannelCount else { return .error }
+        return nil
+    }
+
+    private static func permissionProblemSeverity(_ permissionStatusText: String) -> LiveLoopbackDiagnosticSeverity? {
+        let normalized = permissionStatusText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "denied" || normalized == "restricted" {
+            return .error
+        }
+        return nil
+    }
+
+    private static func expectedLoopbackIsAvailable(
+        _ expectedLoopback: OrbisonicLoopbackDevice,
+        inputRoute: InputRouteInfo,
+        availableInputRoutes: [InputRouteInfo]
+    ) -> Bool {
+        inputRoute.uid == expectedLoopback.deviceUID ||
+            availableInputRoutes.contains { $0.uid == expectedLoopback.deviceUID }
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
+    }
+}
+
 enum DanteSafetyPolicy {
     static func requiresHighRateChannelWarning(outputChannelCount: Int, sampleRate: Double) -> Bool {
         guard outputChannelCount > 16 else { return false }

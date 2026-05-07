@@ -47,6 +47,77 @@ enum ArchitectureBoundaryAllowlist {
         Pattern(id: "outputNode", expression: #"\boutputNode\b"#)
     ]
 
+    static let sharedPackageBackDependencyImports: [Pattern] = [
+        Pattern(id: "importAudioImport", expression: #"^\s*import\s+AudioImport\b"#),
+        Pattern(id: "importAudioCore", expression: #"^\s*import\s+AudioCore\b"#),
+        Pattern(id: "importOrbisonic", expression: #"^\s*import\s+Orbisonic\b"#)
+    ]
+
+    static let appRuntimeSymbols: [Pattern] = [
+        Pattern(id: "ContentView", expression: #"\bContentView\b"#),
+        Pattern(id: "DiagnosticsView", expression: #"\bDiagnosticsView\b"#),
+        Pattern(id: "InputSourceStatusPanel", expression: #"\bInputSourceStatusPanel[A-Za-z0-9_]*\b"#),
+        Pattern(id: "OrbisonicApp", expression: #"\bOrbisonicApp\b"#),
+        Pattern(id: "OrbisonicViewModel", expression: #"\bOrbisonicViewModel\b"#),
+        Pattern(id: "OrbisonicEngine", expression: #"\bOrbisonicEngine\b"#),
+        Pattern(id: "OrbisonicWebServer", expression: #"\bOrbisonicWebServer\b"#),
+        Pattern(id: "LiveAudioBridge", expression: #"\bLiveAudioBridge\b"#),
+        Pattern(id: "OutputRouteMonitor", expression: #"\bOutputRouteMonitor\b"#),
+        Pattern(id: "BlackHoleRouteRepair", expression: #"\bBlackHoleRouteRepair\b"#),
+        Pattern(id: "RoonNowPlayingReader", expression: #"\bRoonNowPlayingReader\b"#),
+        Pattern(id: "RoonBridgeClient", expression: #"\bRoonBridgeClient\b"#),
+        Pattern(id: "SpotifyReceiverClient", expression: #"\bSpotifyReceiverClient\b"#),
+        Pattern(id: "AppLogger", expression: #"\bAppLogger\b"#),
+        Pattern(id: "DiagnosticsLogStore", expression: #"\bDiagnosticsLogStore\b"#)
+    ]
+
+    static let filesystemImplementationSymbols: [Pattern] = [
+        Pattern(id: "FileManager", expression: #"\bFileManager\b"#),
+        Pattern(id: "fileURLWithPath", expression: #"\bURL\s*\(\s*fileURLWithPath\s*:"#),
+        Pattern(id: "NSHomeDirectory", expression: #"\bNSHomeDirectory\s*\("#),
+        Pattern(id: "UserDefaults", expression: #"\bUserDefaults\b"#)
+    ]
+
+    static let sourceIntegrationFiles: Set<String> = [
+        "Sources/Orbisonic/RoonArtworkCache.swift",
+        "Sources/Orbisonic/RoonBridgeClient.swift",
+        "Sources/Orbisonic/RoonNowPlayingMonitor.swift",
+        "Sources/Orbisonic/SpotifyReceiverClient.swift"
+    ]
+
+    static let sourceIntegrationRendererTopologySymbols: [Pattern] = [
+        Pattern(id: "RendererModule", expression: #"\bRendererModule\b"#),
+        Pattern(id: "RendererRenderMode", expression: #"\bRendererRenderMode\b"#),
+        Pattern(id: "RendererMatrix", expression: #"\bRendererMatrix\b"#),
+        Pattern(id: "RendererMatrixSampleRenderer", expression: #"\bRendererMatrixSampleRenderer\b"#),
+        Pattern(id: "RenderGraphPlan", expression: #"\bRenderGraphPlan\b"#),
+        Pattern(id: "RenderGraphPlanner", expression: #"\bRenderGraphPlanner\b"#),
+        Pattern(id: "DanteSonicSphereRenderer", expression: #"\bDanteSonicSphereRenderer\b"#),
+        Pattern(id: "direct30Layout", expression: #"\bAudioChannelLayoutDescriptor\s*\.\s*direct30\b"#),
+        Pattern(id: "direct31Layout", expression: #"\bAudioChannelLayoutDescriptor\s*\.\s*direct31\b"#)
+    ]
+
+    static let monitorPathFiles: Set<String> = [
+        "Sources/AudioCore/Monitors/AppleSpatialHeadphoneMonitor.swift",
+        "Sources/Orbisonic/AudioSpatialUsageAudit.swift",
+        "Sources/Orbisonic/NormalMonitorConversionLedger.swift",
+        "Sources/Orbisonic/NormalMonitorGraphTopology.swift",
+        "Sources/Orbisonic/NormalMonitorRouteDescriptor.swift",
+        "Sources/Orbisonic/NormalMonitorStereoDownmixer.swift"
+    ]
+
+    static let monitorProductionTopologySymbols: [Pattern] = [
+        Pattern(id: "RendererModule", expression: #"\bRendererModule\b"#),
+        Pattern(id: "RendererMatrix", expression: #"\bRendererMatrix\b"#),
+        Pattern(id: "RendererMatrixSampleRenderer", expression: #"\bRendererMatrixSampleRenderer\b"#),
+        Pattern(id: "RenderGraphPlan", expression: #"\bRenderGraphPlan\b"#),
+        Pattern(id: "RenderGraphPlanner", expression: #"\bRenderGraphPlanner\b"#),
+        Pattern(id: "PureAudioDanteRendererPlan", expression: #"\bPureAudioDanteRendererPlan\b"#),
+        Pattern(id: "DanteSonicSphereRenderer", expression: #"\bDanteSonicSphereRenderer\b"#),
+        Pattern(id: "direct30Layout", expression: #"\bAudioChannelLayoutDescriptor\s*\.\s*direct30\b"#),
+        Pattern(id: "direct31Layout", expression: #"\bAudioChannelLayoutDescriptor\s*\.\s*direct31\b"#)
+    ]
+
     static let uiAndViewModelFiles: Set<String> = [
         "Sources/Orbisonic/ContentView.swift",
         "Sources/Orbisonic/DiagnosticsView.swift",
