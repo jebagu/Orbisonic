@@ -42,6 +42,16 @@ final class NormalMonitorRouteDescriptorTests: XCTestCase {
         )
     }
 
+    func testAtmosDRPLiveUsesOnlyNormalMonitor() {
+        assertNormalMonitorRoute(
+            NormalMonitorRoutePlanner.route(
+                for: .atmosDRP,
+                sourceLayoutDescription: "Atmos DRP live loopback"
+            ),
+            expectedFamily: .liveLoopback
+        )
+    }
+
     func testBlackHoleLiveUsesOnlyNormalMonitorIfSupported() {
         assertNormalMonitorRoute(
             NormalMonitorRoutePlanner.audibleRoute(

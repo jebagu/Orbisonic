@@ -214,6 +214,31 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
   - `docs/orbisonic-loopback-input-support-spec.md`
   - `README.md`
 
+### Atmos DRP Source Support
+
+- Implementation:
+  - `Sources/Orbisonic/DolbyReferencePlayerController.swift`
+    - Owns DRP device-list parsing, command argument construction, process lifecycle, pause/resume signals, and `--print-info` / `audio.csv` metadata parsing.
+    - Owns `AtmosDRPRoutingPolicy`, which currently maps DRP output and Orbisonic capture to `Orbisonic Aux Cable` until a dedicated Atmos loopback exists.
+  - `Sources/Orbisonic/LoopbackSourceSupport.swift`
+    - Adds `SourceMode.atmosDRP` raw value `Atmos DRP`, display title `Atmos`, temporary expected loopback policy, and source-button order.
+  - `Sources/Orbisonic/OrbisonicViewModel.swift`
+    - Starts Aux-loopback capture for the selected Atmos source, launches/stops DRP, wires experimental pause/resume, and disables seek behavior.
+  - `Sources/Orbisonic/OrbisonicWebServer.swift`
+  - `Sources/Orbisonic/InputSourceStatusPanelModel.swift`
+  - `Sources/Orbisonic/ContentView.swift`
+  - `Sources/Orbisonic/LocalMusicLibrary.swift`
+- Related tests:
+  - `Tests/OrbisonicTests/DolbyReferencePlayerControllerTests.swift`
+  - `Tests/OrbisonicTests/LoopbackSourceSupportTests.swift`
+  - `Tests/OrbisonicTests/LiveNormalMonitorRouteTests.swift`
+  - `Tests/OrbisonicTests/NormalMonitorRouteDescriptorTests.swift`
+  - `Tests/OrbisonicTests/OrbisonicWebStateTests.swift`
+- Related docs:
+  - `docs/contracts.md`
+  - `docs/system-flows.md`
+  - `docs/test-strategy.md`
+
 ### Renderer And Sonic Sphere Output
 
 - Implementation:
@@ -363,7 +388,7 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `Tests/AudioContractsTests/`: sample rates, session formats, output capabilities, source descriptors, conversion ledgers, meter snapshots, and forbidden imports.
 - `Tests/AudioImportTests/`: local asset gate, sample-rate mismatch policy, offline import, conversion ledger, and layout preservation.
 - `Tests/AudioCoreTests/`: audio control API, session planner, source adapters, render graph plan, render kernels, output adapters, metering telemetry, and Apple spatial headphone monitor.
-- `Tests/OrbisonicTests/`: app-specific tests covering local playback, local library, Roon, Spotify, loopback, renderer module, matrix renderer, normal monitor, diagnostics, web state, route policy, metering, UI model behavior, build metadata, and architecture boundaries.
+- `Tests/OrbisonicTests/`: app-specific tests covering local playback, local library, Roon, Spotify, Atmos DRP, loopback, renderer module, matrix renderer, normal monitor, diagnostics, web state, route policy, metering, UI model behavior, build metadata, and architecture boundaries.
 - `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift`: static boundary checks for SwiftPM dependency direction, forbidden imports, app runtime leakage, source-integration renderer ownership, monitor/production topology separation, and documented migration exceptions.
 - `Tests/OrbisonicTests/ArchitectureBoundaryAllowlist.swift`: explicit pattern and file allowlists used by architecture boundary tests.
 

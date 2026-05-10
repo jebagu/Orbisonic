@@ -10,7 +10,7 @@ Partial manual release verification complete; next milestone is clean signed ins
 
 ## Project Summary
 
-Orbisonic is a native macOS app for routing, monitoring, and rendering multichannel spatial audio for Sonic Sphere. The current app opens local audio files and playlists, captures live audio from dedicated loopback inputs, presents Roon, Aux, Spotify, and local source workflows separately, renders channel-bed or discrete multichannel sources toward a Sonic Sphere 30.1 production topology, and provides a headphone or normal monitor path for setup and preview.
+Orbisonic is a native macOS app for routing, monitoring, and rendering multichannel spatial audio for Sonic Sphere. The current app opens local audio files and playlists, captures live audio from dedicated loopback inputs, presents Roon, Spotify, Atmos DRP, Aux, and local source workflows separately, renders channel-bed or discrete multichannel sources toward a Sonic Sphere 30.1 production topology, and provides a headphone or normal monitor path for setup and preview.
 
 This retrofit does not rewrite the app. It adds control documents, contracts, audits, tasks, and tests around the current implementation so future changes stay bounded and audio-safe.
 
@@ -26,6 +26,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Live loopback capture and source support in `Sources/Orbisonic/LiveAudioBridge.swift` and `Sources/Orbisonic/LoopbackSourceSupport.swift`.
 - Roon metadata and transport bridge support in `Sources/Orbisonic/RoonNowPlayingMonitor.swift`, `Sources/Orbisonic/RoonBridgeClient.swift`, and `Sources/Orbisonic/Resources/RoonBridge/`.
 - Spotify receiver support in `Sources/Orbisonic/SpotifyReceiverClient.swift` with vendored librespot sources under `Vendor/`.
+- Atmos DRP source support in `Sources/Orbisonic/DolbyReferencePlayerController.swift`, with `SourceMode.atmosDRP` displayed as `Atmos`, temporary Aux loopback routing through `AtmosDRPRoutingPolicy`, and DRP bitstream metadata in app/web state.
 - Renderer, monitor, metering, diagnostics, route monitoring, and test tone support in current source and tests.
 - PureAudio boundary, sample-rate, conversion-ledger, Apple spatial monitor, and system-flow docs under `docs/PureAudio/`.
 - Loopback input support spec, embedded librespot integration notes, local gapless playback plan, release notes, calibration layouts, and VU design-lab spec.
@@ -62,17 +63,35 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Channel-count mismatch can cause source admission, renderer, or output-route failures.
 - Renderer topology regressions could alter Sonic Sphere 30.1 behavior.
 - Monitor path changes could accidentally mutate production output behavior.
-- Roon, Spotify, Aux, and local source states could leak into one another if source isolation is not protected.
+- Roon, Spotify, Atmos DRP, Aux, and local source states could leak into one another if source isolation is not protected.
 - Existing docs are feature-specific and may be stale relative to current source.
 - Future Codex sessions must follow the upgraded `AGENTS.md` discipline to avoid broad rewrites, stale workspace drift, or unverified audio changes.
 - Embedded librespot linking depends on the local Rust-built static library being present in `.build/orbisonic-librespot`.
 - Sonic Sphere, Dante, loopback devices, Spotify receiver, Roon bridge, app signing, and installer behavior all require manual runtime verification beyond unit tests.
+- Real Dolby Reference Player/iLok behavior, Atmos playback, and loopback capture for the Atmos source require manual runtime verification beyond unit tests.
 - Current package files are unsigned.
 - The refreshed repo-root app bundle is stamped from a dirty working tree.
 - The installed package app is stamped `8ffa977`, while the tested working tree is `64f7fea` with uncommitted changes.
 
 ## Recent Changes
 
+- 2026-05-10: Added a separate `Atmos` source for Dolby Reference Player playback with modular DRP process ownership, temporary Aux loopback routing policy, output-layout setting, DRP metadata parsing, native/web state exposure, and focused tests. Real DRP/iLok and Atmos playback verification remain manual.
+- 2026-05-07: Added Task 16 final VLC/Orbisonic technical report under `docs/audio-vlc-investigation/`, recommending no VLC integration yet, defining native playback diagnostics and reference comparison as the next engineering step, and preserving VLC only as a conditional later decode bridge or diagnostic baseline; no app code changed.
+- 2026-05-07: Added Task 15 prototype plan under `docs/audio-vlc-investigation/`, recommending no VLC integration yet until the current Orbisonic playback fault is isolated, defining PR-sized diagnostics/reference/channel-identity steps before any guarded libVLC work, and documenting rollback/safety requirements; no app code changed.
+- 2026-05-07: Added Task 14 licensing/dependency/packaging risk analysis under `docs/audio-vlc-investigation/`, finding Path B has the lowest legal/packaging risk, Path A is the lowest-risk VLC dependency if VLC is still needed, and custom VLC module or copied-source work requires explicit legal review; no app code changed.
+- 2026-05-07: Added Task 13 Path C/D evaluation under `docs/audio-vlc-investigation/`, concluding full VLC playback is useful as a diagnostic baseline while stock VLC memory/custom-output paths do not improve on the public callback bridge and do not prove 30/52-channel Orbisonic routing; no app code changed.
+- 2026-05-07: Added Task 12 Path B native output-backend design under `docs/audio-vlc-investigation/`, defining an Orbisonic-owned output-session lifecycle inspired by VLC's `audio_output_t` for format negotiation, timing, queueing, flush/drain, channel identity, and rollback; no app code changed.
+- 2026-05-07: Added Task 11 Path A libVLC decode-bridge design under `docs/audio-vlc-investigation/`, defining a bounded `LibVlcAudioSource`/`DecodedPcmRingBuffer` architecture where VLC can replace media opening/demux/decode without owning Orbisonic layout, renderer, or output; no app code changed.
+- 2026-05-07: Added Task 10 Orbisonic/VLC architecture decision comparison under `docs/audio-vlc-investigation/`, ranking decode/conversion, output negotiation, channel layout, buffer scheduling, gain/mix, and resampling/clocking as diagnostic root-cause hypotheses; no app code changed.
+- 2026-05-07: Added Task 09 VLC channel feasibility analysis under `docs/audio-vlc-investigation/`, finding VLC's mapped speaker model is capped at 9 channels, stock `amem` callbacks are capped at 8 output channels, and 30/52-channel Orbisonic custom layouts are not proven preserved end to end; no app code changed.
+- 2026-05-07: Added Task 08 VLC `audio_output_t` and backend analysis under `docs/audio-vlc-investigation/`, identifying lifecycle, timing, device-selection, shared-mode, high-channel, and pro-audio concepts Orbisonic can imitate without reusing VLC output backends; no app code changed.
+- 2026-05-07: Added Task 07 libVLC callback decode-bridge analysis under `docs/audio-vlc-investigation/`, concluding stock `amem` callbacks can suppress OS output and deliver PCM but do not support 30-channel or 52-channel callback output as inspected; no Orbisonic app code changed.
+- 2026-05-07: Added Task 06 VLC source architecture map under `docs/audio-vlc-investigation/`, based on external current VLC and VLC 3.0 shallow checkouts; no Orbisonic app code changed.
+- 2026-05-07: Added Task 05 reference-media and objective test-harness design under `docs/audio-vlc-investigation/`, defining deterministic fixture assets, generator pseudocode, acceptance tolerances, and architecture-diagnosis coverage; no app code changed.
+- 2026-05-07: Added Task 04 bad-audio reproduction plan under `docs/audio-vlc-investigation/`, defining objective failure classes, reproduction matrix coverage, existing diagnostics, and later instrumentation hook points; no app code changed.
+- 2026-05-07: Added Task 03 playback module boundary analysis under `docs/audio-vlc-investigation/`, separating Orbisonic transport, media opening, decode, PCM conversion, resampling, channel mapping, spatial renderer, device output, timing, and flush/drain ownership; no app code changed.
+- 2026-05-07: Added Task 02 Orbisonic playback architecture map under `docs/audio-vlc-investigation/`, covering local prepared playback, streaming/gapless playback, live loopback capture, renderer/metering, device backend, and PureAudio boundary evidence; no app code changed.
+- 2026-05-07: Started `docs/audio-vlc-investigation/` with Task 01 baseline for the Orbisonic playback and VLC/libVLC replacement investigation; no app code changed.
 - 2026-05-04: Prompt 02 created baseline project-control docs: `docs/status.md` and `docs/product-brief.md`.
 - 2026-05-04: Prompt 03 created `docs/architecture.md` and `docs/implementation-map.md`, and updated this status file.
 - 2026-05-04: Prompt 04 created `docs/contracts.md`, including module and feature-boundary contracts for audio contracts, import, core audio, app shell, engine, live loopback, local files, Roon, Spotify, Aux, renderer, monitor, diagnostics, and installer scripts.
@@ -419,7 +438,7 @@ Clean signed installer rebuild plus hardware/service verification from `.tasks/0
 - `docs/decisions/0001-retrofit-not-rewrite.md`: current Orbisonic is the baseline; the retrofit adds control docs, contracts, tests, audits, tasks, and hardening rather than rewriting the app.
 - `docs/decisions/0002-swiftpm-target-boundaries.md`: the current SwiftPM target split is the starting architecture.
 - `docs/decisions/0003-audio-contracts-as-shared-language.md`: `AudioContracts` is the common type and vocabulary layer for shared audio policy.
-- `docs/decisions/0004-selected-source-only-rule.md`: Roon, Spotify, Aux, Local Files, and Test Tone are selected-source paths, not an implicit mixer.
+- `docs/decisions/0004-selected-source-only-rule.md`: Roon, Spotify, Atmos DRP, Aux, Local Files, and Test Tone are selected-source paths, not an implicit mixer.
 - `docs/decisions/0005-sonic-sphere-30-1-primary-output.md`: Sonic Sphere 30.1 is the primary production output; headphone or normal monitor output is a separate monitor path.
 - `docs/decisions/0006-embedded-librespot-boundary.md`: Spotify Connect support is the embedded librespot FFI boundary targeting `Orbisonic Spotify Input`.
 - `docs/decisions/0007-roon-loopback-boundary.md`: Roon metadata/transport are separate from live loopback capture truth.
@@ -430,9 +449,9 @@ Clean signed installer rebuild plus hardware/service verification from `.tasks/0
 - Current milestone: Task 012 is partially complete; clean signed installer rebuild plus hardware/service verification are next.
 - Completed retrofit work: project-control docs, contracts, system flows, implementation map, test strategy, ADRs, audits, task graph, release verification docs, readiness summary, and repo-level operating rules.
 - Completed hardening work: selected live-source no-signal tests, architecture boundary tests, live loopback diagnostic snapshots, Off/Test Tone stale-local cleanup, Spotify fixed-stereo health boundary, and renderer/monitor route-isolation tests.
-- Remaining risks: real loopback capture, Roon, Spotify Connect, Aux capture, Sonic Sphere / Dante, monitor listening, microphone permission, signing, entitlements, unsigned packages, and package/tested-code mismatch remain.
+- Remaining risks: real loopback capture, Roon, Spotify Connect, Atmos DRP capture/playback, Aux capture, Sonic Sphere / Dante, monitor listening, microphone permission, signing, entitlements, unsigned packages, and package/tested-code mismatch remain.
 - Blockers: release readiness is blocked until clean signed package artifacts exist and live hardware/service checks are run and recorded.
-- Manual verification still needed: Roon authorization/transport/capture, Aux capture, Spotify Connect/capture, monitor listening, Sonic Sphere / Dante channel walk, microphone permission prompt, and entitlement-gated Apple spatial behavior.
+- Manual verification still needed: Roon authorization/transport/capture, Atmos DRP/iLok/playback/capture, Aux capture, Spotify Connect/capture, monitor listening, Sonic Sphere / Dante channel walk, microphone permission prompt, and entitlement-gated Apple spatial behavior.
 - Commands most recently run: full SwiftPM test suite, app refresh, app-only installer, suite installer, installed app LaunchServices open, package payload/signature inspection, suite package expansion, app plist/codesign checks, HAL driver version/signature checks, AVFoundation device listing, Roon bridge install, prerequisite process checks, v1.1 launcher syntax/existence checks, `git diff --check`, and privacy/trailing-whitespace scans.
-- Test status: current full SwiftPM suite passed with 544 tests and 0 failures.
+- Test status: current full SwiftPM suite passed with 552 tests and 0 failures.
 - Recommended next concrete task: rebuild signed installer artifacts from a clean tested commit, then finish hardware/service verification from `.tasks/012-manual-release-verification.md`.

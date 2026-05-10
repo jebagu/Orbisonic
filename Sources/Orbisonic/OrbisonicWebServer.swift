@@ -677,6 +677,10 @@ extension OrbisonicViewModel {
                 liveMonitorState == .monitoring
         case .aux:
             return liveAudioSignalState.isRecentlyReceiving || liveMonitorState == .monitoring
+        case .atmosDRP:
+            return dolbyReferencePlayerSnapshot.state == .playing ||
+                liveAudioSignalState.isRecentlyReceiving ||
+                liveMonitorState == .monitoring
         case .filePlayback:
             return isPlaying
         case .testTone:
@@ -696,6 +700,8 @@ extension OrbisonicViewModel {
             return spotifyNowPlayingForActiveStatus != nil
         case .aux:
             return webPlayerIsPlaying
+        case .atmosDRP:
+            return currentAtmosDRPTrack != nil || dolbyReferencePlayerSnapshot.session != nil
         case .filePlayback:
             return visibleLocalPlaybackTrack != nil || visibleLocalSourceMetadata != nil
         case .testTone:
@@ -707,6 +713,8 @@ extension OrbisonicViewModel {
         switch sourceMode {
         case .aux:
             return "Aux"
+        case .atmosDRP:
+            return "Atmos"
         case .filePlayback:
             return "Local Music"
         case .off:
@@ -743,6 +751,8 @@ extension OrbisonicViewModel {
         case .spotify:
             spotifyArtworkURL
         case .filePlayback:
+            currentLocalArtworkURL
+        case .atmosDRP:
             currentLocalArtworkURL
         case .aux, .testTone:
             nil
@@ -886,7 +896,11 @@ extension OrbisonicViewModel {
                     webSpotifyReceiverUnavailable ||
                     webLiveInputReadyValue(expected: .spotifyInput) == "Missing"
                 )) ||
-                (sourceMode == .aux && webLiveInputReadyValue(expected: .auxCable) == "Missing") {
+                (sourceMode == .aux && webLiveInputReadyValue(expected: .auxCable) == "Missing") ||
+                (sourceMode == .atmosDRP && (
+                    dolbyReferencePlayerSnapshot.state == .failed ||
+                    webLiveInputReadyValue(expected: AtmosDRPRoutingPolicy.captureLoopback) == "Missing"
+                )) {
                 return "failed"
             }
             switch liveMonitorState {
@@ -1007,6 +1021,8 @@ extension OrbisonicViewModel {
             return selectedTestTonePoint.rawValue
         case .aux:
             return "Aux Cable"
+        case .atmosDRP:
+            return currentAtmosDRPTrack?.displayTitle ?? visibleLocalPlaybackTrack?.displayTitle ?? "Atmos"
         case .spotify:
             return spotifyNowPlayingForActiveStatus?.displayTitle ?? "Spotify"
         case .filePlayback:
@@ -1036,6 +1052,11 @@ extension OrbisonicViewModel {
             return testToneStatus
         case .aux:
             return "Controlled in the source app."
+        case .atmosDRP:
+            if let track = currentAtmosDRPTrack ?? visibleLocalPlaybackTrack {
+                return track.displaySubtitle
+            }
+            return "Dolby Reference Player through \(AtmosDRPRoutingPolicy.captureLoopback.displayName)."
         case .spotify:
             return spotifyNowPlayingForActiveStatus?.artistText ?? "Controlled from Spotify Connect."
         case .filePlayback:
@@ -1046,13 +1067,17 @@ extension OrbisonicViewModel {
                 let albumArtist = [metadata.album?.trimmedNilIfBlank, metadata.artist?.trimmedNilIfBlank].compactMap { $0 }.joined(separator: " - ")
                 return albumArtist.isEmpty ? "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)" : albumArtist
             }
-            return "Choose Roon, Spotify, Aux, or Local Music."
+            return "Choose Roon, Spotify, Atmos, Aux, or Local Music."
         }
     }
 
     private var webNowPlayingArtist: String {
         switch sourceMode {
-        case .off, .aux, .testTone:
+        case .off, .aux, .atmosDRP, .testTone:
+            if sourceMode == .atmosDRP,
+               let track = currentAtmosDRPTrack ?? visibleLocalPlaybackTrack {
+                return webPublicMetadataText(track.displayArtist)
+            }
             return ""
         case .roon:
             if let artist = roonBridgeSnapshot.selectedZone?.nowPlaying?.threeLine?.line2?.trimmedNilIfBlank {
@@ -1074,7 +1099,11 @@ extension OrbisonicViewModel {
 
     private var webNowPlayingAlbum: String {
         switch sourceMode {
-        case .off, .roon, .aux, .testTone:
+        case .off, .roon, .aux, .atmosDRP, .testTone:
+            if sourceMode == .atmosDRP,
+               let track = currentAtmosDRPTrack ?? visibleLocalPlaybackTrack {
+                return webPublicMetadataText(track.displayAlbum)
+            }
             if sourceMode == .roon,
                let album = roonBridgeSnapshot.selectedZone?.nowPlaying?.threeLine?.line3?.trimmedNilIfBlank {
                 return album
@@ -1104,6 +1133,8 @@ extension OrbisonicViewModel {
             return webSpotifyPlaybackStatus
         case .aux:
             return "Aux has no transport"
+        case .atmosDRP:
+            return webAtmosDRPPlaybackStatus
         case .testTone:
             return isTestTonePlaying ? "Test tone playing" : "Test tone ready"
         case .filePlayback:
@@ -1186,6 +1217,23 @@ extension OrbisonicViewModel {
         return spotifyNowPlayingForActiveStatus == nil ? "No Spotify track" : "Spotify paused"
     }
 
+    private var webAtmosDRPPlaybackStatus: String {
+        switch dolbyReferencePlayerSnapshot.state {
+        case .starting:
+            return "Atmos starting"
+        case .playing:
+            return "Atmos playing"
+        case .paused:
+            return "Atmos paused"
+        case .stopping:
+            return "Atmos stopping"
+        case .failed:
+            return "Atmos failed"
+        case .idle, .stopped:
+            return "Atmos ready"
+        }
+    }
+
     private var webPlayerCurrentTime: String {
         switch sourceMode {
         case .roon:
@@ -1194,6 +1242,8 @@ extension OrbisonicViewModel {
             return spotifyNowPlayingForActiveStatus?.positionText ?? "0:00"
         case .filePlayback:
             return visibleLocalSourceMetadata == nil ? "0:00" : formattedCurrentTime()
+        case .atmosDRP:
+            return currentAtmosDRPTrack == nil ? "0:00" : formattedCurrentTime()
         case .off, .aux, .testTone:
             return "0:00"
         }
@@ -1207,6 +1257,8 @@ extension OrbisonicViewModel {
             return spotifyNowPlayingForActiveStatus?.durationText ?? "0:00"
         case .filePlayback:
             return visibleLocalSourceMetadata == nil ? "0:00" : formattedDuration()
+        case .atmosDRP:
+            return currentAtmosDRPTrack == nil ? "0:00" : formattedDuration()
         case .off, .aux, .testTone:
             return "0:00"
         }
@@ -1228,6 +1280,8 @@ extension OrbisonicViewModel {
             else { return 0 }
             return min(max(Double(position) / Double(duration), 0), 1)
         case .filePlayback:
+            return min(max(scrubProgress, 0), 1)
+        case .atmosDRP:
             return min(max(scrubProgress, 0), 1)
         case .off, .aux, .testTone:
             return 0
@@ -1269,6 +1323,11 @@ extension OrbisonicViewModel {
             return spotifyNowPlayingForActiveStatus == nil ? "Spotify Connect" : "Spotify Connect • stereo"
         case .aux:
             return liveMonitorState.isCapturing ? "Aux live input active" : "Aux live input idle"
+        case .atmosDRP:
+            if let summary = dolbyReferencePlayerSnapshot.bitstreamInfo?.formatSummary.trimmedNilIfBlank {
+                return summary
+            }
+            return liveMonitorState.isCapturing ? "Atmos DRP live input active" : "Atmos DRP ready"
         case .testTone:
             return testToneStatus
         case .filePlayback:
@@ -1278,18 +1337,50 @@ extension OrbisonicViewModel {
     }
 
     private var webPlayerDetails: [OrbisonicWebState.Detail] {
-        [
-            .init(title: "Source", value: webPublicSourceName),
-            .init(title: "Playback", value: webTechnicalPlaybackText),
-            .init(title: "Input", value: webTechnicalInputText),
-            .init(title: "Sphere output", value: webSphereOutputChannelText),
-            .init(title: "Format", value: webPlayerFormatText),
-            .init(title: "Renderer", value: webTechnicalRendererText),
-            .init(title: "Routing", value: webTechnicalRoutingText),
-            .init(title: "Endpoint", value: webTechnicalEndpointText),
-            .init(title: "Signal quality", value: webTechnicalSignalQualityText),
-            .init(title: "System state", value: webTechnicalSystemStateText)
-        ].filter { !$0.value.isEmpty }
+        let baseRows: [OrbisonicWebState.Detail] = [
+            OrbisonicWebState.Detail(title: "Source", value: webPublicSourceName),
+            OrbisonicWebState.Detail(title: "Playback", value: webTechnicalPlaybackText),
+            OrbisonicWebState.Detail(title: "Input", value: webTechnicalInputText),
+            OrbisonicWebState.Detail(title: "Sphere output", value: webSphereOutputChannelText),
+            OrbisonicWebState.Detail(title: "Format", value: webPlayerFormatText),
+            OrbisonicWebState.Detail(title: "Renderer", value: webTechnicalRendererText),
+            OrbisonicWebState.Detail(title: "Routing", value: webTechnicalRoutingText),
+            OrbisonicWebState.Detail(title: "Endpoint", value: webTechnicalEndpointText),
+            OrbisonicWebState.Detail(title: "Signal quality", value: webTechnicalSignalQualityText),
+            OrbisonicWebState.Detail(title: "System state", value: webTechnicalSystemStateText)
+        ]
+        return (baseRows + webAtmosDRPDetails).filter { !$0.value.isEmpty }
+    }
+
+    private var webAtmosDRPDetails: [OrbisonicWebState.Detail] {
+        guard sourceMode == .atmosDRP else { return [] }
+        guard let bitstream = dolbyReferencePlayerSnapshot.bitstreamInfo else {
+            return [.init(title: "DRP route", value: "\(AtmosDRPRoutingPolicy.captureLoopback.displayName) loopback")]
+        }
+
+        var rows: [OrbisonicWebState.Detail] = []
+        if let value = bitstream.codec {
+            rows.append(.init(title: "DRP codec", value: value))
+        }
+        if let value = bitstream.hasAtmos {
+            rows.append(.init(title: "Dolby Atmos", value: value ? "Yes" : "No"))
+        }
+        if let value = bitstream.bitRateKbps {
+            rows.append(.init(title: "Data rate", value: "\(value) kbps"))
+        }
+        if let value = bitstream.codedChannels {
+            rows.append(.init(title: "Coded channels", value: value))
+        }
+        if let value = bitstream.sampleRateHz {
+            rows.append(.init(title: "Sample rate", value: webFormatSampleRate(Double(value))))
+        }
+        if let value = bitstream.dynamicObjectCount {
+            rows.append(.init(title: "Dynamic objects", value: "\(value)"))
+        }
+        if let value = bitstream.complexityIndex {
+            rows.append(.init(title: "Complexity index", value: "\(value)"))
+        }
+        return rows
     }
 
     private var webPlayerControls: [String] {
@@ -1304,6 +1395,19 @@ extension OrbisonicViewModel {
         switch sourceMode {
         case .off, .aux:
             return false
+        case .atmosDRP:
+            let hasPlayableAtmosSource = currentAtmosDRPTrack != nil ||
+                localMusicTracks.contains { DolbyReferencePlayerController.supportsFile($0.url) }
+            switch control {
+            case "previous", "next":
+                return hasPlayableAtmosSource
+            case "play":
+                return hasPlayableAtmosSource && ![.starting, .playing, .stopping].contains(dolbyReferencePlayerSnapshot.state)
+            case "pause":
+                return dolbyReferencePlayerSnapshot.state == .playing
+            default:
+                return false
+            }
         case .roon:
             switch control {
             case "previous": return canSendRoonTransport(.previous)
@@ -1371,6 +1475,10 @@ extension OrbisonicViewModel {
             return 2
         case .aux:
             return inputRoute.isAvailable && inputRoute.inputChannelCount > 0 ? inputRoute.inputChannelCount : nil
+        case .atmosDRP:
+            return inputRoute.uid == AtmosDRPRoutingPolicy.captureLoopback.deviceUID && inputRoute.inputChannelCount > 0
+                ? inputRoute.inputChannelCount
+                : nil
         case .filePlayback:
             if let metadata = visibleLocalSourceMetadata, metadata.channelCount > 0 {
                 return metadata.channelCount
@@ -1420,6 +1528,10 @@ extension OrbisonicViewModel {
         case .aux:
             let ready = webLiveInputReadyValue(expected: .auxCable) == "Ready"
             return ready ? "Aux input ready" : "Aux input not connected"
+        case .atmosDRP:
+            let ready = webLiveInputReadyValue(expected: AtmosDRPRoutingPolicy.captureLoopback) == "Ready"
+            let routeText = ready ? "input ready" : "input not connected"
+            return "Dolby Reference Player \(routeText)"
         case .filePlayback:
             return "Local Music player"
         case .testTone:
@@ -1442,6 +1554,11 @@ extension OrbisonicViewModel {
         case .spotify:
             return "Spotify Connect stream"
         case .aux:
+            return inputRoute.isAvailable ? "\(webFormatSampleRate(inputRoute.nominalSampleRate)) input" : liveSignalStatus
+        case .atmosDRP:
+            if let summary = dolbyReferencePlayerSnapshot.bitstreamInfo?.formatSummary.trimmedNilIfBlank {
+                return summary
+            }
             return inputRoute.isAvailable ? "\(webFormatSampleRate(inputRoute.nominalSampleRate)) input" : liveSignalStatus
         case .filePlayback:
             if let metadata = visibleLocalSourceMetadata {
@@ -1486,6 +1603,14 @@ extension OrbisonicViewModel {
                 return webFormatText(for: metadata)
             }
             if let track = visibleLocalPlaybackTrack {
+                return webFormatText(forFileExtension: track.url.pathExtension)
+            }
+            return ""
+        case .atmosDRP:
+            if let summary = dolbyReferencePlayerSnapshot.bitstreamInfo?.formatSummary.trimmedNilIfBlank {
+                return summary
+            }
+            if let track = currentAtmosDRPTrack ?? visibleLocalPlaybackTrack {
                 return webFormatText(forFileExtension: track.url.pathExtension)
             }
             return ""
@@ -1633,6 +1758,8 @@ extension OrbisonicViewModel {
                 switch sourceMode {
                 case .roon:
                     playRoonTransport()
+                case .atmosDRP:
+                    playAtmosDRPTransport()
                 case .filePlayback:
                     playLocalTransport()
                 case .testTone:
@@ -1645,6 +1772,8 @@ extension OrbisonicViewModel {
                 switch sourceMode {
                 case .roon:
                     pauseRoonTransport()
+                case .atmosDRP:
+                    pauseAtmosDRPTransport()
                 case .filePlayback:
                     pauseLocalTransport()
                 case .off, .spotify, .aux, .testTone:
@@ -1655,6 +1784,8 @@ extension OrbisonicViewModel {
                 switch sourceMode {
                 case .roon:
                     stopRoonTransport()
+                case .atmosDRP:
+                    stopAtmosDRPTransport()
                 case .filePlayback:
                     stopLocalTransport()
                 case .testTone:
@@ -1667,6 +1798,8 @@ extension OrbisonicViewModel {
                 switch sourceMode {
                 case .roon:
                     playPreviousRoonTrack()
+                case .atmosDRP:
+                    skipAtmosDRPTransport(offset: -1)
                 case .filePlayback:
                     skipLocalTransport(offset: -1)
                 case .off, .spotify, .aux, .testTone:
@@ -1677,6 +1810,8 @@ extension OrbisonicViewModel {
                 switch sourceMode {
                 case .roon:
                     playNextRoonTrack()
+                case .atmosDRP:
+                    skipAtmosDRPTransport(offset: 1)
                 case .filePlayback:
                     skipLocalTransport(offset: 1)
                 case .off, .spotify, .aux, .testTone:
@@ -1888,7 +2023,7 @@ private extension OrbisonicWebServer {
                 <h2 id="titleText">Nothing playing right now</h2>
                 <p id="artistText" class="artist-line" hidden></p>
                 <p id="albumText" class="album-line" hidden></p>
-                <p id="sourceLine" class="source-line">Roon · Spotify · Aux · Local Music</p>
+              <p id="sourceLine" class="source-line">Roon · Spotify · Atmos · Aux · Local Music</p>
                 <p id="idleHint" class="idle-hint">Choose a source to start playback.</p>
               </div>
               <details class="nerd-panel" id="nerdPanel">
@@ -1919,7 +2054,7 @@ private extension OrbisonicWebServer {
     const $=id=>document.getElementById(id);
     function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
     function clean(v){const text=String(v??'').trim();return text==='-'?'':text}
-    function sourceName(player){return clean(player.sourceName)||({'Aux Cable':'Aux','Local Files':'Local Music','Roon':'Roon','Spotify':'Spotify'}[player.source]||clean(player.source)||'Sonic Sphere')}
+    function sourceName(player){return clean(player.sourceName)||({'Atmos DRP':'Atmos','Aux Cable':'Aux','Local Files':'Local Music','Roon':'Roon','Spotify':'Spotify'}[player.source]||clean(player.source)||'Sonic Sphere')}
     function hasMedia(player){return Boolean(player.hasMedia)}
     function setText(id,value){$(id).textContent=value}
     function setOptionalText(id,value){const el=$(id),text=clean(value);el.textContent=text;el.hidden=!text}
@@ -1946,7 +2081,7 @@ private extension OrbisonicWebServer {
         setText('titleText',media?clean(s.player.title)||'Untitled':'Nothing playing right now');
         setOptionalText('artistText',media?s.player.artist:'');
         setOptionalText('albumText',media?s.player.album:'');
-        setText('sourceLine',media?source:'Roon · Spotify · Aux · Local Music');
+        setText('sourceLine',media?source:'Roon · Spotify · Atmos · Aux · Local Music');
         $('idleHint').hidden=media;
         renderNerdRows(s.player.details);
         $('connectionNote').hidden=true;
@@ -1955,7 +2090,7 @@ private extension OrbisonicWebServer {
         setText('titleText','Nothing playing right now');
         setOptionalText('artistText','');
         setOptionalText('albumText','');
-        setText('sourceLine','Roon · Spotify · Aux · Local Music');
+        setText('sourceLine','Roon · Spotify · Atmos · Aux · Local Music');
         $('idleHint').hidden=false;
         $('connectionNote').textContent='Waiting for Orbisonic.';
         $('connectionNote').hidden=false;

@@ -4,9 +4,9 @@ import XCTest
 
 final class LoopbackSourceSupportTests: XCTestCase {
     func testMusicInputsExposeRequestedPlayerFirstOrder() {
-        XCTAssertEqual(SourceMode.musicInputs, [.filePlayback, .spotify, .roon, .aux, .off])
-        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Local Files", "Spotify", "Roon", "Aux Cable", "Off"])
-        XCTAssertEqual(SourceMode.musicInputs.map(\.displayName), ["Local Music", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(SourceMode.musicInputs, [.filePlayback, .atmosDRP, .spotify, .roon, .aux, .off])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Local Files", "Atmos DRP", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.displayName), ["Local Music", "Atmos", "Spotify", "Roon", "Aux Cable", "Off"])
         XCTAssertTrue(SourceMode.musicInputs.allSatisfy(\.isUserFacingMusicInput))
         XCTAssertFalse(SourceMode.musicInputs.contains(.testTone))
     }
@@ -19,12 +19,16 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertEqual(SourceMode.aux.monitorActionLabel, "Listen to Aux Cable")
         XCTAssertEqual(SourceMode.aux.muteActionLabel, "Mute Aux Cable")
         XCTAssertEqual(SourceMode.aux.mutedActionLabel, "Resume Aux Cable")
+        XCTAssertEqual(SourceMode.atmosDRP.monitorActionLabel, "Play Atmos")
+        XCTAssertEqual(SourceMode.atmosDRP.muteActionLabel, "Pause Atmos")
+        XCTAssertEqual(SourceMode.atmosDRP.mutedActionLabel, "Resume Atmos")
     }
 
     func testLiveSourcesMapToStableOrbisonicLoopbackUIDs() {
         XCTAssertEqual(SourceMode.roon.expectedLoopback?.deviceUID, "audio.orbisonic.rooninput.device")
         XCTAssertEqual(SourceMode.spotify.expectedLoopback?.deviceUID, "audio.orbisonic.spotifyinput.device")
         XCTAssertEqual(SourceMode.aux.expectedLoopback?.deviceUID, "audio.orbisonic.auxcable.device")
+        XCTAssertEqual(SourceMode.atmosDRP.expectedLoopback?.deviceUID, "audio.orbisonic.auxcable.device")
         XCTAssertNil(SourceMode.off.expectedLoopback)
         XCTAssertNil(SourceMode.filePlayback.expectedLoopback)
         XCTAssertNil(SourceMode.testTone.expectedLoopback)
@@ -35,6 +39,7 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertFalse(SourceMode.spotify.ownsTransport)
         XCTAssertFalse(SourceMode.aux.ownsTransport)
         XCTAssertTrue(SourceMode.filePlayback.ownsTransport)
+        XCTAssertTrue(SourceMode.atmosDRP.ownsTransport)
     }
 
     func testLiveLoopbackDiagnosticsSeparateRoonPlaybackFromSilentCapture() {
@@ -176,6 +181,7 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertTrue(SourceMode.roon.startsLiveListeningOnSelection)
         XCTAssertTrue(SourceMode.spotify.startsLiveListeningOnSelection)
         XCTAssertTrue(SourceMode.aux.startsLiveListeningOnSelection)
+        XCTAssertFalse(SourceMode.atmosDRP.startsLiveListeningOnSelection)
         XCTAssertFalse(SourceMode.off.startsLiveListeningOnSelection)
         XCTAssertFalse(SourceMode.filePlayback.startsLiveListeningOnSelection)
         XCTAssertFalse(SourceMode.testTone.startsLiveListeningOnSelection)
@@ -228,6 +234,8 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertFalse(SourceMode.spotify.acceptsInputRoute(roon))
         XCTAssertTrue(SourceMode.aux.acceptsInputRoute(aux))
         XCTAssertFalse(SourceMode.aux.acceptsInputRoute(spotify))
+        XCTAssertTrue(SourceMode.atmosDRP.acceptsInputRoute(aux))
+        XCTAssertFalse(SourceMode.atmosDRP.acceptsInputRoute(spotify))
         XCTAssertTrue(SourceMode.roon.acceptsInputRoute(roon))
         XCTAssertFalse(SourceMode.roon.acceptsInputRoute(spotify))
     }
@@ -286,8 +294,11 @@ final class LoopbackSourceSupportTests: XCTestCase {
         XCTAssertTrue(SourceMode.spotify.stopsLiveCaptureWhenSwitching(to: .filePlayback))
         XCTAssertTrue(SourceMode.roon.stopsLiveCaptureWhenSwitching(to: .spotify))
         XCTAssertTrue(SourceMode.aux.stopsLiveCaptureWhenSwitching(to: .filePlayback))
+        XCTAssertTrue(SourceMode.atmosDRP.stopsLiveCaptureWhenSwitching(to: .spotify))
+        XCTAssertTrue(SourceMode.spotify.stopsLiveCaptureWhenSwitching(to: .atmosDRP))
         XCTAssertFalse(SourceMode.spotify.stopsLiveCaptureWhenSwitching(to: .spotify))
         XCTAssertFalse(SourceMode.filePlayback.stopsLiveCaptureWhenSwitching(to: .spotify))
+        XCTAssertFalse(SourceMode.atmosDRP.stopsLiveCaptureWhenSwitching(to: .atmosDRP))
     }
 
     func testSourceSwitchRequestStateSerializesAndKeepsLatestPendingSource() {

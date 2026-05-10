@@ -10,7 +10,7 @@ Current contracts, flows, tests, and source support describe Orbisonic as select
 
 ## Decision
 
-Orbisonic has one selected active source path at a time. Roon, Spotify, Aux, Local Files, and Test Tone must not be automatically summed or mixed. Switching sources must stop or isolate the previous path so stale local, Roon, Spotify, Aux, or diagnostic state cannot drive audible output for the newly selected source.
+Orbisonic has one selected active source path at a time. Roon, Spotify, Atmos DRP, Aux, Local Files, and Test Tone must not be automatically summed or mixed. Switching sources must stop or isolate the previous path so stale local, Roon, Spotify, Atmos DRP, Aux, or diagnostic state cannot drive audible output for the newly selected source.
 
 ## Rationale
 
@@ -25,7 +25,7 @@ The product is an operator-facing routing, rendering, and monitoring tool for So
 ## Consequences
 
 - Source switching is high-risk and needs tests.
-- Roon, Spotify, Aux, and Local Files must keep separate metadata, transport, route, and signal states.
+- Roon, Spotify, Atmos DRP, Aux, and Local Files must keep separate metadata, transport, route, and signal states.
 - Future simultaneous playback requires a new accepted contract.
 - Web/public/control state must show the selected source without letting stale inactive state win.
 

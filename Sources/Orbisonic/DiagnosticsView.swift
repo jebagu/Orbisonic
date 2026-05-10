@@ -302,6 +302,9 @@ struct DiagnosticsView: View {
         case .aux:
             hasFault = !auxWarnings.isEmpty
             status = "Aux"
+        case .atmosDRP:
+            hasFault = model.dolbyReferencePlayerSnapshot.state == .failed || !auxWarnings.isEmpty
+            status = "Atmos"
         case .filePlayback:
             hasFault = !localFileWarnings.isEmpty
             status = "Local"

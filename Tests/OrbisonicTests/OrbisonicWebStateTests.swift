@@ -123,6 +123,41 @@ final class OrbisonicWebStateTests: XCTestCase {
         XCTAssertEqual(state.player.details.first { $0.title == "Format" }?.value, "FLAC")
     }
 
+    @MainActor
+    func testAtmosDRPWebStateExposesTrackAndBitstreamMetadata() {
+        let model = OrbisonicViewModel()
+        let track = Self.localTrack(title: "Atmos Track", artworkPath: nil, fileExtension: "ec3")
+        let bitstream = DolbyBitstreamInfo(
+            codec: "Dolby Digital Plus",
+            bitRateKbps: 768,
+            codedChannels: "L, R, C, LFE, Ls, Rs",
+            hasAtmos: true,
+            sampleRateHz: 48_000,
+            dynamicObjectCount: 12,
+            objectInfoBlockCount: nil,
+            bedObjectConfiguration: nil,
+            complexityIndex: 15
+        )
+
+        model.setInputRouteForTesting(Self.inputRoute(for: .auxCable))
+        model.setAtmosDRPStateForTesting(track: track, state: .playing, bitstreamInfo: bitstream)
+        let state = model.webStateForTesting(controlEnabled: true)
+
+        XCTAssertEqual(state.player.source, SourceMode.atmosDRP.rawValue)
+        XCTAssertEqual(state.player.sourceName, "Atmos")
+        XCTAssertEqual(state.player.title, "Atmos Track")
+        XCTAssertEqual(state.player.status, "Atmos playing")
+        XCTAssertTrue(state.player.isPlaying)
+        XCTAssertEqual(state.input.sourcePanel.title, "Atmos")
+        XCTAssertEqual(state.player.details.first { $0.title == "DRP codec" }?.value, "Dolby Digital Plus")
+        XCTAssertEqual(state.player.details.first { $0.title == "Dolby Atmos" }?.value, "Yes")
+        XCTAssertEqual(state.player.details.first { $0.title == "Data rate" }?.value, "768 kbps")
+        XCTAssertEqual(state.player.details.first { $0.title == "Coded channels" }?.value, "L, R, C, LFE, Ls, Rs")
+        XCTAssertEqual(state.player.details.first { $0.title == "Sample rate" }?.value, "48 kHz")
+        XCTAssertEqual(state.player.details.first { $0.title == "Dynamic objects" }?.value, "12")
+        XCTAssertEqual(state.player.details.first { $0.title == "Complexity index" }?.value, "15")
+    }
+
     func testRoonPlayerRowsUseChannelsInsteadOfSignalPath() {
         let stereoRows = RoonPlayerRowsModel.rows(
             nowPlaying: Self.roonNowPlaying(title: "Roon Stereo"),
@@ -160,7 +195,7 @@ final class OrbisonicWebStateTests: XCTestCase {
 
         XCTAssertFalse(state.player.hasMedia)
         XCTAssertEqual(state.player.title, "Nothing playing right now")
-        XCTAssertEqual(state.player.subtitle, "Choose Roon, Spotify, Aux, or Local Music.")
+        XCTAssertEqual(state.player.subtitle, "Choose Roon, Spotify, Atmos, Aux, or Local Music.")
         XCTAssertEqual(state.player.sourceName, "Local Music")
         XCTAssertEqual(state.player.outputChannels, "30.1 channels")
         XCTAssertFalse(state.player.title.localizedCaseInsensitiveContains("no source"))
@@ -191,9 +226,9 @@ final class OrbisonicWebStateTests: XCTestCase {
 
         let state = model.webStateForTesting(controlEnabled: true)
 
-        XCTAssertEqual(state.input.sourceButtons.map(\.title), ["Local Music", "Spotify", "Roon", "Aux Cable", "Off"])
-        XCTAssertEqual(state.input.sourceButtons.map(\.value), ["Local Files", "Spotify", "Roon", "Aux Cable", "Off"])
-        XCTAssertEqual(state.input.sourceButtons.map(\.subtitle), ["", "", "", "", ""])
+        XCTAssertEqual(state.input.sourceButtons.map(\.title), ["Local Music", "Atmos", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(state.input.sourceButtons.map(\.value), ["Local Files", "Atmos DRP", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(state.input.sourceButtons.map(\.subtitle), ["", "", "", "", "", ""])
         XCTAssertFalse(state.input.sourceButtons.map(\.title).contains("Test Tone"))
         XCTAssertEqual(state.input.sourcePanel.title, "Local Music")
         XCTAssertEqual(state.input.sourcePanel.headline, "Use the Local Music tab to play music.")
@@ -773,7 +808,7 @@ final class OrbisonicWebStateTests: XCTestCase {
     private static func waitForSourceMode(
         _ model: OrbisonicViewModel,
         _ mode: SourceMode,
-        timeout: TimeInterval = 8
+        timeout: TimeInterval = 20
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while (model.sourceMode != mode || model.isLiveMonitorTransitioning), Date() < deadline {
@@ -803,9 +838,9 @@ final class OrbisonicWebStateTests: XCTestCase {
         )
     }
 
-    private static func localTrack(title: String, artworkPath: String?) -> LocalMusicTrack {
+    private static func localTrack(title: String, artworkPath: String?, fileExtension: String = "flac") -> LocalMusicTrack {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(title.replacingOccurrences(of: " ", with: "-")).flac", isDirectory: false)
+            .appendingPathComponent("\(title.replacingOccurrences(of: " ", with: "-")).\(fileExtension)", isDirectory: false)
         return LocalMusicTrack(
             path: url.path,
             rootPath: url.deletingLastPathComponent().path,

@@ -12,7 +12,7 @@
 - Hardware-only behavior must be documented as manual verification when it cannot run in automated tests.
 - Silent live input must remain diagnosable. Do not hide it with synthetic signal, gain, buffering tricks, fake channels, or fallback routing.
 - Local file playback and live loopback capture are separate paths.
-- Roon, Spotify, Aux, local file playback, and test tones remain selected-source paths, not an implicit mixer.
+- Roon, Spotify, Atmos DRP, Aux, local file playback, and test tones remain selected-source paths, not an implicit mixer.
 - Sonic Sphere 30.1 is the primary production output topology unless a future accepted contract changes it.
 - Headphone or normal monitor output is a monitor path and must not mutate Sonic Sphere production topology.
 - Orbisonic renders channel beds or discrete channels exposed by Core Audio or upstream tools. It does not decode Dolby Atmos object metadata unless a future implementation explicitly adds and documents that capability.
@@ -179,7 +179,7 @@ Data models:
 View model state, `SourceMode`, `LiveMonitorState`, `LiveAudioSignalState`, local music models, player row models, meter display models, route info, renderer presets, web state, and diagnostics rows.
 
 Errors:
-User-facing errors from engine, file, route, live capture, Roon, Spotify, local library, diagnostics, and web command paths.
+User-facing errors from engine, file, route, live capture, Roon, Spotify, Atmos DRP, local library, diagnostics, and web command paths.
 
 Side effects allowed:
 Start/stop playback, read selected files, manage app state, write app-managed runtime logs/cache/preferences, start local helpers, expose local web state, and interact with Core Audio via app integration code.
@@ -200,7 +200,7 @@ Performance or audio-stability constraints:
 UI responsiveness must not come at the expense of audio correctness. Diagnostics should be bounded. Large local file operations should not destabilize live audio.
 
 Tests required:
-`Tests/OrbisonicTests/` must cover UI model behavior, app build info, web state, local playback, source switching, diagnostics, route policies, metering, renderer behavior, Roon, Spotify, loopback, monitor boundaries, and architecture boundary rules.
+`Tests/OrbisonicTests/` must cover UI model behavior, app build info, web state, local playback, source switching, diagnostics, route policies, metering, renderer behavior, Roon, Spotify, Atmos DRP, loopback, monitor boundaries, and architecture boundary rules.
 
 Acceptance criteria:
 The executable app presents current source and route state honestly, keeps source paths distinct, delegates shared policy to package modules, and remains verifiable through SwiftPM tests plus LaunchServices runtime checks when app behavior changes.
@@ -440,7 +440,54 @@ Tests required:
 Acceptance criteria:
 Spotify remains a dedicated selected live source, stereo policy remains explicit, receiver/runtime failures are visible, and credentials/caches stay out of tracked files.
 
-## 10. Aux Source Boundary
+## 10. Atmos DRP Source Boundary
+
+Responsibility:
+Represent Dolby Reference Player playback as a separate selected source named `Atmos`, with Orbisonic owning the DRP CLI process and capturing its output through the current temporary loopback route.
+
+Non-responsibilities:
+It must not alter `OrbisonicEngine`, renderer matrix policy, normal monitor downmix policy, Sonic Sphere output topology, Aux source semantics, or local PCM decoding behavior.
+
+Public interface or public-facing concepts:
+Atmos source mode, `SourceMode.atmosDRP` raw value `Atmos DRP`, source button title `Atmos`, DRP output layout setting, temporary `Orbisonic Aux Cable` loopback route, DRP bitstream metadata, and disabled seek copy.
+
+Inputs:
+Selected source mode, DRP-playable local library file URLs, DRP output device list, DRP stdout, DRP metadata CSV files, selected output layout, Aux loopback route facts, live capture status, and queue previous/next commands.
+
+Outputs:
+DRP process lifecycle commands, Atmos live audio via loopback capture, approximate wall-clock progress excluding suspended time, diagnostics/status rows, web player state, and DRP codec/Atmos/data-rate/channel/sample-rate/object metadata.
+
+Data models:
+`DolbyReferencePlayerController`, `DolbyReferencePlayerDevice`, `DolbyReferencePlayerSession`, `DolbyBitstreamInfo`, `DolbyReferencePlayerOutputLayout`, `AtmosDRPRoutingPolicy`, `SourceMode.atmosDRP`, `OrbisonicLoopbackDevice.auxCable`, `InputRouteInfo`, and `LiveMonitorState`.
+
+Errors:
+Missing DRP CLI, missing selected Atmos-compatible track, missing Aux loopback route, DRP output device unavailable, DRP process exit failure, unsupported seek, no signal, and loopback route mismatch.
+
+Side effects allowed:
+Launch DRP, select the temporary Atmos loopback policy route, start/stop live capture for the selected Atmos source, suspend/resume DRP with `SIGSTOP`/`SIGCONT`, interrupt/terminate/kill stale DRP process as needed, and read app-created temporary DRP metadata files.
+
+Side effects forbidden:
+Using `--audio-out-file`, writing PCM/WAV output files, decoding Atmos in Orbisonic, changing general Aux behavior, treating Atmos as the same source as Aux Cable, silently mixing with other sources, or mutating renderer/monitor topology to support DRP.
+
+Allowed dependencies:
+Foundation/Darwin process ownership, loopback source support, local library file recognition, view-model source orchestration, diagnostics/web state, and normal monitor route descriptors.
+
+Forbidden dependencies:
+Renderer matrix ownership, Sonic Sphere output topology mutation, Aux-specific metadata ownership, Roon/Spotify controls, installer scripts, hidden route repair, and old prototype workspaces.
+
+Security or privacy constraints:
+DRP temp metadata stays in app-created temporary folders and must not be committed. Docs should name generic app concepts instead of local user media paths.
+
+Performance or audio-stability constraints:
+DRP process management must not block UI, pause/resume remains explicitly experimental, and progress is approximate because DRP CLI does not expose seek or transport position.
+
+Tests required:
+`DolbyReferencePlayerControllerTests`, `LoopbackSourceSupportTests`, `LiveNormalMonitorRouteTests`, `NormalMonitorRouteDescriptorTests`, and `OrbisonicWebStateTests` must cover device parsing, command arguments, metadata parsing, source order, temporary route policy, transport state, and web metadata exposure.
+
+Acceptance criteria:
+Atmos is a separate selected source with owned DRP transport. V1 routes through the Aux loopback by policy only, reports DRP bitstream metadata, and leaves Aux source behavior and renderer/monitor topology unchanged.
+
+## 11. Aux Source Boundary
 
 Responsibility:
 Represent general system/app audio as a selected live source captured through the dedicated Aux loopback input.
@@ -487,7 +534,7 @@ Loopback source support, live normal monitor route, source adapter, diagnostics/
 Acceptance criteria:
 Aux is a dedicated selected live source that captures only the expected Aux loopback and reports route/signal problems honestly.
 
-## 11. Renderer And Sonic Sphere Output Boundary
+## 12. Renderer And Sonic Sphere Output Boundary
 
 Responsibility:
 Define and preserve Sonic Sphere production rendering, including static bed modes, Direct 30, Direct 30.1, renderer matrices, speaker topology, presets, and production metering semantics.
@@ -534,7 +581,7 @@ Renderer module, matrix renderer, Sonic Sphere metering, AudioCore render graph,
 Acceptance criteria:
 Sonic Sphere production rendering remains explicit, deterministic, and protected by tests. Monitor changes cannot redefine production topology.
 
-## 12. Headphone Or Normal Monitor Boundary
+## 13. Headphone Or Normal Monitor Boundary
 
 Responsibility:
 Provide a headphone or normal stereo monitor path for setup, checking, preview, and desktop listening without changing Sonic Sphere production output.
@@ -581,7 +628,7 @@ Normal monitor downmixer, graph topology, route descriptor, route branch removal
 Acceptance criteria:
 Monitor output remains a preview/checking path, normal monitor routes are deterministic, and monitor changes cannot mutate Sonic Sphere production output or route topology.
 
-## 13. Diagnostics And Logging Boundary
+## 14. Diagnostics And Logging Boundary
 
 Responsibility:
 Expose bounded, useful, source-specific diagnostics for input, output, renderer, monitor, logs, web state, route state, and source health.
@@ -628,7 +675,7 @@ Diagnostics log store, web state, VU routing, metering service, metering telemet
 Acceptance criteria:
 Diagnostics make failures easier to distinguish, especially player activity versus captured audio, while keeping audio failures visible and privacy boundaries intact.
 
-## 14. Installer And App Bundle Scripts Boundary
+## 15. Installer And App Bundle Scripts Boundary
 
 Responsibility:
 Build, refresh, sign, verify, open, package, and install helper assets for the Orbisonic app and its optional runtime helpers.
@@ -679,7 +726,8 @@ The app bundle and installers are reproducible through documented scripts, GUI v
 
 - Source channel count must not exceed 64 unless a future accepted contract changes `OrbisonicAudioLimits` and related shared descriptors.
 - Local file playback and live capture are separate paths.
-- Roon, Spotify, Aux, local file playback, and test tones are selected source modes, not automatically mixed.
+- Roon, Spotify, Atmos DRP, Aux, local file playback, and test tones are selected source modes, not automatically mixed.
+- Atmos DRP temporarily uses the Aux loopback through `AtmosDRPRoutingPolicy`; it is not the same selected source as Aux Cable.
 - Roon log playback does not prove loopback capture.
 - Spotify must not be represented as multichannel unless the input actually provides multichannel data and a future contract allows it.
 - Sample-rate mismatch and channel-count mismatch must be surfaced as validation or diagnostics.

@@ -40,6 +40,7 @@ enum InputSourceStatusText {
     static let roonInstruction = "Open Roon and make sure Orbisonic is authorized, then start playback."
     static let spotifyInstruction = "Open Spotify, use Spotify Connect to select Orbisonic, then control playback from Spotify."
     static let auxInstruction = "Select Orbisonic Aux Cable as the output device in Ableton Live, QLab, SPAT Revolution, GarageBand, or another app."
+    static let atmosDRPInstruction = "Choose a DRP-compatible Atmos file in Local Music, then press play. This temporary path uses Orbisonic Aux Cable until the dedicated Atmos input exists."
 }
 
 private struct InputSourceStatusLogSnapshot {
@@ -92,6 +93,8 @@ extension OrbisonicViewModel {
             return spotifyInputSourceStatusPanel()
         case .aux:
             return auxInputSourceStatusPanel()
+        case .atmosDRP:
+            return atmosDRPInputSourceStatusPanel()
         case .filePlayback:
             return InputSourceStatusPanel(
                 status: "Local Music",
@@ -143,6 +146,13 @@ extension OrbisonicViewModel {
                 InputSourceStatusRow(title: "Aux raw input format", value: auxInputFormatStatusValue),
                 InputSourceStatusRow(title: "Aux raw signal", value: auxAudioSignalStatusValue),
                 InputSourceStatusRow(title: "Aux active channels", value: auxActiveChannelsStatusValue ?? "Unknown")
+            ]
+        case .atmosDRP:
+            return [
+                InputSourceStatusRow(title: "Atmos DRP route", value: atmosDRPRouteStatusValue),
+                InputSourceStatusRow(title: "Atmos DRP process", value: atmosDRPProcessStatusValue),
+                InputSourceStatusRow(title: "Atmos raw signal", value: auxAudioSignalStatusValue),
+                InputSourceStatusRow(title: "Atmos active channels", value: auxActiveChannelsStatusValue ?? "Unknown")
             ]
         case .off, .filePlayback, .testTone:
             return []
@@ -201,6 +211,21 @@ extension OrbisonicViewModel {
                     ("error", liveMonitorStatusErrorValue)
                 ]
             )
+        case .atmosDRP:
+            return InputSourceStatusLogSnapshot(
+                prefix: "[input-status:atmos-drp]",
+                fields: [
+                    ("temporaryLoopback", AtmosDRPRoutingPolicy.captureLoopback.displayName),
+                    ("drpState", atmosDRPProcessStatusValue),
+                    ("audioSignalState", auxAudioSignalStatusValue),
+                    ("activeChannels", auxActiveChannelsStatusValue ?? "Unknown"),
+                    ("silenceDuration", liveAudioSignalSilenceDurationLogValue),
+                    ("activeSource", sourceMode.rawValue),
+                    ("uiLabelShown", inputSourceStatusPanel.status),
+                    ("reasonForUpdate", reasonForUpdate),
+                    ("error", liveMonitorStatusErrorValue)
+                ]
+            )
         case .off, .filePlayback, .testTone:
             return nil
         }
@@ -216,6 +241,8 @@ extension OrbisonicViewModel {
             return spotifyInputStatusSections().flatMap(\.rows)
         case .aux:
             return auxInputStatusSections().flatMap(\.rows)
+        case .atmosDRP:
+            return atmosDRPInputStatusSections().flatMap(\.rows)
         case .filePlayback:
             return []
         case .testTone:
@@ -332,6 +359,35 @@ extension OrbisonicViewModel {
         )
     }
 
+    private func atmosDRPInputSourceStatusPanel() -> InputSourceStatusPanel {
+        let headline: String
+        if inputStatusSelectedLiveSourceUnavailable || liveInputReadyValue(expected: AtmosDRPRoutingPolicy.captureLoopback) == "Missing" {
+            headline = "Atmos input unavailable"
+        } else if dolbyReferencePlayerSnapshot.state == .playing {
+            headline = "Atmos DRP is playing"
+        } else if dolbyReferencePlayerSnapshot.state == .paused {
+            headline = "Atmos DRP is paused"
+        } else {
+            headline = "Atmos DRP ready"
+        }
+
+        let body: String
+        if inputStatusSelectedLiveSourceUnavailable || liveInputReadyValue(expected: AtmosDRPRoutingPolicy.captureLoopback) == "Missing" {
+            body = "Open Diagnostics for setup details."
+        } else if dolbyReferencePlayerSnapshot.state == .playing {
+            body = ""
+        } else {
+            body = InputSourceStatusText.atmosDRPInstruction
+        }
+
+        return InputSourceStatusPanel(
+            status: headline,
+            headline: headline,
+            body: body,
+            sections: atmosDRPInputStatusSections()
+        )
+    }
+
     private func roonInputStatusSections() -> [InputSourceStatusSection] {
         [
             InputSourceStatusSection(
@@ -381,6 +437,44 @@ extension OrbisonicViewModel {
             rows.append(InputSourceStatusRow(title: "Active channels", value: activeChannels))
         }
         return [InputSourceStatusSection(title: "Aux source", rows: rows)]
+    }
+
+    private func atmosDRPInputStatusSections() -> [InputSourceStatusSection] {
+        [
+            InputSourceStatusSection(
+                title: "Atmos source",
+                rows: [
+                    InputSourceStatusRow(title: "DRP route", value: atmosDRPRouteStatusValue),
+                    InputSourceStatusRow(title: "DRP process", value: atmosDRPProcessStatusValue),
+                    InputSourceStatusRow(title: "Audio", value: auxAudioUserStatusValue)
+                ]
+            )
+        ]
+    }
+
+    private var atmosDRPRouteStatusValue: String {
+        liveInputReadyValue(expected: AtmosDRPRoutingPolicy.captureLoopback) == "Ready"
+            ? "Temporary route: \(AtmosDRPRoutingPolicy.captureLoopback.displayName)"
+            : "Missing temporary route: \(AtmosDRPRoutingPolicy.captureLoopback.displayName)"
+    }
+
+    private var atmosDRPProcessStatusValue: String {
+        switch dolbyReferencePlayerSnapshot.state {
+        case .idle:
+            return "Idle"
+        case .starting:
+            return "Starting"
+        case .playing:
+            return "Playing"
+        case .paused:
+            return "Paused"
+        case .stopping:
+            return "Stopping"
+        case .stopped:
+            return "Stopped"
+        case .failed:
+            return "Error"
+        }
     }
 
     private var roonEndpointStatusValue: String {

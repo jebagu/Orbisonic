@@ -55,7 +55,7 @@ enum NormalMonitorRoutePlanner {
         switch sourceMode {
         case .filePlayback:
             return audibleRoute(sourceFamily: .localFile, sourceLayoutDescription: sourceLayoutDescription)
-        case .roon, .spotify, .aux:
+        case .roon, .spotify, .aux, .atmosDRP:
             return audibleRoute(sourceFamily: .liveLoopback, sourceLayoutDescription: sourceLayoutDescription)
         case .testTone:
             return audibleRoute(sourceFamily: .diagnostics, sourceLayoutDescription: sourceLayoutDescription)

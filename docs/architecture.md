@@ -97,13 +97,14 @@ Current user-facing source modes are represented by `SourceMode`:
 - `Off`
 - `Roon`
 - `Spotify`
+- `Atmos DRP` (displayed as `Atmos`)
 - `Aux Cable`
 - `Local Files`
 - `Test Tone`
 
-Roon, Spotify, and Aux are live input modes. Local files and test tones own their own transport path. Spotify is fixed to two live input channels in current source support. Roon and Aux use expected loopback device identities when available.
+Roon, Spotify, Atmos DRP, and Aux are live input modes. Local files, Atmos DRP, and test tones own their own transport path. Spotify is fixed to two live input channels in current source support. Roon, Spotify, Atmos DRP, and Aux use expected loopback device identities when available. Atmos DRP currently routes DRP output into `Orbisonic Aux Cable` through `AtmosDRPRoutingPolicy`; that temporary route is not the same selected source as Aux Cable.
 
-The current model is selected-source oriented, not a mixer. Source switching code and tests should preserve the rule that Roon, Spotify, Aux, test tone, and local playback do not accidentally sum into each other.
+The current model is selected-source oriented, not a mixer. Source switching code and tests should preserve the rule that Roon, Spotify, Atmos DRP, Aux, test tone, and local playback do not accidentally sum into each other.
 
 ## Renderer Architecture
 
@@ -210,7 +211,7 @@ GUI or audio behavior should be judged through the app bundle and LaunchServices
 - Keep audio-path correctness ahead of UI polish.
 - Do not hide all-zero live input with buffering, fake gain, synthetic signal, or fake channels.
 - Keep local file playback separate from live loopback capture.
-- Keep Roon, Spotify, Aux, local files, and test tones isolated unless a future mixer contract is accepted.
+- Keep Roon, Spotify, Atmos DRP, Aux, local files, and test tones isolated unless a future mixer contract is accepted.
 - Treat Sonic Sphere 30.1 as the primary production output topology.
 - Treat headphone or normal monitor output as a monitor path.
 - Do not silently change public contracts or module boundaries.
@@ -220,7 +221,7 @@ GUI or audio behavior should be judged through the app bundle and LaunchServices
 ## Known Risks
 
 - Historical migration notes under `docs/PureAudio/` may not all match current source and should be revalidated before a claim is elevated into a binding contract.
-- Some runtime audio behavior requires hardware or external-service verification: Sonic Sphere / Dante, loopback devices, Roon, Spotify, microphone permission, LaunchServices, signing, entitlements, and installer behavior.
+- Some runtime audio behavior requires hardware or external-service verification: Sonic Sphere / Dante, loopback devices, Roon, Spotify, Dolby Reference Player, microphone permission, LaunchServices, signing, entitlements, and installer behavior.
 - The app target still owns substantial concrete audio behavior while the PureAudio target set exists beside it, so boundary docs must distinguish current implementation from target direction.
 - Embedded librespot linking depends on local build artifacts under `.build/orbisonic-librespot`.
 - Roon log parsing can show player activity without proving live loopback signal.

@@ -612,6 +612,7 @@ final class OrbisonicViewModel: ObservableObject {
     private static let diagnosticsLogMaxLines = 500
     private static let webControlTokenKey = "Orbisonic.webControlToken"
     private static let localMusicSortModeKey = "Orbisonic.localMusicSortMode"
+    private static let atmosDRPOutputLayoutKey = "Orbisonic.atmosDRPOutputLayout"
     private static let rendererOptionsKey = "Orbisonic.rendererOptions"
     private static let frontAngleKey = "Orbisonic.frontAngle"
     private static let rearAngleKey = "Orbisonic.rearAngle"
@@ -769,6 +770,8 @@ final class OrbisonicViewModel: ObservableObject {
     @Published private(set) var spotifyReceiverStatus: SpotifyReceiverStatus = .notStarted
     @Published private(set) var spotifyNowPlaying: SpotifyNowPlaying?
     @Published private(set) var spotifyVisibleNowPlaying: SpotifyNowPlaying?
+    @Published private(set) var dolbyReferencePlayerSnapshot: DolbyReferencePlayerControllerSnapshot = .idle
+    @Published private(set) var currentAtmosDRPTrack: LocalMusicTrack?
     @Published private(set) var localMusicSettings = LocalMusicSettings()
     @Published private(set) var localMusicTracks: [LocalMusicTrack] = []
     @Published private(set) var localMusicPlaylists: [LocalMusicPlaylist] = []
@@ -779,6 +782,12 @@ final class OrbisonicViewModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(localMusicSortMode.rawValue, forKey: Self.localMusicSortModeKey)
             AppLogger.shared.notice(category: "local-music", "Sort mode set to \(localMusicSortMode.rawValue)")
+        }
+    }
+    @Published var atmosDRPOutputLayout: DolbyReferencePlayerOutputLayout = OrbisonicViewModel.loadAtmosDRPOutputLayout() {
+        didSet {
+            UserDefaults.standard.set(atmosDRPOutputLayout.rawValue, forKey: Self.atmosDRPOutputLayoutKey)
+            AppLogger.shared.notice(category: "atmos-drp", "Atmos DRP output layout set to \(atmosDRPOutputLayout.rawValue)")
         }
     }
     @Published var isLocalGaplessSchedulerEnabled: Bool = LocalGaplessPlaybackPolicy.enableLocalGaplessScheduler {
@@ -861,6 +870,7 @@ final class OrbisonicViewModel: ObservableObject {
     private let roonBridgeClient = RoonBridgeClient()
     private let roonArtworkCache = RoonArtworkCache()
     private let spotifyReceiverClient = SpotifyReceiverClient()
+    private let dolbyReferencePlayerController = DolbyReferencePlayerController()
     private let diagnosticsLogStore = DiagnosticsLogStore()
     private let appleSpatialHeadphoneMonitor = AppleSpatialHeadphoneMonitor()
     private var webServer: OrbisonicWebServer?
@@ -1000,6 +1010,12 @@ final class OrbisonicViewModel: ObservableObject {
         engine.onLocalGaplessQueueEnded = { [weak self] in
             self?.handleLocalGaplessQueueEnded()
         }
+        dolbyReferencePlayerController.onSnapshotChanged = { [weak self] snapshot in
+            self?.dolbyReferencePlayerSnapshot = snapshot
+            if let error = snapshot.lastError {
+                self?.lastError = error
+            }
+        }
         applyEffectiveOutputVolume(log: false)
 
         applyPreset(.defaultPreset, pushToEngine: false)
@@ -1089,6 +1105,16 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         return mode
+    }
+
+    private static func loadAtmosDRPOutputLayout() -> DolbyReferencePlayerOutputLayout {
+        guard let storedValue = UserDefaults.standard.string(forKey: atmosDRPOutputLayoutKey),
+              let layout = DolbyReferencePlayerOutputLayout(rawValue: storedValue)
+        else {
+            return .defaultLayout
+        }
+
+        return layout
     }
 
     private static func loadDouble(key: String, defaultValue: Double) -> Double {
@@ -2035,6 +2061,7 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = "Orbisonic is idle. Select a source to begin listening or playback."
         case .filePlayback:
             updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
+            currentAtmosDRPTrack = nil
             liveSignalStatus = "No live input."
             liveBufferStatus = "No live buffer."
             liveMonitorState = .stopped
@@ -2042,9 +2069,23 @@ final class OrbisonicViewModel: ObservableObject {
             roonSignalPath = nil
             statusMessage = "Use the Local Music tab to play music."
             preloadFirstLocalMusicTrackIfNeeded(reason: "Local Music selected")
+        case .atmosDRP:
+            updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
+            roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
+            roonSignalPath = nil
+            roonNowPlaying = nil
+            if selectExpectedLoopbackInputIfAvailable(for: .atmosDRP) {
+                liveMonitorState = .stopped
+                statusMessage = "Choose a DRP-compatible Atmos file, then press play."
+            } else {
+                let message = missingLoopbackMessage(for: .atmosDRP)
+                liveMonitorState = .unavailable(message)
+                statusMessage = message
+            }
         case .roon:
             updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             currentFileURL = nil
+            currentAtmosDRPTrack = nil
             clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata not requested yet."
             roonSignalPath = nil
@@ -2059,6 +2100,7 @@ final class OrbisonicViewModel: ObservableObject {
             }
         case .spotify:
             currentFileURL = nil
+            currentAtmosDRPTrack = nil
             clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
@@ -2077,6 +2119,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .testTone:
             updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             currentFileURL = nil
+            currentAtmosDRPTrack = nil
             clearLoadedSourceSnapshot()
             roonNowPlaying = nil
             liveSignalStatus = "No live input."
@@ -2088,6 +2131,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .aux:
             updateSpotifyNowPlaying(nil, reason: "source changed", forceVisible: true)
             currentFileURL = nil
+            currentAtmosDRPTrack = nil
             clearLoadedSourceSnapshot()
             roonNowPlayingStatus = "Roon metadata is only shown for live Roon input."
             roonSignalPath = nil
@@ -2502,6 +2546,64 @@ final class OrbisonicViewModel: ObservableObject {
         togglePlayback()
     }
 
+    func playAtmosDRPTransport() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        var commandAllowed = true
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                command: "play",
+                allowed: commandAllowed,
+                handler: "playAtmosDRPTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
+
+        if dolbyReferencePlayerSnapshot.state == .paused {
+            do {
+                try dolbyReferencePlayerController.resume()
+                isPlaying = true
+                liveMonitorState = .monitoring
+                statusMessage = "Atmos DRP playback resumed."
+            } catch {
+                commandAllowed = false
+                commandError = error.localizedDescription
+                statusMessage = error.localizedDescription
+                lastError = error.localizedDescription
+            }
+            return
+        }
+
+        guard let track = selectedAtmosDRPTrack() else {
+            statusMessage = "Select a DRP-compatible Atmos file in Local Music."
+            commandAllowed = false
+            commandError = statusMessage
+            return
+        }
+
+        if let queueIndex = sessionQueue.firstIndex(where: { $0.id == track.id }) {
+            selectedSessionQueueIndex = queueIndex
+            sessionQueueIndex = queueIndex
+        }
+        startAtmosDRPPipe(track: track)
+    }
+
+    private func selectedAtmosDRPTrack() -> LocalMusicTrack? {
+        let selectedQueueTrack = selectedSessionQueueIndex.flatMap { index in
+            sessionQueue.indices.contains(index) ? sessionQueue[index] : nil
+        }
+        let candidates = [
+            selectedQueueTrack,
+            selectedLocalMusicTrack,
+            currentAtmosDRPTrack,
+            currentLocalMusicTrack,
+            visibleLocalMusicTracks.first
+        ]
+        return candidates.compactMap { $0 }.first { DolbyReferencePlayerController.supportsFile($0.url) }
+    }
+
     func pauseLocalTransport() {
         let stateBefore = debugPlaybackStateSnapshot()
         var commandAllowed = sourceMode == .filePlayback || isLocalFileLoading
@@ -2541,6 +2643,39 @@ final class OrbisonicViewModel: ObservableObject {
         }
     }
 
+    func pauseAtmosDRPTransport() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        var commandAllowed = sourceMode == .atmosDRP
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                command: "pause",
+                allowed: commandAllowed,
+                handler: "pauseAtmosDRPTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
+        guard sourceMode == .atmosDRP else {
+            commandAllowed = false
+            commandError = "source is \(sourceMode.rawValue)"
+            return
+        }
+
+        do {
+            try dolbyReferencePlayerController.pause()
+            isPlaying = false
+            liveMonitorState = .muted
+            statusMessage = "Atmos DRP playback paused. Pause uses DRP process suspension."
+        } catch {
+            commandAllowed = false
+            commandError = error.localizedDescription
+            statusMessage = error.localizedDescription
+            lastError = error.localizedDescription
+        }
+    }
+
     func stopLocalTransport() {
         let stateBefore = debugPlaybackStateSnapshot()
         let commandAllowed = sourceMode == .filePlayback || isLocalFileLoading
@@ -2570,6 +2705,33 @@ final class OrbisonicViewModel: ObservableObject {
         } else if !commandAllowed {
             commandError = "source is \(sourceMode.rawValue)"
         }
+    }
+
+    func stopAtmosDRPTransport() {
+        let stateBefore = debugPlaybackStateSnapshot()
+        var commandError: String?
+        defer {
+            logTransportDebug(
+                command: "stop",
+                allowed: sourceMode == .atmosDRP,
+                handler: "stopAtmosDRPTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot(),
+                error: commandError
+            )
+        }
+        do {
+            try dolbyReferencePlayerController.stop()
+        } catch {
+            commandError = error.localizedDescription
+            lastError = error.localizedDescription
+        }
+        let stoppedSource = sourceMode
+        engine.stop()
+        markLiveMonitorStopped(sourceMode: stoppedSource)
+        currentAtmosDRPTrack = nil
+        currentFileURL = nil
+        statusMessage = "Atmos DRP stopped."
     }
 
     func playLocalMusicTrackNow(_ track: LocalMusicTrack) {
@@ -3409,6 +3571,48 @@ final class OrbisonicViewModel: ObservableObject {
     func setRoonNowPlayingForTesting(_ nowPlaying: RoonNowPlaying?) {
         roonNowPlaying = nowPlaying
         roonNowPlayingStatus = nowPlaying?.updatedText ?? "No Roon playback line found in RoonServer log yet."
+    }
+
+    func setAtmosDRPStateForTesting(
+        track: LocalMusicTrack?,
+        state: DolbyReferencePlayerSessionState,
+        bitstreamInfo: DolbyBitstreamInfo? = nil
+    ) {
+        sourceMode = .atmosDRP
+        currentAtmosDRPTrack = track
+        currentFileURL = track?.url
+        isPlaying = state == .playing
+        liveMonitorState = state == .playing ? .monitoring : .stopped
+        if let track, !localMusicTracks.contains(where: { $0.id == track.id }) {
+            localMusicBaseTracks.append(track)
+            localMusicTracks.append(track)
+        }
+        duration = track?.duration ?? 0
+        currentTime = min(42, duration)
+        scrubProgress = duration > 0 ? min(max(currentTime / duration, 0), 1) : 0
+        let session = track.map {
+            DolbyReferencePlayerSession(
+                fileURL: $0.url,
+                processIdentifier: 12_345,
+                metadataDirectoryURL: FileManager.default.temporaryDirectory,
+                outputDevice: DolbyReferencePlayerDevice(
+                    id: 7,
+                    name: AtmosDRPRoutingPolicy.drpOutputDeviceName,
+                    channelCount: 64
+                ),
+                outputLayout: atmosDRPOutputLayout,
+                startedAt: Date().addingTimeInterval(-currentTime),
+                state: state,
+                pausedAt: state == .paused ? Date() : nil,
+                accumulatedPausedDuration: 0
+            )
+        }
+        dolbyReferencePlayerSnapshot = DolbyReferencePlayerControllerSnapshot(
+            session: session,
+            bitstreamInfo: bitstreamInfo,
+            lastOutput: "",
+            lastError: state == .failed ? "Dolby Reference Player exited with status 1." : nil
+        )
     }
 
     @discardableResult
@@ -5668,6 +5872,40 @@ final class OrbisonicViewModel: ObservableObject {
         playQueueOffset(offset, wrap: true, debugTiming: debugTiming)
     }
 
+    func skipAtmosDRPTransport(offset: Int) {
+        let stateBefore = debugPlaybackStateSnapshot()
+        defer {
+            logTransportDebug(
+                command: offset < 0 ? "back" : "forward",
+                allowed: !sessionQueue.isEmpty || !localMusicTracks.isEmpty,
+                handler: "skipAtmosDRPTransport",
+                stateBefore: stateBefore,
+                stateAfter: debugPlaybackStateSnapshot()
+            )
+        }
+
+        let tracks = sessionQueue.isEmpty ? visibleLocalMusicTracks : sessionQueue
+        guard !tracks.isEmpty else {
+            statusMessage = "Add a watch folder in Settings, then scan local music."
+            return
+        }
+
+        let currentID = currentAtmosDRPTrack?.id ?? currentFileURL?.path
+        let currentIndex = currentID.flatMap { id in tracks.firstIndex { $0.id == id } } ?? (offset < 0 ? 0 : -1)
+        let nextIndex = (currentIndex + offset + tracks.count) % tracks.count
+        let nextTrack = tracks[nextIndex]
+        guard DolbyReferencePlayerController.supportsFile(nextTrack.url) else {
+            statusMessage = "\(nextTrack.fileName) is not a Dolby Reference Player target."
+            return
+        }
+
+        if !sessionQueue.isEmpty {
+            sessionQueueIndex = nextIndex
+            selectedSessionQueueIndex = nextIndex
+        }
+        startAtmosDRPPipe(track: nextTrack)
+    }
+
     private func playQueueOffset(_ offset: Int, wrap: Bool, debugTiming: DebugTimingContext? = nil) {
         if sessionQueue.isEmpty {
             let tracks = visibleLocalMusicTracks
@@ -5879,6 +6117,54 @@ final class OrbisonicViewModel: ObservableObject {
         startLiveInputForCurrentRoute(reason: "manual other input")
     }
 
+    func startAtmosDRPPipe(track: LocalMusicTrack) {
+        cancelDiagnosticsForMusicAction()
+        clearLocalPreparedFilePreloads(reason: "Atmos DRP playback started")
+        sourceMode = .atmosDRP
+        currentAtmosDRPTrack = track
+        currentFileURL = track.url
+        roonNowPlaying = nil
+        roonSignalPath = nil
+        updateSpotifyNowPlaying(nil, reason: "Atmos DRP playback started", forceVisible: true)
+        refreshRoutesIfNeeded(force: true)
+        selectExpectedLoopbackInputIfAvailable(for: .atmosDRP)
+
+        guard inputRoute.uid == AtmosDRPRoutingPolicy.captureLoopback.deviceUID else {
+            let message = missingLoopbackMessage(for: .atmosDRP)
+            AppLogger.shared.error(category: "atmos-drp", message)
+            statusMessage = message
+            lastError = message
+            liveMonitorState = .unavailable(message)
+            logInputSourceStatusIfNeeded(reason: "Atmos DRP input unavailable", force: true)
+            return
+        }
+
+        guard prepareOutputForMusicPlayback() else { return }
+
+        startLiveInputForCurrentRoute(reason: "Atmos DRP")
+        duration = track.duration
+        currentTime = 0
+        scrubProgress = 0
+
+        do {
+            try dolbyReferencePlayerController.play(
+                fileURL: track.url,
+                volume: AtmosDRPRoutingPolicy.drpOutputVolume,
+                outputLayout: atmosDRPOutputLayout
+            )
+            statusMessage = "Atmos DRP playing through \(AtmosDRPRoutingPolicy.drpOutputDeviceName)."
+            AppLogger.shared.notice(
+                category: "atmos-drp",
+                "Started Atmos DRP file=\(redactedPath(track.path)) layout=\(atmosDRPOutputLayout.rawValue) output=\(AtmosDRPRoutingPolicy.drpOutputDeviceName)"
+            )
+        } catch {
+            liveMonitorState = .error(error.localizedDescription)
+            statusMessage = error.localizedDescription
+            lastError = error.localizedDescription
+            AppLogger.shared.error(category: "atmos-drp", "Atmos DRP launch failed: \(error.localizedDescription)")
+        }
+    }
+
     private func startLiveInputForCurrentRoute(reason: String, resetRendererMode: Bool = true) {
         guard recoverRoonMonoRouteIfNeeded(reason: reason) else { return }
 
@@ -6049,6 +6335,15 @@ final class OrbisonicViewModel: ObservableObject {
             return
         }
 
+        if sourceMode == .atmosDRP {
+            if dolbyReferencePlayerSnapshot.state == .playing {
+                pauseAtmosDRPTransport()
+            } else {
+                playAtmosDRPTransport()
+            }
+            return
+        }
+
         if sourceMode == .testTone {
             if isTestTonePlaying {
                 stopTestTone()
@@ -6196,6 +6491,8 @@ final class OrbisonicViewModel: ObservableObject {
             startSpotifyPipe()
         case .aux:
             startOtherInputPipe()
+        case .atmosDRP:
+            playAtmosDRPTransport()
         case .filePlayback, .testTone:
             togglePlayback()
         }
@@ -6274,6 +6571,11 @@ final class OrbisonicViewModel: ObservableObject {
 
         let stoppingSourceMode = sourceMode
         let sourceName = stoppingSourceMode.rawValue
+        if stoppingSourceMode == .atmosDRP {
+            try? dolbyReferencePlayerController.stop()
+            currentAtmosDRPTrack = nil
+            currentFileURL = nil
+        }
         markLiveMonitorStopped(sourceMode: stoppingSourceMode)
         engine.stop()
         markLiveMonitorStopped(sourceMode: stoppingSourceMode)
@@ -6285,6 +6587,11 @@ final class OrbisonicViewModel: ObservableObject {
 
         let stoppingSourceMode = sourceMode
         let sourceName = stoppingSourceMode.rawValue
+        if stoppingSourceMode == .atmosDRP {
+            try? dolbyReferencePlayerController.stop()
+            currentAtmosDRPTrack = nil
+            currentFileURL = nil
+        }
         markLiveMonitorStopped(sourceMode: stoppingSourceMode)
         engine.stop()
         markLiveMonitorStopped(sourceMode: stoppingSourceMode)
@@ -6328,6 +6635,8 @@ final class OrbisonicViewModel: ObservableObject {
             return spotifyReceiverStatus.isRunning ? "Waiting for Spotify" : "Spotify unavailable"
         case .aux:
             return "Waiting for Aux audio"
+        case .atmosDRP:
+            return "Atmos DRP ready"
         case .off:
             return "Orbisonic is idle"
         case .filePlayback:
@@ -6354,6 +6663,10 @@ final class OrbisonicViewModel: ObservableObject {
         cancelPendingLocalFileLoad()
         resetLocalGaplessHandoffState(reason: "stop")
         diagnosticReturnContext = nil
+        if sourceMode == .atmosDRP {
+            try? dolbyReferencePlayerController.stop()
+            currentAtmosDRPTrack = nil
+        }
         engine.stop()
         isPlaying = false
         liveMonitorState = .stopped
@@ -6386,7 +6699,7 @@ final class OrbisonicViewModel: ObservableObject {
         diagnosticWalkStatus = "Ready."
         roonNowPlayingStatus = "Roon metadata stopped."
         roonSignalPath = nil
-        currentFileURL = sourceMode == .filePlayback ? currentFileURL : nil
+        currentFileURL = (sourceMode == .filePlayback || sourceMode == .atmosDRP) ? currentFileURL : nil
         reevaluateAutomaticRendererMode(reason: "stop")
         switch sourceMode {
         case .off:
@@ -6399,6 +6712,8 @@ final class OrbisonicViewModel: ObservableObject {
             statusMessage = "Waiting for Roon"
         case .aux:
             statusMessage = "Aux has no transport"
+        case .atmosDRP:
+            statusMessage = "Atmos DRP ready"
         case .testTone:
             statusMessage = "Diagnostics stopped."
         }
@@ -6538,6 +6853,9 @@ final class OrbisonicViewModel: ObservableObject {
         captureDiagnosticReturnContextIfNeeded()
         clearActiveDiagnosticPlaybackState()
         if isPlaying {
+            if sourceMode == .atmosDRP {
+                try? dolbyReferencePlayerController.stop(waitBeforeTerminate: false)
+            }
             engine.stop()
             isPlaying = false
         }
@@ -6795,6 +7113,18 @@ final class OrbisonicViewModel: ObservableObject {
             }
 
             startSpotifyPipe()
+
+        case .atmosDRP:
+            guard context.wasPlaying else {
+                statusMessage = "Diagnostics stopped. Atmos DRP route is ready."
+                return
+            }
+            guard let track = currentAtmosDRPTrack ?? currentLocalMusicTrack else {
+                statusMessage = "Diagnostics stopped. Select an Atmos track to resume DRP playback."
+                return
+            }
+
+            startAtmosDRPPipe(track: track)
 
         case .testTone:
             statusMessage = "Diagnostics stopped. Test tone source is ready."
@@ -7086,6 +7416,8 @@ final class OrbisonicViewModel: ObservableObject {
             return "Spotify"
         case .testTone:
             return "Test Tone"
+        case .atmosDRP:
+            return currentAtmosDRPTrack?.displayTitle ?? "Atmos"
         case .filePlayback:
             return visibleLocalSourceMetadata?.fileName ?? "Local Music"
         case .aux:
@@ -7113,6 +7445,12 @@ final class OrbisonicViewModel: ObservableObject {
         if sourceMode == .aux {
             let routeText = inputRoute.isAvailable ? inputRoute.detail : missingLoopbackMessage(for: .aux)
             return "\(routeText) • \(liveSignalStatus) • \(liveBufferStatus)"
+        }
+
+        if sourceMode == .atmosDRP {
+            let routeText = inputRoute.isAvailable ? inputRoute.detail : missingLoopbackMessage(for: .atmosDRP)
+            let formatText = dolbyReferencePlayerSnapshot.bitstreamInfo?.formatSummary.trimmedNilIfBlank ?? "Waiting for DRP metadata"
+            return "\(routeText) • \(formatText) • \(liveSignalStatus)"
         }
 
         if sourceMode == .testTone {
@@ -8042,6 +8380,8 @@ final class OrbisonicViewModel: ObservableObject {
             return "Spotify"
         case .aux:
             return "Aux Cable"
+        case .atmosDRP:
+            return "Atmos"
         case .filePlayback:
             return "Local Music"
         case .testTone:
@@ -8058,6 +8398,9 @@ final class OrbisonicViewModel: ObservableObject {
         }
         if sourceMode == .aux {
             return OrbisonicLoopbackDevice.auxCable.displayName
+        }
+        if sourceMode == .atmosDRP {
+            return AtmosDRPRoutingPolicy.captureLoopback.displayName
         }
         return inputRoute.deviceName
     }
@@ -8141,6 +8484,8 @@ final class OrbisonicViewModel: ObservableObject {
             return "Spotify mode captures \(expectedLoopback.displayName) only. Aux Cable and Roon Input stay separate."
         case .aux:
             return "Aux Cable mode captures \(expectedLoopback.displayName) only."
+        case .atmosDRP:
+            return "Atmos mode captures \(expectedLoopback.displayName) until the dedicated Atmos input exists."
         case .off, .filePlayback, .testTone:
             return "\(sourceMode.rawValue) does not use a live input route."
         }
@@ -8727,12 +9072,27 @@ final class OrbisonicViewModel: ObservableObject {
         refreshSpotifyNowPlayingIfNeeded(reason: "transport refresh")
 
         let engineDuration = engine.duration()
-        if abs(engineDuration - duration) >= 0.001 {
+        if sourceMode == .atmosDRP {
+            dolbyReferencePlayerController.refreshMetadata()
+            if let trackDuration = currentAtmosDRPTrack?.duration, trackDuration > 0 {
+                duration = trackDuration
+            }
+            if let session = dolbyReferencePlayerSnapshot.session, duration > 0 {
+                let nextTime = session.elapsedPlaybackTime()
+                let nextProgress = session.progress(duration: duration)
+                if abs(nextTime - currentTime) >= (1.0 / 30.0) {
+                    currentTime = nextTime
+                }
+                if abs(nextProgress - scrubProgress) >= 0.003 {
+                    scrubProgress = nextProgress
+                }
+            }
+        } else if abs(engineDuration - duration) >= 0.001 {
             duration = engineDuration
         }
 
         if sourceMode.isLiveInput, isPlaying {
-            let nextTime = engine.currentTime()
+            let nextTime = sourceMode == .atmosDRP ? currentTime : engine.currentTime()
             if abs(nextTime - currentTime) >= (1.0 / 30.0) {
                 currentTime = nextTime
             }
@@ -9413,6 +9773,9 @@ final class OrbisonicViewModel: ObservableObject {
             if sourceMode == .spotify {
                 return "\(liveInputSignalName) has no signal. Open Spotify, choose Orbisonic from Devices / Spotify Connect, then start playback."
             }
+            if sourceMode == .atmosDRP {
+                return "\(liveInputSignalName) has no signal. Start Atmos DRP playback from Orbisonic."
+            }
             return "\(liveInputSignalName) has no signal. Select Orbisonic Aux Cable as the output device in the source app, then start playback."
         case .unknown:
             return "Waiting for signal from \(liveInputSignalName)."
@@ -9464,6 +9827,21 @@ final class OrbisonicViewModel: ObservableObject {
             return "Spotify receiver: \(spotifyReceiverStatus.message)."
         case .aux:
             return "Aux source: no transport metadata; verify the source app is routed to Orbisonic Aux Cable."
+        case .atmosDRP:
+            switch dolbyReferencePlayerSnapshot.state {
+            case .playing:
+                return "Atmos DRP playback: playing."
+            case .paused:
+                return "Atmos DRP playback: paused."
+            case .starting:
+                return "Atmos DRP playback: starting."
+            case .stopping:
+                return "Atmos DRP playback: stopping."
+            case .failed:
+                return dolbyReferencePlayerSnapshot.lastError ?? "Atmos DRP playback: failed."
+            case .idle, .stopped:
+                return "Atmos DRP playback: stopped."
+            }
         case .off, .filePlayback, .testTone:
             return "No external live playback source selected."
         }

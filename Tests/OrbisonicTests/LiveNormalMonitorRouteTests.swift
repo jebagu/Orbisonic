@@ -21,6 +21,13 @@ final class LiveNormalMonitorRouteTests: XCTestCase {
         XCTAssertEqual(SourceMode.aux.expectedLoopback, .auxCable)
     }
 
+    func testAtmosDRPUsesTemporaryAuxLoopbackAndNormalMonitorOnly() {
+        assertNormalMonitor(liveRoute(for: .atmosDRP))
+        XCTAssertEqual(SourceMode.atmosDRP.expectedLoopback, .auxCable)
+        XCTAssertEqual(AtmosDRPRoutingPolicy.captureLoopback, .auxCable)
+        XCTAssertTrue(SourceMode.atmosDRP.ownsTransport)
+    }
+
     func testBlackHoleLiveUsesNormalMonitorOnlyIfSupported() {
         assertNormalMonitor(legacyBlackHoleRoute())
         XCTAssertNil(SourceMode.allCases.first { $0.rawValue.localizedCaseInsensitiveContains("BlackHole") })

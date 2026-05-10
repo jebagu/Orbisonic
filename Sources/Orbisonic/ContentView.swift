@@ -804,7 +804,7 @@ struct ContentView: View {
             }
             Button("Remind Me Later", role: .cancel) {}
         } message: {
-            Text("Install Orbisonic Inputs to use Roon, Spotify, and Aux Cable live capture. Roon and Spotify Connect are optional source helpers. Local Music works without live inputs.")
+            Text("Install Orbisonic Inputs to use Roon, Spotify, Atmos DRP, and Aux Cable live capture. Roon, Spotify Connect, and Dolby Reference Player are optional source helpers. Local Music works without live inputs.")
         }
         .onAppear {
             migrateCenteredVUMeterDefaultsIfNeeded()
@@ -2038,6 +2038,9 @@ struct ContentView: View {
         if model.sourceMode == .testTone {
             return model.isTestTonePlaying ? "Stop Tone" : "Play Tone"
         }
+        if model.sourceMode == .atmosDRP {
+            return model.dolbyReferencePlayerSnapshot.state == .paused ? "Resume" : (model.isPlaying ? "Pause" : "Play")
+        }
         if model.sourceMode.isLiveInput {
             return livePrimaryTitle
         }
@@ -2045,6 +2048,9 @@ struct ContentView: View {
     }
 
     private var primaryTransportIcon: String {
+        if model.sourceMode == .atmosDRP {
+            return model.isPlaying ? "pause.fill" : "play.fill"
+        }
         if model.sourceMode.isLiveInput {
             return livePrimaryIcon
         }
@@ -2071,6 +2077,9 @@ struct ContentView: View {
         if model.sourceMode == .off {
             return "Idle"
         }
+        if model.sourceMode == .atmosDRP {
+            return atmosDRPStatusText
+        }
         if model.sourceMode.isLiveInput {
             switch model.sourceMode {
             case .roon:
@@ -2079,6 +2088,8 @@ struct ContentView: View {
                 return spotifyPlaybackStatusText
             case .aux:
                 return "Aux live"
+            case .atmosDRP:
+                return atmosDRPStatusText
             case .off, .filePlayback, .testTone:
                 return "Idle"
             }
@@ -2177,6 +2188,23 @@ struct ContentView: View {
         return model.spotifyNowPlayingForActiveStatus == nil ? "No Spotify track" : "Spotify paused"
     }
 
+    private var atmosDRPStatusText: String {
+        switch model.dolbyReferencePlayerSnapshot.state {
+        case .starting:
+            return "Atmos starting"
+        case .playing:
+            return "Atmos playing"
+        case .paused:
+            return "Atmos paused"
+        case .stopping:
+            return "Atmos stopping"
+        case .failed:
+            return "Atmos failed"
+        case .idle, .stopped:
+            return "Atmos ready"
+        }
+    }
+
     private var statusChipForegroundColor: Color {
         if statusChipIsActive {
             return LabTheme.bg
@@ -2196,6 +2224,10 @@ struct ContentView: View {
     }
 
     private var statusChipIsError: Bool {
+        if model.sourceMode == .atmosDRP,
+           model.dolbyReferencePlayerSnapshot.state == .failed {
+            return true
+        }
         if model.sourceMode.isLiveInput, isSelectedLiveSourceUnavailable {
             return true
         }
@@ -2221,16 +2253,23 @@ struct ContentView: View {
         if model.sourceMode == .aux {
             return model.liveAudioSignalState.isRecentlyReceiving || model.liveMonitorState == .monitoring
         }
+        if model.sourceMode == .atmosDRP {
+            return model.dolbyReferencePlayerSnapshot.state == .playing ||
+                model.liveAudioSignalState.isRecentlyReceiving ||
+                model.liveMonitorState == .monitoring
+        }
         return model.isPlaying || model.isTestTonePlaying
     }
 
     private var statusChipIsLoading: Bool {
-        model.sourceMode == .filePlayback && model.isLocalFileLoading
+        (model.sourceMode == .filePlayback && model.isLocalFileLoading) ||
+            (model.sourceMode == .atmosDRP && model.dolbyReferencePlayerSnapshot.state == .starting)
     }
 
     private var transportIsBusy: Bool {
         model.isDiagnosticTransitioning ||
             (model.sourceMode == .roon && model.isRoonTransportCommandInFlight) ||
+            (model.sourceMode == .atmosDRP && [.starting, .stopping].contains(model.dolbyReferencePlayerSnapshot.state)) ||
             model.isLiveMonitorTransitioning
     }
 
@@ -2280,6 +2319,8 @@ struct ContentView: View {
             return model.selectedTestTonePoint.rawValue
         case .aux:
             return "Aux Cable"
+        case .atmosDRP:
+            return model.currentAtmosDRPTrack?.displayTitle ?? model.visibleLocalPlaybackTrack?.displayTitle ?? "Atmos"
         case .spotify:
             return model.spotifyNowPlayingForActiveStatus?.displayTitle ?? "Spotify"
         case .filePlayback:
@@ -2309,6 +2350,11 @@ struct ContentView: View {
             return model.testToneStatus.isEmpty ? "Test Tone" : model.testToneStatus
         case .aux:
             return "Controlled in the source app."
+        case .atmosDRP:
+            if let track = model.currentAtmosDRPTrack ?? model.visibleLocalPlaybackTrack {
+                return track.displaySubtitle
+            }
+            return "Dolby Reference Player through \(AtmosDRPRoutingPolicy.captureLoopback.displayName)."
         case .spotify:
             return model.spotifyNowPlayingForActiveStatus?.artistText ?? "Controlled from Spotify Connect."
         case .filePlayback:
@@ -2318,7 +2364,7 @@ struct ContentView: View {
             if let metadata = model.visibleLocalSourceMetadata {
                 return "\(metadata.layoutName) • \(metadata.channelCount) ch • \(metadata.sampleRateText)"
             }
-            return "Choose Roon, Spotify, Aux Cable, or Local Music."
+            return "Choose Roon, Spotify, Atmos, Aux Cable, or Local Music."
         }
     }
 
@@ -2329,6 +2375,8 @@ struct ContentView: View {
         case .spotify:
             model.spotifyArtworkURL
         case .filePlayback:
+            model.currentLocalArtworkURL
+        case .atmosDRP:
             model.currentLocalArtworkURL
         case .off, .aux, .testTone:
             nil
@@ -2454,12 +2502,16 @@ struct ContentView: View {
         case .back:
             if model.sourceMode == .roon {
                 model.playPreviousRoonTrack()
+            } else if model.sourceMode == .atmosDRP {
+                model.skipAtmosDRPTransport(offset: -1)
             } else if model.sourceMode == .filePlayback {
                 model.skipLocalTransport(offset: -1)
             }
         case .play:
             if model.sourceMode == .roon {
                 model.playRoonTransport()
+            } else if model.sourceMode == .atmosDRP {
+                model.playAtmosDRPTransport()
             } else if model.sourceMode == .filePlayback {
                 model.playLocalTransport()
             } else if model.sourceMode == .testTone {
@@ -2468,18 +2520,24 @@ struct ContentView: View {
         case .pause:
             if model.sourceMode == .roon {
                 model.pauseRoonTransport()
+            } else if model.sourceMode == .atmosDRP {
+                model.pauseAtmosDRPTransport()
             } else if model.sourceMode == .filePlayback {
                 model.pauseLocalTransport()
             }
         case .forward:
             if model.sourceMode == .roon {
                 model.playNextRoonTrack()
+            } else if model.sourceMode == .atmosDRP {
+                model.skipAtmosDRPTransport(offset: 1)
             } else if model.sourceMode == .filePlayback {
                 model.skipLocalTransport(offset: 1)
             }
         case .stop:
             if model.sourceMode == .roon {
                 model.stopRoonTransport()
+            } else if model.sourceMode == .atmosDRP {
+                model.stopAtmosDRPTransport()
             } else if model.sourceMode == .filePlayback {
                 model.stopLocalTransport()
             } else if model.sourceMode == .testTone {
@@ -2496,6 +2554,8 @@ struct ContentView: View {
                 return model.isRoonTransportPlaying
             case .filePlayback:
                 return model.isPlaying
+            case .atmosDRP:
+                return model.dolbyReferencePlayerSnapshot.state == .playing
             case .testTone:
                 return model.isTestTonePlaying
             case .off, .spotify, .aux:
@@ -2514,6 +2574,19 @@ struct ContentView: View {
         switch model.sourceMode {
         case .off, .aux:
             return true
+        case .atmosDRP:
+            let hasPlayableAtmosSource = model.currentAtmosDRPTrack != nil ||
+                model.visibleLocalMusicTracks.contains { DolbyReferencePlayerController.supportsFile($0.url) }
+            switch kind {
+            case .back, .forward:
+                return !hasPlayableAtmosSource
+            case .play:
+                return !hasPlayableAtmosSource || model.dolbyReferencePlayerSnapshot.state == .playing
+            case .pause:
+                return model.dolbyReferencePlayerSnapshot.state != .playing
+            case .stop:
+                return ![.starting, .playing, .paused, .stopping].contains(model.dolbyReferencePlayerSnapshot.state)
+            }
         case .roon:
             switch kind {
             case .back:
@@ -2614,6 +2687,8 @@ struct ContentView: View {
                   duration > 0
             else { return 0 }
             return min(max(Double(position) / Double(duration), 0), 1)
+        case .atmosDRP:
+            return min(max(model.scrubProgress, 0), 1)
         case .filePlayback:
             return min(max(model.scrubProgress, 0), 1)
         case .off, .aux, .testTone:
@@ -2629,6 +2704,8 @@ struct ContentView: View {
             return model.spotifyNowPlayingForActiveStatus?.positionText ?? "0:00"
         case .filePlayback:
             return model.visibleLocalSourceMetadata == nil ? "0:00" : model.formattedCurrentTime()
+        case .atmosDRP:
+            return model.currentAtmosDRPTrack == nil ? "DRP elapsed" : model.formattedCurrentTime()
         case .off:
             return "0:00"
         case .aux:
@@ -2646,6 +2723,8 @@ struct ContentView: View {
             return model.spotifyNowPlayingForActiveStatus?.durationText ?? "0:00"
         case .filePlayback:
             return model.visibleLocalSourceMetadata == nil ? "0:00" : model.formattedDuration()
+        case .atmosDRP:
+            return model.currentAtmosDRPTrack == nil ? "0:00" : model.formattedDuration()
         case .off, .aux, .testTone:
             return "0:00"
         }
@@ -2706,6 +2785,8 @@ struct ContentView: View {
             return spotifyPlayerRows
         case .aux:
             return auxPlayerRows
+        case .atmosDRP:
+            return atmosDRPPlayerRows
         case .filePlayback:
             return nonEmptyPlayerRows(localFilePlayerRows)
         case .testTone:
@@ -2749,6 +2830,49 @@ struct ContentView: View {
         return nonEmptyPlayerRows(rows)
     }
 
+    private var atmosDRPPlayerRows: [PlayerDetailRow] {
+        var rows: [PlayerDetailRow] = []
+        rows.append(PlayerDetailRow(title: "Player", value: "Dolby Reference Player"))
+        rows.append(PlayerDetailRow(title: "Route", value: "\(AtmosDRPRoutingPolicy.captureLoopback.displayName) loopback"))
+        rows.append(PlayerDetailRow(title: "Layout", value: model.atmosDRPOutputLayout.rawValue))
+        rows.append(PlayerDetailRow(title: "Process", value: atmosDRPStatusText))
+
+        if let track = model.currentAtmosDRPTrack ?? model.visibleLocalPlaybackTrack {
+            rows.append(PlayerDetailRow(title: "Track", value: track.fileName, hasTopDivider: true))
+            rows.append(PlayerDetailRow(title: "Length", value: track.durationText))
+        }
+
+        if let bitstream = model.dolbyReferencePlayerSnapshot.bitstreamInfo {
+            if let value = bitstream.codec {
+                rows.append(PlayerDetailRow(title: "Codec", value: value, hasTopDivider: true))
+            }
+            if let value = bitstream.hasAtmos {
+                rows.append(PlayerDetailRow(title: "Atmos", value: value ? "Yes" : "No"))
+            }
+            if let value = bitstream.bitRateKbps {
+                rows.append(PlayerDetailRow(title: "Data rate", value: "\(value) kbps"))
+            }
+            if let value = bitstream.codedChannels {
+                rows.append(PlayerDetailRow(title: "Coded ch", value: value))
+            }
+            if let value = bitstream.sampleRateHz {
+                rows.append(PlayerDetailRow(title: "Sample rate", value: formatSampleRate(Double(value))))
+            }
+            if let value = bitstream.dynamicObjectCount {
+                rows.append(PlayerDetailRow(title: "Objects", value: "\(value) dynamic"))
+            }
+            if let value = bitstream.complexityIndex {
+                rows.append(PlayerDetailRow(title: "Complexity", value: "\(value)"))
+            }
+        }
+
+        if let errorText = model.dolbyReferencePlayerSnapshot.lastError?.trimmedNilIfBlank ?? liveInputPlaybackErrorText {
+            rows.append(PlayerDetailRow(title: "Error", value: errorText, hasTopDivider: true))
+        }
+
+        return nonEmptyPlayerRows(rows)
+    }
+
     private var localFilePlayerRows: [PlayerDetailRow] {
         var rows: [PlayerDetailRow] = []
 
@@ -2789,6 +2913,8 @@ struct ContentView: View {
             "Waiting for Spotify metadata."
         case .aux:
             "Waiting for Aux Cable audio."
+        case .atmosDRP:
+            "Select a DRP-compatible Local Music track and press play. Seek is unavailable because DRP CLI does not expose seek."
         case .testTone:
             "Use Diagnostics to run a tone or channel walk."
         }
@@ -2844,7 +2970,13 @@ struct ContentView: View {
     }
 
     private func primaryNowPlayingAction() {
-        if model.sourceMode.isLiveInput {
+        if model.sourceMode == .atmosDRP {
+            if model.dolbyReferencePlayerSnapshot.state == .playing {
+                model.pauseAtmosDRPTransport()
+            } else {
+                model.playAtmosDRPTransport()
+            }
+        } else if model.sourceMode.isLiveInput {
             livePrimaryAction()
         } else if model.sourceMode == .filePlayback, !model.localMusicTracks.isEmpty {
             model.toggleLocalMusicPlayback()
@@ -2854,7 +2986,9 @@ struct ContentView: View {
     }
 
     private func secondaryNowPlayingAction() {
-        if model.sourceMode.isLiveInput {
+        if model.sourceMode == .atmosDRP {
+            model.stopAtmosDRPTransport()
+        } else if model.sourceMode.isLiveInput {
             model.stopSelectedLiveMonitor()
         } else if model.sourceMode == .filePlayback {
             model.stopLocalTransport()
@@ -3714,6 +3848,18 @@ struct ContentView: View {
 
             settingsPanel(title: "Local Playback QA") {
                 VStack(alignment: .leading, spacing: 12) {
+                    Picker("Atmos DRP Layout", selection: $model.atmosDRPOutputLayout) {
+                        ForEach(DolbyReferencePlayerOutputLayout.allCases) { layout in
+                            Text(layout.rawValue).tag(layout)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text("Dolby Reference Player output layout. Atmos DRP temporarily routes through the Aux loopback.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(LabTheme.textSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     Toggle("Gapless local playback", isOn: $model.isLocalGaplessSchedulerEnabled)
                         .toggleStyle(.switch)
                         .tint(LabTheme.cyan)

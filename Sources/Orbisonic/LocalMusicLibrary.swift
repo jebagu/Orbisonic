@@ -1202,7 +1202,8 @@ final class LocalMusicLibrary {
 
     static func isSupportedAudioFile(_ url: URL) -> Bool {
         let supportedExtensions: Set<String> = [
-            "wav", "wave", "flac", "aif", "aiff", "m4a", "caf", "mp3", "mkv", "mka"
+            "wav", "wave", "flac", "aif", "aiff", "caf", "mp3", "mkv", "mka",
+            "ec3", "eac3", "ac3", "ac4", "mlp", "mp4", "mov", "m4a", "m2ts", "ts"
         ]
 
         return supportedExtensions.contains(url.pathExtension.lowercased())

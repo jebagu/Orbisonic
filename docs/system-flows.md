@@ -6,7 +6,7 @@ This document describes the current Orbisonic runtime and verification flows wit
 
 ## How To Read These Diagrams
 
-- Orbisonic is selected-source oriented. Local Files, Roon, Spotify, Aux Cable, and Test Tone are not automatically mixed.
+- Orbisonic is selected-source oriented. Local Files, Atmos DRP, Roon, Spotify, Aux Cable, and Test Tone are not automatically mixed.
 - Sonic Sphere output is the production path.
 - Headphone or normal monitor output is a monitor path and must not redefine production topology.
 - Live player metadata is useful context, but captured loopback audio and route facts remain authoritative for live audio health.
@@ -29,6 +29,7 @@ flowchart LR
     LocalFiles["Local File Source And Local Library Path"]
     Roon["Roon Integration Boundary"]
     Spotify["Spotify Integration Boundary"]
+    Atmos["Atmos DRP Boundary"]
     Aux["Aux Source Boundary"]
     Renderer["Renderer And Sonic Sphere Output Boundary"]
     Monitor["Headphone Or Normal Monitor Boundary"]
@@ -45,6 +46,7 @@ flowchart LR
     App --> LocalFiles
     App --> Roon
     App --> Spotify
+    App --> Atmos
     App --> Aux
     App --> Renderer
     App --> Monitor
@@ -150,7 +152,35 @@ flowchart LR
 
 Aux does not parse Roon or Spotify metadata. Its health depends on the expected Aux route, live capture status, active channels, sample rate, channel count, and whether real signal is arriving.
 
-## 5. Spotify Receiver Flow
+## 5. Atmos DRP Flow
+
+Atmos is a selected live source with Orbisonic-owned Dolby Reference Player transport. V1 intentionally routes DRP output to `Orbisonic Aux Cable` through `AtmosDRPRoutingPolicy`, and Orbisonic captures that same loopback. That temporary route does not make Atmos the same selected source as Aux Cable.
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant UI as Source Button / Local Music UI
+    participant VM as OrbisonicViewModel
+    participant DRP as DolbyReferencePlayerController
+    participant Routes as AtmosDRPRoutingPolicy / LoopbackSourceSupport
+    participant Engine as OrbisonicEngine
+    participant Live as LiveAudioBridge
+    participant Diagnostics as Diagnostics And Web State
+
+    Operator->>UI: Select Atmos and play DRP-compatible track
+    UI->>VM: playAtmosDRPTransport
+    VM->>Routes: Resolve temporary capture/output loopback
+    VM->>Engine: startLiveInput for temporary Atmos route
+    VM->>DRP: launch drp with device, layout, volume, print-info, metadata directory
+    DRP-->>VM: Process state, stdout metadata, audio.csv metadata
+    Engine->>Live: Capture live PCM from loopback
+    Live-->>VM: Signal, underflow, drop, and meter facts
+    VM-->>Diagnostics: Report route, process, signal, and bitstream metadata
+```
+
+Pause/resume uses process suspension and is reported as experimental. Stop interrupts DRP, then escalates to termination and kill if needed. Previous and next stop the current DRP process and launch an adjacent queue/library track. Seek stays disabled because the DRP CLI does not expose seek.
+
+## 6. Spotify Receiver Flow
 
 Spotify is a selected live source with a dedicated receiver boundary and a dedicated loopback input. Current product policy treats Spotify as stereo unless a future accepted contract changes that.
 
@@ -179,7 +209,7 @@ sequenceDiagram
 
 Receiver startup, session metadata, and controls are diagnostic/control surfaces. They do not replace the selected loopback route or live capture facts. Spotify health reporting stays inside the current fixed stereo source policy and must not promote stale local multichannel metadata into a Spotify stream format.
 
-## 6. Renderer And Sonic Sphere Output Flow
+## 7. Renderer And Sonic Sphere Output Flow
 
 The Sonic Sphere output path is the production path. The current app has a legacy app-target renderer model and an in-progress AudioCore planning/kernel layer; both preserve explicit source layout, render mode, and 30.1 production topology semantics.
 
@@ -206,7 +236,7 @@ flowchart TD
 
 Direct 30 and Direct 30.1 are bypass modes only when source width matches. Renderer output must not be derived from monitor output, and monitor choices must not mutate the Sonic Sphere topology.
 
-## 7. Headphone Or Normal Monitor Flow
+## 8. Headphone Or Normal Monitor Flow
 
 The monitor path is for setup, checking, preview, and desktop listening. It is separate from Sonic Sphere production output.
 
@@ -232,7 +262,7 @@ flowchart LR
 
 Normal monitor topology is source PCM to stereo downmixer to monitor output. It should not contain an audible Sonic Sphere matrix node, duplicate direct and staged routes, or monitor-volume behavior that changes production output.
 
-## 8. Route Diagnostics Flow
+## 9. Route Diagnostics Flow
 
 Route diagnostics compare expected source/output identities against Core Audio route facts and live status. They are especially important when a player reports activity but loopback capture is silent.
 
@@ -248,6 +278,7 @@ flowchart TD
     DiagnosticPolicy["LiveLoopbackDiagnostics snapshot"]
     RoonFacts["Roon bridge and log facts"]
     SpotifyFacts["Spotify receiver facts"]
+    AtmosFacts["DRP process and bitstream facts"]
     Diagnostics["DiagnosticsView and InputSourceStatusPanelModel"]
 
     Refresh --> Inputs
@@ -260,17 +291,19 @@ flowchart TD
     LiveStatus --> DiagnosticPolicy
     RoonFacts --> DiagnosticPolicy
     SpotifyFacts --> DiagnosticPolicy
+    AtmosFacts --> DiagnosticPolicy
     RoonFacts --> Diagnostics
     SpotifyFacts --> Diagnostics
+    AtmosFacts --> Diagnostics
     LiveStatus --> Diagnostics
     DiagnosticPolicy --> Diagnostics
     MonitorPolicy --> Diagnostics
     RendererPolicy --> Diagnostics
 ```
 
-Diagnostics should distinguish missing loopback devices, wrong selected routes, sample-rate mismatch, channel-count mismatch, microphone permission issues, all-zero input, underflows, dropped frames, and feedback-loop risk. For live sources, `LiveLoopbackDiagnostics` produces separate route, sample-rate, channel, signal, buffer, permission, and player/source activity summaries so Roon or Spotify activity never counts as proof of captured loopback audio.
+Diagnostics should distinguish missing loopback devices, wrong selected routes, sample-rate mismatch, channel-count mismatch, microphone permission issues, all-zero input, underflows, dropped frames, and feedback-loop risk. For live sources, `LiveLoopbackDiagnostics` produces separate route, sample-rate, channel, signal, buffer, permission, and player/source activity summaries so Roon, Spotify, or DRP activity never counts as proof of captured loopback audio.
 
-## 9. Test Tone Flow
+## 10. Test Tone Flow
 
 Test tones are diagnostic sources. They can target monitor checks, renderer output channel walks, or multichannel VU activity without implying that external player audio or hardware has been verified.
 
@@ -301,13 +334,13 @@ sequenceDiagram
 
 Test tone success proves the commanded diagnostic path ran. Sonic Sphere, Dante, headphones, and loopback hardware still need manual listening or route verification when those physical paths are the question.
 
-## 10. Error And Logging Flow
+## 11. Error And Logging Flow
 
 Orbisonic uses typed errors, user-facing status, bounded diagnostics, and app-managed runtime logs. Logging should aid diagnosis without mutating audio behavior or committing private runtime data.
 
 ```mermaid
 flowchart TD
-    ErrorSource["Engine, live bridge, imports, routes, Roon, Spotify, local files, renderer"]
+    ErrorSource["Engine, live bridge, imports, routes, Roon, Spotify, Atmos DRP, local files, renderer"]
     TypedError["Typed error or localized failure"]
     VMStatus["OrbisonicViewModel status and lastError"]
     Logger["AppLogger"]
@@ -328,9 +361,9 @@ flowchart TD
 
 Detailed diagnostics and control state must stay separate from public-facing state. Log reads should remain bounded, and meter display must not alter playback samples.
 
-## 11. Manual Hardware Verification Flow
+## 12. Manual Hardware Verification Flow
 
-Automated tests can protect contracts, source isolation, render planning, monitor topology, diagnostics, and local file behavior. They cannot prove physical Sonic Sphere, Dante, loopback, Roon, Spotify, app signing, microphone permission, or installer behavior unless those environments are actually exercised.
+Automated tests can protect contracts, source isolation, render planning, monitor topology, diagnostics, and local file behavior. They cannot prove physical Sonic Sphere, Dante, loopback, Roon, Spotify, Dolby Reference Player, app signing, microphone permission, or installer behavior unless those environments are actually exercised.
 
 ```mermaid
 flowchart TD
@@ -340,6 +373,7 @@ flowchart TD
     Roon["Manual: route Roon to Orbisonic Roon Input"]
     Spotify["Manual: choose Orbisonic in Spotify Connect"]
     Aux["Manual: route external app audio to Orbisonic Aux Cable"]
+    Atmos["Manual: play DRP-compatible Atmos file through Dolby Reference Player"]
     Monitor["Manual: listen on headphone or normal monitor output"]
     Sphere["Manual: verify Sonic Sphere or Dante production output"]
     Diagnostics["Record diagnostics: route, sample rate, channel count, meters, drops, logs"]
@@ -350,11 +384,13 @@ flowchart TD
     Loopbacks --> Roon
     Loopbacks --> Spotify
     Loopbacks --> Aux
+    Loopbacks --> Atmos
     Reopen --> Monitor
     Reopen --> Sphere
     Roon --> Diagnostics
     Spotify --> Diagnostics
     Aux --> Diagnostics
+    Atmos --> Diagnostics
     Monitor --> Diagnostics
     Sphere --> Diagnostics
     Diagnostics --> Release
@@ -372,28 +408,39 @@ stateDiagram-v2
     Off --> LocalFiles: select Local Files
     Off --> Roon: select Roon
     Off --> Spotify: select Spotify
+    Off --> Atmos: select Atmos
     Off --> Aux: select Aux Cable
     Off --> TestTone: select Test Tone
 
     LocalFiles --> Off: stop
     LocalFiles --> Roon: switch source
     LocalFiles --> Spotify: switch source
+    LocalFiles --> Atmos: switch source
     LocalFiles --> Aux: switch source
 
     Roon --> Off: stop live monitor
     Roon --> LocalFiles: switch source
     Roon --> Spotify: switch source
+    Roon --> Atmos: switch source
     Roon --> Aux: switch source
 
     Spotify --> Off: stop live monitor
     Spotify --> LocalFiles: switch source
     Spotify --> Roon: switch source
+    Spotify --> Atmos: switch source
     Spotify --> Aux: switch source
+
+    Atmos --> Off: stop DRP and live capture
+    Atmos --> LocalFiles: switch source
+    Atmos --> Roon: switch source
+    Atmos --> Spotify: switch source
+    Atmos --> Aux: switch source
 
     Aux --> Off: stop live monitor
     Aux --> LocalFiles: switch source
     Aux --> Roon: switch source
     Aux --> Spotify: switch source
+    Aux --> Atmos: switch source
 
     TestTone --> Off: stop tone
     TestTone --> LocalFiles: return to music

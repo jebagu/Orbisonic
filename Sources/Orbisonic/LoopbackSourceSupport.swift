@@ -195,6 +195,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
     case roon = "Roon"
     case spotify = "Spotify"
     case aux = "Aux Cable"
+    case atmosDRP = "Atmos DRP"
     case filePlayback = "Local Files"
     case testTone = "Test Tone"
 
@@ -202,6 +203,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .atmosDRP:
+            "Atmos"
         case .filePlayback:
             "Local Music"
         case .off, .roon, .spotify, .aux, .testTone:
@@ -210,11 +213,11 @@ enum SourceMode: String, CaseIterable, Identifiable {
     }
 
     var isLiveInput: Bool {
-        self == .roon || self == .spotify || self == .aux
+        self == .roon || self == .spotify || self == .aux || self == .atmosDRP
     }
 
     var startsLiveListeningOnSelection: Bool {
-        isLiveInput
+        isLiveInput && self != .atmosDRP
     }
 
     var isUserFacingMusicInput: Bool {
@@ -222,7 +225,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
     }
 
     var ownsTransport: Bool {
-        self == .filePlayback || self == .testTone
+        self == .filePlayback || self == .testTone || self == .atmosDRP
     }
 
     var expectedLoopback: OrbisonicLoopbackDevice? {
@@ -233,6 +236,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
             .spotifyInput
         case .aux:
             .auxCable
+        case .atmosDRP:
+            AtmosDRPRoutingPolicy.captureLoopback
         case .off, .filePlayback, .testTone:
             nil
         }
@@ -242,7 +247,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
         switch self {
         case .spotify:
             2
-        case .off, .roon, .aux, .filePlayback, .testTone:
+        case .off, .roon, .aux, .atmosDRP, .filePlayback, .testTone:
             nil
         }
     }
@@ -271,6 +276,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
         switch self {
         case .spotify:
             return "\(expectedLoopback.displayName) is not available. Install Orbisonic Inputs with Spotify support, then restart Core Audio or reboot."
+        case .atmosDRP:
+            return "\(expectedLoopback.displayName) is not available. Atmos DRP uses this temporary loopback until the dedicated Atmos input exists."
         case .roon, .aux:
             return "\(expectedLoopback.displayName) is not available. Install Orbisonic Inputs, then restart Core Audio or reboot."
         case .off, .filePlayback, .testTone:
@@ -288,6 +295,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
             "Listen to Spotify"
         case .aux:
             "Listen to Aux Cable"
+        case .atmosDRP:
+            "Play Atmos"
         case .filePlayback:
             "Play"
         case .testTone:
@@ -305,6 +314,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
             "Resume Spotify"
         case .aux:
             "Resume Aux Cable"
+        case .atmosDRP:
+            "Resume Atmos"
         case .filePlayback:
             "Play"
         case .testTone:
@@ -322,6 +333,8 @@ enum SourceMode: String, CaseIterable, Identifiable {
             "Mute Spotify"
         case .aux:
             "Mute Aux Cable"
+        case .atmosDRP:
+            "Pause Atmos"
         case .filePlayback:
             "Pause"
         case .testTone:
@@ -335,7 +348,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
             "Stop"
         case .roon, .spotify:
             "Stop"
-        case .aux:
+        case .aux, .atmosDRP:
             "Stop"
         case .filePlayback, .testTone:
             "Stop"
@@ -343,7 +356,7 @@ enum SourceMode: String, CaseIterable, Identifiable {
     }
 
     static var musicInputs: [SourceMode] {
-        [.filePlayback, .spotify, .roon, .aux, .off]
+        [.filePlayback, .atmosDRP, .spotify, .roon, .aux, .off]
     }
 }
 
