@@ -2403,6 +2403,10 @@ struct ContentView: View {
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let badge = model.pureSphericalLosslessBadgePresentation {
+                    pureSphericalLosslessBadge(badge)
+                }
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
@@ -2422,6 +2426,21 @@ struct ContentView: View {
                 addToPlaylistMenu(for: track)
             }
         }
+    }
+
+    private func pureSphericalLosslessBadge(_ presentation: PureSphericalLosslessBadgePresentation) -> some View {
+        Text(presentation.text)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(LabTheme.bg)
+            .lineLimit(1)
+            .minimumScaleFactor(0.68)
+            .padding(.horizontal, 8)
+            .frame(minHeight: 20)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                    .fill(LabTheme.cyan)
+            )
+            .accessibilityLabel(Text(presentation.text))
     }
 
     private var playerTransportControls: some View {

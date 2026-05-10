@@ -18,8 +18,8 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `docs/readiness-summary.md`: current readiness result, automated evidence, manual verification still required, release blockers, and recommended next action.
 - `.tasks/`: bounded sequential task files for audits, test-gap passes, hardening, release verification docs, readiness refresh, and manual release verification.
 - Root `Open Orbisonic - *.command` launchers: double-clickable entry points for the current build, main branch, and selected release refs.
-- `scripts/`: app refresh, LaunchServices reopen, installer, Roon bridge, branch launcher, deprecated-ref launcher, and embedded librespot build scripts.
-- `installer/`: app-only and suite package artifacts.
+- `scripts/`: app refresh, LaunchServices reopen, 2.0 app installer, 2.0 suite installer, Roon bridge, branch launcher, deprecated-ref launcher, and embedded librespot build scripts.
+- `installer/`: app-only and suite package artifacts, including the current 2.0 candidates and historical 1.1 artifacts.
 - `Vendor/`: vendored librespot source and Orbisonic librespot FFI crate.
 - `calibration/`: Sonic Sphere speaker layout JSON files.
 - `Orbisonic.app`: current double-clickable macOS app bundle.
@@ -321,11 +321,14 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
   - `scripts/refresh-orbisonic-app.sh`
   - `scripts/reopen-orbisonic-app.sh`
   - `scripts/build-installer.sh`
+  - `scripts/build-suite-installer.sh`
   - `scripts/install-roon-bridge.sh`
   - `scripts/build-embedded-librespot.sh`
   - `scripts/launch-orbisonic-ref.sh`
   - `scripts/deprecated-orbisonic-ref.sh`
   - `installer/`
+    - current 2.0 candidates: `Orbisonic-2.0.pkg` and `OrbisonicSuite-2.0.pkg`
+    - historical artifacts: `Orbisonic-1.1.pkg` and `OrbisonicSuite-1.1.pkg`
   - `Orbisonic.app`
   - `Orbisonic.entitlements`
 - Related tests:

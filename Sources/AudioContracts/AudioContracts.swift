@@ -44,6 +44,7 @@ public struct AudioSampleRate: Equatable, Hashable, Sendable, Comparable {
 
 public enum ProcessingFormat: String, CaseIterable, Equatable, Hashable, Sendable {
     case float32NonInterleavedPCM
+    case float32InterleavedPCM
 
     public var sampleFormat: String {
         "Float32"
@@ -54,7 +55,7 @@ public enum ProcessingFormat: String, CaseIterable, Equatable, Hashable, Sendabl
     }
 
     public var isInterleaved: Bool {
-        false
+        self == .float32InterleavedPCM
     }
 
     public var isProductionInternalFormat: Bool {
@@ -335,6 +336,204 @@ public struct SourceDescriptor: Equatable, Hashable, Sendable {
 
     public func validate(sessionFormat: AudioSessionFormat) throws {
         if let error = validationErrors(sessionFormat: sessionFormat).first {
+            throw error
+        }
+    }
+}
+
+public enum SourceLayoutAuthority: String, CaseIterable, Equatable, Hashable, Sendable {
+    case containerMetadata
+    case userOverride
+    case liveCaptureContract
+    case spotifyStereoContract
+    case pureSphericalManifest
+    case rendererOutputMap
+    case fallback
+    case unknown
+}
+
+public struct SourceLayout: Equatable, Hashable, Sendable {
+    public let descriptor: AudioChannelLayoutDescriptor
+    public let authority: SourceLayoutAuthority
+    public let authorityID: String?
+
+    public var channelCount: Int {
+        descriptor.channelCount
+    }
+
+    public init(
+        descriptor: AudioChannelLayoutDescriptor,
+        authority: SourceLayoutAuthority,
+        authorityID: String? = nil
+    ) {
+        self.descriptor = descriptor
+        self.authority = authority
+        self.authorityID = authorityID
+    }
+
+    public func validationErrors(expectedChannelCount: Int? = nil) -> [AudioError] {
+        descriptor.validationErrors(expectedChannelCount: expectedChannelCount)
+    }
+}
+
+public struct AudioBlockContract: Equatable, Hashable, Sendable {
+    public let sourceID: String
+    public let generation: UInt64
+    public let sampleRate: AudioSampleRate
+    public let frameStart: Int64
+    public let frameCount: Int
+    public let channelCount: Int
+    public let processingFormat: ProcessingFormat
+    public let layout: SourceLayout
+    public let isDiscontinuity: Bool
+
+    public init(
+        sourceID: String,
+        generation: UInt64,
+        sampleRate: AudioSampleRate,
+        frameStart: Int64,
+        frameCount: Int,
+        channelCount: Int,
+        processingFormat: ProcessingFormat,
+        layout: SourceLayout,
+        isDiscontinuity: Bool = false
+    ) {
+        self.sourceID = sourceID
+        self.generation = generation
+        self.sampleRate = sampleRate
+        self.frameStart = frameStart
+        self.frameCount = frameCount
+        self.channelCount = channelCount
+        self.processingFormat = processingFormat
+        self.layout = layout
+        self.isDiscontinuity = isDiscontinuity
+    }
+
+    public func validationErrors(maximumChannelCount: Int = AudioSessionFormat.maximumSourceChannelLimit) -> [AudioError] {
+        var errors: [AudioError] = []
+        if sourceID.isEmpty {
+            errors.append(.invalidRenderGraphPlan("Audio block sourceID must not be empty."))
+        }
+        if frameStart < 0 {
+            errors.append(.invalidRenderGraphPlan("Audio block frameStart must not be negative."))
+        }
+        if frameCount <= 0 {
+            errors.append(.invalidRenderGraphPlan("Audio block frameCount must be positive."))
+        }
+        if channelCount < 1 || channelCount > maximumChannelCount {
+            errors.append(.sourceChannelCountOutOfRange(count: channelCount, minimum: 1, maximum: maximumChannelCount))
+        }
+        if !processingFormat.isPCM {
+            errors.append(.invalidRenderGraphPlan("Audio block format must be PCM."))
+        }
+        errors.append(contentsOf: layout.validationErrors(expectedChannelCount: channelCount))
+        return errors
+    }
+
+    public func validate(maximumChannelCount: Int = AudioSessionFormat.maximumSourceChannelLimit) throws {
+        if let error = validationErrors(maximumChannelCount: maximumChannelCount).first {
+            throw error
+        }
+    }
+}
+
+public struct StereoMonitorBlock: Equatable, Hashable, Sendable {
+    public let contract: AudioBlockContract
+
+    public init(contract: AudioBlockContract) throws {
+        self.contract = contract
+        try validate()
+    }
+
+    public var sourceID: String { contract.sourceID }
+    public var generation: UInt64 { contract.generation }
+    public var sampleRate: AudioSampleRate { contract.sampleRate }
+    public var frameCount: Int { contract.frameCount }
+
+    public func validationErrors() -> [AudioError] {
+        var errors = contract.validationErrors(maximumChannelCount: 2)
+        if contract.channelCount != 2 {
+            errors.append(.layoutChannelCountMismatch(expected: 2, actual: contract.channelCount))
+        }
+        if contract.processingFormat.sampleFormat != "Float32" {
+            errors.append(.invalidRenderGraphPlan("Stereo monitor block must be Float32 PCM."))
+        }
+        return errors
+    }
+
+    public func validate() throws {
+        if let error = validationErrors().first {
+            throw error
+        }
+    }
+}
+
+public struct CanonicalSourceBlock: Equatable, Hashable, Sendable {
+    public let contract: AudioBlockContract
+
+    public init(contract: AudioBlockContract) throws {
+        self.contract = contract
+        try validate()
+    }
+
+    public var sourceID: String { contract.sourceID }
+    public var generation: UInt64 { contract.generation }
+    public var sampleRate: AudioSampleRate { contract.sampleRate }
+    public var channelCount: Int { contract.channelCount }
+    public var layout: SourceLayout { contract.layout }
+
+    public func validationErrors() -> [AudioError] {
+        var errors = contract.validationErrors()
+        if !contract.processingFormat.isProductionInternalFormat {
+            errors.append(.invalidRenderGraphPlan("Canonical source block must be Float32 non-interleaved PCM."))
+        }
+        return errors
+    }
+
+    public func validate() throws {
+        if let error = validationErrors().first {
+            throw error
+        }
+    }
+}
+
+public struct RenderedSphereBlock: Equatable, Hashable, Sendable {
+    public let contract: AudioBlockContract
+    public let outputMapID: String
+    public let sphereProfileID: String
+
+    public init(
+        contract: AudioBlockContract,
+        outputMapID: String,
+        sphereProfileID: String
+    ) throws {
+        self.contract = contract
+        self.outputMapID = outputMapID
+        self.sphereProfileID = sphereProfileID
+        try validate()
+    }
+
+    public var sourceID: String { contract.sourceID }
+    public var generation: UInt64 { contract.generation }
+    public var sampleRate: AudioSampleRate { contract.sampleRate }
+    public var channelCount: Int { contract.channelCount }
+
+    public func validationErrors() -> [AudioError] {
+        var errors = contract.validationErrors()
+        if !contract.processingFormat.isProductionInternalFormat {
+            errors.append(.invalidRenderGraphPlan("Rendered sphere block must be Float32 non-interleaved PCM."))
+        }
+        if outputMapID.isEmpty {
+            errors.append(.invalidRenderGraphPlan("Rendered sphere block outputMapID must not be empty."))
+        }
+        if sphereProfileID.isEmpty {
+            errors.append(.invalidRenderGraphPlan("Rendered sphere block sphereProfileID must not be empty."))
+        }
+        return errors
+    }
+
+    public func validate() throws {
+        if let error = validationErrors().first {
             throw error
         }
     }
@@ -910,6 +1109,520 @@ public struct ConversionLedger: Equatable, Hashable, Sendable {
         self.forbiddenConversionsObserved = forbiddenConversionsObserved
         self.desktopOutputDescription = desktopOutputDescription
         self.danteOutputDescription = danteOutputDescription
+    }
+}
+
+public enum AudioConversionStage: String, CaseIterable, Equatable, Hashable, Sendable {
+    case validation
+    case decode
+    case capture
+    case downmix
+    case sampleRateConversion
+    case render
+    case format
+    case routeValidation
+    case directRead
+}
+
+public enum AudioConversionOwner: Equatable, Hashable, Sendable {
+    case none
+    case vlc
+    case orbisonic
+    case roon
+    case spotify
+    case sourceRateConverter
+    case sonicSphereRenderer
+    case danteOutputFormatter
+    case productionOutputSession
+    case pureSphericalLosslessValidator
+    case pureSphericalLosslessReader
+    case external(String)
+
+    public var stableName: String {
+        switch self {
+        case .none:
+            "none"
+        case .vlc:
+            "VLC"
+        case .orbisonic:
+            "Orbisonic"
+        case .roon:
+            "Roon"
+        case .spotify:
+            "Spotify"
+        case .sourceRateConverter:
+            "SourceRateConverter"
+        case .sonicSphereRenderer:
+            "SonicSphereRenderer"
+        case .danteOutputFormatter:
+            "DanteOutputFormatter"
+        case .productionOutputSession:
+            "ProductionOutputSession"
+        case .pureSphericalLosslessValidator:
+            "PureSphericalLosslessValidator"
+        case .pureSphericalLosslessReader:
+            "PureSphericalLosslessReader"
+        case .external(let owner):
+            owner
+        }
+    }
+}
+
+public struct AudioFormatSummary: Equatable, Hashable, Sendable {
+    public let sampleRate: AudioSampleRate?
+    public let channelCount: Int?
+    public let sampleFormat: String
+    public let layoutName: String?
+
+    public init(
+        sampleRate: AudioSampleRate? = nil,
+        channelCount: Int? = nil,
+        sampleFormat: String,
+        layoutName: String? = nil
+    ) {
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.sampleFormat = sampleFormat
+        self.layoutName = layoutName
+    }
+}
+
+public struct AudioConversionLedgerEntry: Equatable, Hashable, Sendable {
+    public let stage: AudioConversionStage
+    public let owner: AudioConversionOwner
+    public let input: AudioFormatSummary?
+    public let output: AudioFormatSummary?
+    public let isExplicit: Bool
+    public let note: String?
+
+    public init(
+        stage: AudioConversionStage,
+        owner: AudioConversionOwner,
+        input: AudioFormatSummary? = nil,
+        output: AudioFormatSummary? = nil,
+        isExplicit: Bool,
+        note: String? = nil
+    ) {
+        self.stage = stage
+        self.owner = owner
+        self.input = input
+        self.output = output
+        self.isExplicit = isExplicit
+        self.note = note
+    }
+}
+
+public struct AudioConversionLedger: Equatable, Hashable, Sendable {
+    public let sessionID: String
+    public let sourceID: String
+    public let sourceKind: SourceKind
+    public let entries: [AudioConversionLedgerEntry]
+
+    public init(
+        sessionID: String,
+        sourceID: String,
+        sourceKind: SourceKind,
+        entries: [AudioConversionLedgerEntry]
+    ) {
+        self.sessionID = sessionID
+        self.sourceID = sourceID
+        self.sourceKind = sourceKind
+        self.entries = entries
+    }
+
+    public var hasHiddenConversionRisk: Bool {
+        entries.contains { !$0.isExplicit }
+    }
+
+    public func contains(stage: AudioConversionStage, owner: AudioConversionOwner) -> Bool {
+        entries.contains { $0.stage == stage && $0.owner == owner }
+    }
+
+    public func contains(stage: AudioConversionStage) -> Bool {
+        entries.contains { $0.stage == stage }
+    }
+
+    public func owners(for stage: AudioConversionStage) -> [AudioConversionOwner] {
+        entries.filter { $0.stage == stage }.map(\.owner)
+    }
+
+    public func missingStages(_ requiredStages: [AudioConversionStage]) -> [AudioConversionStage] {
+        requiredStages.filter { !contains(stage: $0) }
+    }
+
+    public func appending(_ additionalEntries: [AudioConversionLedgerEntry]) -> AudioConversionLedger {
+        AudioConversionLedger(
+            sessionID: sessionID,
+            sourceID: sourceID,
+            sourceKind: sourceKind,
+            entries: entries + additionalEntries
+        )
+    }
+
+    public static func localVLCMonitor(
+        sessionID: String,
+        sourceID: String,
+        source: AudioFormatSummary,
+        monitor: AudioFormatSummary
+    ) -> AudioConversionLedger {
+        AudioConversionLedger(
+            sessionID: sessionID,
+            sourceID: sourceID,
+            sourceKind: .localFile,
+            entries: [
+                AudioConversionLedgerEntry(
+                    stage: .decode,
+                    owner: .vlc,
+                    input: source,
+                    output: monitor,
+                    isExplicit: true,
+                    note: "local file access, demux, decode, and callback"
+                ),
+                AudioConversionLedgerEntry(
+                    stage: .downmix,
+                    owner: .vlc,
+                    input: source,
+                    output: monitor,
+                    isExplicit: true,
+                    note: "local stereo monitor downmix"
+                ),
+                AudioConversionLedgerEntry(
+                    stage: .format,
+                    owner: .orbisonic,
+                    input: monitor,
+                    output: monitor,
+                    isExplicit: true,
+                    note: "local monitor output formatting"
+                ),
+                AudioConversionLedgerEntry(
+                    stage: .routeValidation,
+                    owner: .orbisonic,
+                    input: monitor,
+                    output: monitor,
+                    isExplicit: true,
+                    note: "local monitor route validation"
+                )
+            ]
+        )
+    }
+
+    public static func roonCapture(
+        sessionID: String,
+        sourceID: String,
+        captured: AudioFormatSummary
+    ) -> AudioConversionLedger {
+        AudioConversionLedger(
+            sessionID: sessionID,
+            sourceID: sourceID,
+            sourceKind: .roon,
+            entries: [
+                AudioConversionLedgerEntry(
+                    stage: .capture,
+                    owner: .roon,
+                    output: captured,
+                    isExplicit: true,
+                    note: "Roon-decoded PCM captured through CoreAudio loopback"
+                )
+            ]
+        )
+    }
+
+    public static func danteProduction(
+        sessionID: String,
+        sourceID: String,
+        source: AudioFormatSummary,
+        rendered: AudioFormatSummary,
+        output: AudioFormatSummary,
+        srcOccurred: Bool
+    ) -> AudioConversionLedger {
+        var entries: [AudioConversionLedgerEntry] = [
+            AudioConversionLedgerEntry(
+                stage: .decode,
+                owner: .orbisonic,
+                input: source,
+                output: source,
+                isExplicit: true,
+                note: "local source decode before production rendering"
+            )
+        ]
+        if srcOccurred {
+            entries.append(
+                AudioConversionLedgerEntry(
+                    stage: .sampleRateConversion,
+                    owner: .sourceRateConverter,
+                    input: source,
+                    output: rendered,
+                    isExplicit: true,
+                    note: "explicit production SRC"
+                )
+            )
+        }
+        entries.append(
+            AudioConversionLedgerEntry(
+                stage: .render,
+                owner: .sonicSphereRenderer,
+                input: source,
+                output: rendered,
+                isExplicit: true,
+                note: "source to SonicSphere render"
+            )
+        )
+        entries.append(
+            AudioConversionLedgerEntry(
+                stage: .format,
+                owner: .danteOutputFormatter,
+                input: rendered,
+                output: output,
+                isExplicit: true,
+                note: "strict Dante/output formatting"
+            )
+        )
+        entries.append(
+            AudioConversionLedgerEntry(
+                stage: .routeValidation,
+                owner: .productionOutputSession,
+                output: output,
+                isExplicit: true,
+                note: "strict production route validation"
+            )
+        )
+        return AudioConversionLedger(
+            sessionID: sessionID,
+            sourceID: sourceID,
+            sourceKind: .localFile,
+            entries: entries
+        )
+    }
+
+    public static func pureSphericalDirect(
+        sessionID: String,
+        sourceID: String,
+        source: AudioFormatSummary,
+        output: AudioFormatSummary
+    ) -> AudioConversionLedger {
+        AudioConversionLedger(
+            sessionID: sessionID,
+            sourceID: sourceID,
+            sourceKind: .localFile,
+            entries: [
+                AudioConversionLedgerEntry(
+                    stage: .validation,
+                    owner: .pureSphericalLosslessValidator,
+                    input: source,
+                    output: source,
+                    isExplicit: true,
+                    note: "source matches the active Pure Spherical Lossless route"
+                ),
+                AudioConversionLedgerEntry(
+                    stage: .directRead,
+                    owner: .pureSphericalLosslessReader,
+                    input: source,
+                    output: output,
+                    isExplicit: true,
+                    note: "validated rendered speaker-bed LPCM read"
+                ),
+                AudioConversionLedgerEntry(
+                    stage: .format,
+                    owner: .danteOutputFormatter,
+                    input: output,
+                    output: output,
+                    isExplicit: true,
+                    note: "production output formatting"
+                ),
+                AudioConversionLedgerEntry(
+                    stage: .routeValidation,
+                    owner: .productionOutputSession,
+                    input: output,
+                    output: output,
+                    isExplicit: true,
+                    note: "strict production route validation"
+                )
+            ]
+        )
+    }
+}
+
+public enum PureSphericalLosslessState: Equatable, Hashable, Sendable {
+    case none
+    case candidate
+    case validForCurrentSphere
+    case validForDifferentSphere
+    case routeNotReady
+    case invalid(reason: String)
+
+    public var badgeText: String? {
+        switch self {
+        case .none, .candidate, .invalid:
+            nil
+        case .validForCurrentSphere:
+            "Pure Spherical Lossless"
+        case .validForDifferentSphere:
+            "Pure Spherical Lossless, different sphere"
+        case .routeNotReady:
+            "Pure Spherical Lossless, route not ready"
+        }
+    }
+
+    public var shouldShowBadge: Bool {
+        badgeText != nil
+    }
+}
+
+public struct PlaybackDiagnosticSnapshot: Equatable, Hashable, Sendable {
+    public let sessionID: String
+    public let sourceID: String
+    public let sourceKind: SourceKind
+    public let sourceSampleRate: AudioSampleRate?
+    public let sourceChannelCount: Int?
+    public let decodeOwner: AudioConversionOwner
+    public let downmixOwner: AudioConversionOwner
+    public let sampleRateConversionOwner: AudioConversionOwner
+    public let rendererOwner: AudioConversionOwner
+    public let outputFormatterOwner: AudioConversionOwner
+    public let requestedOutputFormat: AudioFormatSummary?
+    public let actualOutputFormat: AudioFormatSummary?
+    public let routeChannelCount: Int?
+    public let underflowCount: Int
+    public let overflowCount: Int
+    public let staleGenerationRejectedCount: Int
+    public let pureSphericalLosslessState: PureSphericalLosslessState
+    public let conversionLedger: AudioConversionLedger
+
+    public init(
+        sessionID: String,
+        sourceID: String,
+        sourceKind: SourceKind,
+        sourceSampleRate: AudioSampleRate?,
+        sourceChannelCount: Int?,
+        decodeOwner: AudioConversionOwner = .none,
+        downmixOwner: AudioConversionOwner = .none,
+        sampleRateConversionOwner: AudioConversionOwner = .none,
+        rendererOwner: AudioConversionOwner = .none,
+        outputFormatterOwner: AudioConversionOwner = .none,
+        requestedOutputFormat: AudioFormatSummary? = nil,
+        actualOutputFormat: AudioFormatSummary? = nil,
+        routeChannelCount: Int? = nil,
+        underflowCount: Int = 0,
+        overflowCount: Int = 0,
+        staleGenerationRejectedCount: Int = 0,
+        pureSphericalLosslessState: PureSphericalLosslessState = .none,
+        conversionLedger: AudioConversionLedger
+    ) {
+        self.sessionID = sessionID
+        self.sourceID = sourceID
+        self.sourceKind = sourceKind
+        self.sourceSampleRate = sourceSampleRate
+        self.sourceChannelCount = sourceChannelCount
+        self.decodeOwner = decodeOwner
+        self.downmixOwner = downmixOwner
+        self.sampleRateConversionOwner = sampleRateConversionOwner
+        self.rendererOwner = rendererOwner
+        self.outputFormatterOwner = outputFormatterOwner
+        self.requestedOutputFormat = requestedOutputFormat
+        self.actualOutputFormat = actualOutputFormat
+        self.routeChannelCount = routeChannelCount
+        self.underflowCount = max(underflowCount, 0)
+        self.overflowCount = max(overflowCount, 0)
+        self.staleGenerationRejectedCount = max(staleGenerationRejectedCount, 0)
+        self.pureSphericalLosslessState = pureSphericalLosslessState
+        self.conversionLedger = conversionLedger
+    }
+}
+
+public enum PlaybackDiagnosticCompletenessIssue: Equatable, Hashable, Sendable {
+    case emptyConversionLedger
+    case hiddenConversionRisk(owner: AudioConversionOwner, stage: AudioConversionStage)
+    case missingRequestedOutputFormat
+    case missingActualOutputFormat
+    case missingRouteChannelCount
+    case missingSourceSampleRate
+    case missingSourceChannelCount
+    case missingLedgerStage(AudioConversionStage)
+    case ownerMismatch(stage: AudioConversionStage, snapshotOwner: AudioConversionOwner, ledgerOwners: [AudioConversionOwner])
+
+    public var diagnosticMessage: String {
+        switch self {
+        case .emptyConversionLedger:
+            "No conversion ledger entries were recorded for this playback path."
+        case let .hiddenConversionRisk(owner, stage):
+            "\(owner.stableName) reports a hidden \(stage.rawValue) conversion risk."
+        case .missingRequestedOutputFormat:
+            "Requested output format is missing from playback diagnostics."
+        case .missingActualOutputFormat:
+            "Actual output format is missing from playback diagnostics."
+        case .missingRouteChannelCount:
+            "Route channel count is missing from playback diagnostics."
+        case .missingSourceSampleRate:
+            "Source sample rate is missing from playback diagnostics."
+        case .missingSourceChannelCount:
+            "Source channel count is missing from playback diagnostics."
+        case let .missingLedgerStage(stage):
+            "Conversion ledger is missing required \(stage.rawValue) stage."
+        case let .ownerMismatch(stage, snapshotOwner, ledgerOwners):
+            "Snapshot owner \(snapshotOwner.stableName) does not match ledger \(stage.rawValue) owner(s): \(ledgerOwners.map(\.stableName).joined(separator: ", "))."
+        }
+    }
+}
+
+public extension PlaybackDiagnosticSnapshot {
+    func completenessIssues(requiredStages: [AudioConversionStage] = []) -> [PlaybackDiagnosticCompletenessIssue] {
+        guard sourceKind != .off else { return [] }
+
+        var issues: [PlaybackDiagnosticCompletenessIssue] = []
+
+        if conversionLedger.entries.isEmpty {
+            issues.append(.emptyConversionLedger)
+        }
+        if sourceSampleRate == nil {
+            issues.append(.missingSourceSampleRate)
+        }
+        if sourceChannelCount == nil {
+            issues.append(.missingSourceChannelCount)
+        }
+        if requestedOutputFormat == nil {
+            issues.append(.missingRequestedOutputFormat)
+        }
+        if actualOutputFormat == nil {
+            issues.append(.missingActualOutputFormat)
+        }
+        if routeChannelCount == nil {
+            issues.append(.missingRouteChannelCount)
+        }
+
+        for stage in conversionLedger.missingStages(requiredStages) {
+            issues.append(.missingLedgerStage(stage))
+        }
+
+        for entry in conversionLedger.entries where !entry.isExplicit {
+            issues.append(.hiddenConversionRisk(owner: entry.owner, stage: entry.stage))
+        }
+
+        let comparableStages: [(AudioConversionStage, AudioConversionOwner)] = [
+            (.decode, decodeOwner),
+            (.capture, decodeOwner),
+            (.downmix, downmixOwner),
+            (.sampleRateConversion, sampleRateConversionOwner),
+            (.render, rendererOwner),
+            (.format, outputFormatterOwner)
+        ]
+
+        for (stage, snapshotOwner) in comparableStages {
+            let ledgerOwners = conversionLedger.owners(for: stage)
+            guard !ledgerOwners.isEmpty else { continue }
+            if snapshotOwner == .none || !ledgerOwners.contains(snapshotOwner) {
+                issues.append(.ownerMismatch(stage: stage, snapshotOwner: snapshotOwner, ledgerOwners: ledgerOwners))
+            }
+        }
+
+        return issues
+    }
+
+    var hasDiagnosticFailures: Bool {
+        !completenessIssues().isEmpty
+    }
+
+    func diagnosticMessages(requiredStages: [AudioConversionStage] = []) -> [String] {
+        completenessIssues(requiredStages: requiredStages).map(\.diagnosticMessage)
     }
 }
 

@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 app_name="Orbisonic"
-app_version="1.1"
+app_version="${1:-2.0}"
 bundle_path="$repo_root/${app_name}.app"
 binary_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}"
 resource_bundle_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}_${app_name}.bundle"
@@ -65,7 +65,10 @@ else
   set_plist_string "OrbisonicGitBranch" "detached"
 fi
 set_plist_string "OrbisonicGitCommit" "$git_commit"
+set_plist_string "CFBundleIdentifier" "audio.orbisonic.app"
 set_plist_string "CFBundleShortVersionString" "$app_version"
+set_plist_string "CFBundleVersion" "$app_version"
+set_plist_string "NSMicrophoneUsageDescription" "macOS labels all audio input access as Microphone permission. Orbisonic uses it to capture Orbisonic Roon Input or Orbisonic Aux Cable for live sources, not the Mac mic unless you choose it."
 
 xattr -cr "$bundle_path"
 codesign --force --deep --sign - "$bundle_path"

@@ -1,0 +1,170 @@
+import XCTest
+
+final class ExistingUIFreezeTests: XCTestCase {
+    func testPrimaryStageTabsRemainAtBaseline() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let enumBlock = try block(
+            named: "enum StageTab",
+            endingBefore: "private enum LocalMusicPanel",
+            in: source
+        )
+
+        for expectedCase in [
+            #"case input = "Input""#,
+            #"case renderer = "Renderer""#,
+            #"case output = "Output""#,
+            #"case analyzerVU = "VU""#,
+            #"case localMusic = "Local Music""#,
+            #"case diagnostics = "Diagnostics""#,
+            #"case settings = "Settings""#
+        ] {
+            XCTAssertTrue(enumBlock.contains(expectedCase), "Missing baseline tab: \(expectedCase)")
+        }
+
+        XCTAssertEqual(enumBlock.components(separatedBy: #"case "#).count - 1, 7)
+    }
+
+    func testPrimarySourceSelectorWorkflowRemainsAtBaseline() throws {
+        let content = try source("Sources/Orbisonic/ContentView.swift")
+        let sourceSupport = try source("Sources/Orbisonic/LoopbackSourceSupport.swift")
+        let sourceModeBlock = try block(
+            named: "enum SourceMode",
+            endingBefore: "struct SourceSwitchRequestState",
+            in: sourceSupport
+        )
+
+        XCTAssertTrue(content.contains("private var primarySourceModes: [SourceMode]"))
+        XCTAssertTrue(content.contains("SourceMode.musicInputs"))
+        XCTAssertTrue(sourceModeBlock.contains("static var musicInputs: [SourceMode]"))
+        XCTAssertTrue(sourceModeBlock.contains("[.filePlayback, .spotify, .roon, .aux, .off]"))
+
+        for visibleName in [
+            #"case filePlayback = "Local Files""#,
+            #"case spotify = "Spotify""#,
+            #"case roon = "Roon""#,
+            #"case aux = "Aux Cable""#,
+            #"case off = "Off""#
+        ] {
+            XCTAssertTrue(sourceModeBlock.contains(visibleName), "Missing source mode: \(visibleName)")
+        }
+    }
+
+    func testLocalMusicPanelBaselineRemainsStable() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let enumBlock = try block(
+            named: "private enum LocalMusicPanel",
+            endingBefore: "private enum PlayerTransportKind",
+            in: source
+        )
+
+        XCTAssertTrue(enumBlock.contains(#"case music = "Music""#))
+        XCTAssertTrue(enumBlock.contains(#"case playlists = "Playlists""#))
+        XCTAssertTrue(enumBlock.contains(#"case queue = "Session Queue""#))
+        XCTAssertEqual(enumBlock.components(separatedBy: #"case "#).count - 1, 3)
+    }
+
+    func testVisiblePlayerTransportRemainsBackPlayPauseForwardOnly() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let enumBlock = try block(
+            named: "private enum PlayerTransportKind",
+            endingBefore: "enum AppBuildInfo",
+            in: source
+        )
+        let controlsBlock = try block(
+            named: "private var playerTransportControls",
+            endingBefore: "private func performPlayerTransport",
+            in: source
+        )
+
+        XCTAssertTrue(enumBlock.contains("static let allCases: [PlayerTransportKind] = [.back, .play, .pause, .forward]"))
+        XCTAssertFalse(enumBlock.contains("static let allCases: [PlayerTransportKind] = [.back, .play, .pause, .stop, .forward]"))
+        XCTAssertTrue(controlsBlock.contains("ForEach(PlayerTransportKind.allCases)"))
+        XCTAssertFalse(controlsBlock.contains("Button(\"Stop\""))
+    }
+
+    func testNormalContentViewDoesNotExposeAudioRewriteImplementationTerms() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let forbiddenNormalUIStrings = [
+            "VLC",
+            "libVLC",
+            "amem",
+            "FL32",
+            "SRC",
+            "Dither",
+            "DanteOutputFormatter",
+            "OutputSession",
+            "AudioConversionLedger",
+            "Audio Chain"
+        ]
+
+        for forbidden in forbiddenNormalUIStrings {
+            XCTAssertFalse(source.contains(forbidden), "Normal UI exposes forbidden implementation term: \(forbidden)")
+        }
+    }
+
+    func testPureSphericalLosslessIsTheOnlyAllowedNewBadgeLabel() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+
+        XCTAssertFalse(source.contains("True Spherical Lossless"))
+
+        let allowedBadgeLabels = [
+            "Pure Spherical Lossless",
+            "Pure Spherical Lossless, different sphere",
+            "Pure Spherical Lossless, route not ready"
+        ]
+        let pureMentions = source.components(separatedBy: "Pure Spherical Lossless").count - 1
+        if pureMentions > 0 {
+            XCTAssertTrue(allowedBadgeLabels.contains { source.contains($0) })
+        }
+    }
+
+    func testUIFilesDoNotImportProtectedAudioRewriteModules() throws {
+        let uiFiles = [
+            "Sources/Orbisonic/ContentView.swift",
+            "Sources/Orbisonic/DiagnosticsView.swift",
+            "Sources/Orbisonic/InputSourceStatusPanelModel.swift",
+            "Sources/Orbisonic/OrbisonicApp.swift",
+            "Sources/Orbisonic/OrbisonicDisclosureTray.swift",
+            "Sources/Orbisonic/OrbisonicViewModel.swift",
+            "Sources/Orbisonic/OrbisonicWebServer.swift"
+        ]
+        let protectedImports = [
+            "import OrbisonicVLCReference",
+            "import CLibVLCBridge"
+        ]
+        let protectedSymbols = [
+            "CLibVLCBridge",
+            "VlcLocalStereoMonitorSource",
+            "DanteOutputFormatter",
+            "ProductionOutputSession",
+            "SourceRateConverter"
+        ]
+
+        for file in uiFiles {
+            let source = try source(file)
+            for protectedImport in protectedImports {
+                XCTAssertFalse(source.contains(protectedImport), "\(file) imports \(protectedImport)")
+            }
+            for protectedSymbol in protectedSymbols {
+                XCTAssertFalse(source.contains(protectedSymbol), "\(file) references \(protectedSymbol)")
+            }
+        }
+    }
+
+    private func block(named startMarker: String, endingBefore endMarker: String, in source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: startMarker))
+        let end = try XCTUnwrap(source.range(of: endMarker, range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        try String(contentsOf: packageRoot().appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    private func packageRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+}

@@ -6,9 +6,9 @@ This summary records the state after the project-control retrofit, contract-test
 
 ## Readiness Result
 
-Current result: partial manual release verification is complete for automated tests, app bundle refresh, LaunchServices open, app-only installer execution, suite installer execution, installed app verification, package inspection, installed input-driver visibility, Roon bridge dependency install, and local prerequisite checks.
+Current result: partial manual release verification is complete for automated tests, 2.0 app bundle/package rebuild, 2.0 package inspection, installed input-driver visibility, Roon bridge dependency install, loopback input visibility, bounded silent-capture access checks, and local prerequisite checks. Historical 1.1 app-only and suite installer execution passed on 2026-05-05, but 2.0 installer execution has not been run.
 
-Orbisonic is not yet release-verified for a new public release because the current package artifacts are unsigned and do not match the currently tested working tree, and real Roon / Aux / Spotify loopback capture, Sonic Sphere / Dante channel walk, monitor listening, microphone permission prompts, signed-package distribution, and entitlement-gated Apple spatial behavior still need manual evidence in the target macOS environment.
+Orbisonic is not yet release-verified for a new public release because the 2.0 package artifacts are unsigned, built from a dirty working tree, and not installer-executed, and real Roon / Aux / Spotify positive-audio loopback capture, Sonic Sphere / Dante channel walk, monitor listening, microphone permission prompts, signed-package distribution, notarization, and entitlement-gated Apple spatial behavior still need manual evidence in the target macOS environment.
 
 ## Completed Retrofit Work
 
@@ -46,6 +46,8 @@ App bundle refresh was run after source changes in Prompts 15, 16, and 17. Launc
 
 Prompt 19 was docs-only. Task 012 reran the full suite: 544 tests, 0 failures.
 
+The 2.0 release-gate slice on 2026-05-10 reran the full suite: 648 tests, 0 failures.
+
 ## Manual Checks Run
 
 Partial manual release verification was run on 2026-05-05:
@@ -69,12 +71,37 @@ Partial manual release verification was run on 2026-05-05:
 - Dante Virtual Soundcard daemon is running.
 - Roon was not running beyond the Orbisonic input driver. Spotify was running, but Spotify Connect routing to Orbisonic and capture into `Orbisonic Spotify Input` were not tested.
 
+2.0 candidate artifact and route checks were run on 2026-05-10:
+
+- `installer/Orbisonic-2.0.pkg` and `installer/OrbisonicSuite-2.0.pkg` were rebuilt and inspected.
+- `Orbisonic.app`, the app package payload, and the suite app component report version `2.0`.
+- The 2.0 app payload is stamped `OrbisonicGitCommit` `a81af94-dirty`.
+- The 2.0 app package SHA-256 is `9c7a60e350b1464dd5ccd0b7674824ec360316d8f470805580362c282d64927a`.
+- The 2.0 suite package SHA-256 is `a1b06e47d31600ea97e683637fa2a804de4ce6aba8b93fec6379f09bd85251d4`.
+- `pkgutil --check-signature` reports `Status: no signature` for both 2.0 package files.
+- Dante Virtual Soundcard remains installed and running; Dante Controller is still not installed.
+- AVFoundation sees `Orbisonic Roon Input`, `Orbisonic Aux Cable`, and `Orbisonic Spotify Input`.
+- Bounded captures could open all three inputs, but all measured silence; this is route and permission/access evidence only, not live-source audio success.
+- The Roon bridge is paired to a Roon Core and sees an `Orbisonic` zone in stopped state.
+
+2.0 installer and signing gates were attempted on 2026-05-10:
+
+- The 2.0 app and suite packages were copied to `/private/tmp`.
+- CLI app-only installation was blocked because `sudo -n installer -pkg /private/tmp/Orbisonic-2.0.pkg -target /` returned `sudo: a password is required`.
+- The installed `/Applications/Orbisonic.app` still verifies with codesign and has a valid `Info.plist`, but it remains version `1.1` stamped `8ffa977`.
+- Installed package receipts still report `audio.orbisonic.app.pkg` version `1.1` and `audio.orbisonic.inputs.pkg` version `0.2.0`.
+- The local keychain has `0 valid identities found` for both codesigning and basic identity searches.
+- `productsign` cannot sign with `Developer ID Installer` because no matching identity is available.
+- `xcrun notarytool history` reports that credentials must be provided or stored before notarization can run.
+
 ## Manual Checks Still Required Before Release
 
 Follow `docs/release-verification.md` and record pass, fail, or not tested for:
 
-- rebuild installer artifacts from the currently tested working tree, or retest the exact commit used by the current packages.
-- signed-package distribution, if public distribution requires signed installer packages.
+- run 2.0 app-only and suite installer execution.
+- provide admin authentication or run the 2.0 package installers manually, then verify installed app/package receipts.
+- install or configure Developer ID signing identities for package signing.
+- configure notarization credentials for `notarytool`, if public distribution requires notarization.
 - Roon extension authorization, metadata, and transport controls against a running Roon environment.
 - Roon loopback capture from `Orbisonic Roon Input`.
 - Aux loopback capture from `Orbisonic Aux Cable`.
@@ -90,9 +117,11 @@ Follow `docs/release-verification.md` and record pass, fail, or not tested for:
 - A player or bridge can report activity while loopback capture is silent; captured signal and route facts remain authoritative.
 - Physical Sonic Sphere / Dante output cannot be inferred from tests or VU meters.
 - Installer path/access behavior can differ under administrator authorization; installing from `/private/tmp` worked in this pass.
-- Current package files are unsigned.
-- The refreshed app bundle is stamped from a dirty working tree, so it is not a clean release artifact.
-- The installed package app is stamped `8ffa977`, not the currently tested dirty working tree.
+- Current 2.0 package files are unsigned.
+- The refreshed app bundle and 2.0 package payload are stamped from a dirty working tree: `a81af94-dirty`, so they are local candidates rather than clean public release artifacts.
+- The installed `/Applications/Orbisonic.app` was not replaced by the 2.0 package during the 2026-05-10 pass.
+- CLI installer execution is blocked in the current non-interactive shell because `sudo` requires a password.
+- Developer ID signing and notarization are blocked because no local signing identity or notarytool credentials are configured.
 - Spotify Connect readiness is session-dependent and currently stereo by contract.
 - Roon log parsing is useful context but not proof of audio capture.
 - Apple spatial/head-tracking behavior depends on runtime route support and signing entitlements.
@@ -102,8 +131,11 @@ Follow `docs/release-verification.md` and record pass, fail, or not tested for:
 ## Release Blockers
 
 - Manual release verification is only partially complete.
-- Current package artifacts do not match the currently tested dirty working tree.
-- Current package files are unsigned.
+- The 2.0 package artifacts are unsigned and not notarized.
+- The 2.0 package artifacts are dirty-tree local candidates, not clean public release artifacts.
+- 2.0 installer execution has not been run.
+- 2.0 CLI installer execution is blocked on administrator authentication.
+- 2.0 signing/notarization is blocked on missing signing identity and notarization credentials.
 - The refreshed app bundle is from a dirty working tree.
 - Roon, Aux, Spotify Connect, monitor listening, Sonic Sphere / Dante, microphone permission prompt, and entitlement-gated Apple spatial behavior remain unverified.
 - No reference Sonic Sphere / Dante hardware setup has been recorded as the release-verification environment.
@@ -112,8 +144,8 @@ Follow `docs/release-verification.md` and record pass, fail, or not tested for:
 
 ## Current Test Status
 
-The current full SwiftPM suite passed on 2026-05-05 with 544 tests and 0 failures. The app bundle was refreshed and reopened through LaunchServices after that test pass.
+The current full SwiftPM suite passed on 2026-05-10 with 648 tests and 0 failures. The 2.0 app package and suite package were rebuilt after that pass and inspected locally.
 
 ## Recommended Next Action
 
-Rebuild signed installer artifacts from a clean, tested commit, then run live-source and hardware verification in the real macOS, loopback, Roon, Spotify, monitor, Sonic Sphere, and Dante environment.
+Run 2.0 installer execution with administrator authentication, configure Developer ID signing and notarization credentials if this is intended for public distribution, then run live-source and hardware verification in the real macOS, loopback, Roon, Spotify, monitor, Sonic Sphere, and Dante environment.

@@ -718,6 +718,7 @@ final class OrbisonicViewModel: ObservableObject {
     @Published var statusMessage = "Load a surround file. The active macOS output route will appear below."
     @Published var loadedFileName = "No file loaded"
     @Published private(set) var currentFileURL: URL?
+    @Published private(set) var pureSphericalLosslessState: PureSphericalLosslessState = .none
     @Published var lastError: String? {
         didSet {
             if let lastError {
@@ -846,7 +847,7 @@ final class OrbisonicViewModel: ObservableObject {
     let rendererMeterStore = ChannelMeterStore()
     @Published private(set) var sonicSphereMeterActive = false
 
-    private let engine = OrbisonicEngine()
+    private let engine: OrbisonicEngine
     private let localAudioLoader: @Sendable (URL, DebugTimingContext?) throws -> LoadedAudioFile
     private let localMusicLibrary: LocalMusicLibrary
     private var localMusicBaseTracks: [LocalMusicTrack] = []
@@ -863,6 +864,7 @@ final class OrbisonicViewModel: ObservableObject {
     private let spotifyReceiverClient = SpotifyReceiverClient()
     private let diagnosticsLogStore = DiagnosticsLogStore()
     private let appleSpatialHeadphoneMonitor = AppleSpatialHeadphoneMonitor()
+    private let pureSphericalLosslessValidator = PureSphericalLosslessValidator()
     private var webServer: OrbisonicWebServer?
     private var webControlToken = OrbisonicViewModel.loadOrCreateWebControlToken()
     private var refreshTimer: Timer?
@@ -939,6 +941,7 @@ final class OrbisonicViewModel: ObservableObject {
     private var suppressRendererPublish = false
 
     init() {
+        self.engine = OrbisonicEngine(audioGraphEnabled: !Self.isRunningUnitTests)
         self.localAudioLoader = { url, debugTiming in
             try AudioFileLoader().load(url: url, debugTiming: debugTiming)
         }
@@ -966,6 +969,7 @@ final class OrbisonicViewModel: ObservableObject {
         adjacentFullPreloadPCMByteLimit: Int? = nil,
         preparedCacheByteLimit: Int? = nil
     ) {
+        self.engine = OrbisonicEngine(audioGraphEnabled: !Self.isRunningUnitTests)
         self.localAudioLoader = { url, _ in
             try localAudioLoader(url)
         }
@@ -1012,6 +1016,12 @@ final class OrbisonicViewModel: ObservableObject {
         configureMonitorMeters()
         configureRendererMeters()
         refreshWebPageURLs()
+
+        if Self.isRunningUnitTests {
+            webServerStatus = "Web server disabled during tests."
+            return
+        }
+
         webServer = OrbisonicWebServer(model: self, controlToken: webControlToken) { [weak self] status in
             self?.webServerStatus = status
         }
@@ -2212,6 +2222,7 @@ final class OrbisonicViewModel: ObservableObject {
         configureMonitorMeters()
         configureRendererMeters()
         syncRendererAudioRouting()
+        reevaluatePureSphericalLosslessStateForCurrentFile()
         if isDiagnosticSequencePlaying {
             stop()
         }
@@ -2259,6 +2270,7 @@ final class OrbisonicViewModel: ObservableObject {
         persistRendererOutputSelection()
         refreshRoutesIfNeeded(force: true)
         applyOutputRouteIfAvailable(route, purpose: .renderer, label: route.deviceName)
+        reevaluatePureSphericalLosslessStateForCurrentFile()
         logOutputRoutingDebug(
             output: "Output 2 Renderer",
             previousDevice: previousDevice,
@@ -3330,6 +3342,73 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         return nil
+    }
+
+    var pureSphericalLosslessBadgePresentation: PureSphericalLosslessBadgePresentation? {
+        PureSphericalLosslessBadgePresenter.presentation(for: pureSphericalLosslessState)
+    }
+
+    private func updatePureSphericalLosslessState(for url: URL) {
+        do {
+            pureSphericalLosslessState = try validatePureSphericalLosslessFile(
+                url: url,
+                currentSphere: currentPureSphericalSphereProfile(),
+                route: currentPureSphericalOutputRouteDescriptor()
+            ).state
+        } catch {
+            pureSphericalLosslessState = .none
+            AppLogger.shared.warning(
+                category: "pure-spherical",
+                "Pure Spherical Lossless validation failed file=\(url.lastPathComponent) error=\(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func reevaluatePureSphericalLosslessStateForCurrentFile() {
+        guard sourceMode == .filePlayback, let currentFileURL else {
+            pureSphericalLosslessState = .none
+            return
+        }
+        updatePureSphericalLosslessState(for: currentFileURL)
+    }
+
+    private func validatePureSphericalLosslessFile(
+        url: URL,
+        currentSphere: SonicSphereProfile?,
+        route: AudioContracts.OutputRouteDescriptor?
+    ) throws -> PureSphericalLosslessValidation {
+        try pureSphericalLosslessValidator.validate(
+            url: url,
+            currentSphere: currentSphere,
+            route: route
+        )
+    }
+
+    private func currentPureSphericalSphereProfile() -> SonicSphereProfile? {
+        let outputCount = max(
+            rendererScene.outputSpeakers.count,
+            rendererPreset.outputTopology.fullRangeCount + rendererPreset.outputTopology.lfeCount
+        )
+        guard outputCount > 0 else { return nil }
+
+        let routeSampleRate = try? AudioSampleRate(hertz: rendererOutputRoute.nominalSampleRate)
+        let sampleRate = routeSampleRate ?? .defaultProduction
+        let outputLayout = outputCount == AudioChannelLayoutDescriptor.direct31.channelCount
+            ? AudioChannelLayoutDescriptor.direct31
+            : AudioChannelLayoutDescriptor.discrete(count: outputCount)
+
+        return SonicSphereProfile(
+            id: "sonic-sphere-31-reference",
+            outputMapID: "direct-30.1-logical",
+            sampleRate: sampleRate,
+            outputChannelCount: outputCount,
+            outputLayout: outputLayout
+        )
+    }
+
+    private func currentPureSphericalOutputRouteDescriptor() -> AudioContracts.OutputRouteDescriptor? {
+        guard rendererOutputSelection != .none else { return nil }
+        return RouteCapabilityValidator().outputRouteDescriptor(from: rendererOutputRoute)
     }
 
     private func queueTrack(for index: Int) -> LocalMusicTrack? {
@@ -4744,6 +4823,7 @@ final class OrbisonicViewModel: ObservableObject {
             }
         }
         sourceMetadata = loaded.metadata
+        updatePureSphericalLosslessState(for: loaded.url)
         loadedChannels = loaded.layout.channels
         resetRendererRequestToAutomatic(reason: "new track")
         duration = loaded.duration
@@ -4947,6 +5027,7 @@ final class OrbisonicViewModel: ObservableObject {
             }
         }
         sourceMetadata = metadata
+        updatePureSphericalLosslessState(for: descriptor.url)
         loadedChannels = descriptor.channelLayout.channels
         resetRendererRequestToAutomatic(reason: "new streaming track")
         duration = descriptor.durationSeconds ?? 0
@@ -5912,6 +5993,7 @@ final class OrbisonicViewModel: ObservableObject {
             )
             loadedFileName = liveSource.metadata.fileName
             sourceMetadata = liveSource.metadata
+            pureSphericalLosslessState = .none
             loadedChannels = liveSource.layout.channels
             refreshRendererScene()
             duration = 0
@@ -6339,6 +6421,7 @@ final class OrbisonicViewModel: ObservableObject {
 
     private func clearLoadedSourceSnapshot() {
         sourceMetadata = nil
+        pureSphericalLosslessState = .none
         clearPendingLocalPresentation()
         loadedChannels = []
         loadedFileName = "No file loaded"
@@ -8876,6 +8959,7 @@ final class OrbisonicViewModel: ObservableObject {
             configureMonitorMeters()
             configureRendererMeters()
             syncRendererAudioRouting()
+            reevaluatePureSphericalLosslessStateForCurrentFile()
             AppLogger.shared.notice(
                 category: "route",
                 "Output 2 Renderer route changed device=\(nextRendererOutputRoute.deviceName) transport=\(nextRendererOutputRoute.transportName) channels=\(nextRendererOutputRoute.outputChannelCount) target=\(nextRendererOutputRoute.targetName)"

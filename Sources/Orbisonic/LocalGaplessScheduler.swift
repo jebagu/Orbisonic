@@ -85,7 +85,7 @@ extension AVAudioPlayerNode: LocalGaplessPlayerScheduling {
 final class LocalGaplessScheduler: @unchecked Sendable {
     var onEvent: ((LocalGaplessSchedulerEvent) -> Void)?
 
-    let playerNode: AVAudioPlayerNode
+    let playerNode: AVAudioPlayerNode?
     let format: AVAudioFormat
     let config: LocalGaplessSchedulerConfig
 
@@ -95,7 +95,7 @@ final class LocalGaplessScheduler: @unchecked Sendable {
     private var storage = SchedulerStorage()
 
     init(
-        playerNode: AVAudioPlayerNode = AVAudioPlayerNode(),
+        playerNode: AVAudioPlayerNode? = nil,
         format: AVAudioFormat,
         config: LocalGaplessSchedulerConfig = LocalGaplessSchedulerConfig(),
         schedulingPlayer: LocalGaplessPlayerScheduling? = nil,
@@ -103,10 +103,16 @@ final class LocalGaplessScheduler: @unchecked Sendable {
             try LocalAudioFileSource(track: track, outputFormat: format, config: config)
         }
     ) {
-        self.playerNode = playerNode
         self.format = format
         self.config = config
-        self.schedulingPlayer = schedulingPlayer ?? playerNode
+        if let schedulingPlayer {
+            self.playerNode = playerNode
+            self.schedulingPlayer = schedulingPlayer
+        } else {
+            let playerNode = playerNode ?? AVAudioPlayerNode()
+            self.playerNode = playerNode
+            self.schedulingPlayer = playerNode
+        }
         self.sourceFactory = sourceFactory
     }
 

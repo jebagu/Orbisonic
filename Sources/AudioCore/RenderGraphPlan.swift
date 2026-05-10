@@ -170,11 +170,11 @@ public struct DanteRenderPlan: Equatable, Hashable, Sendable {
         source: SourceDescriptor,
         renderMode requestedMode: RenderMode
     ) throws -> DanteRenderPlan {
-        let resolvedMode = PureAudioDanteMatrixPolicy.resolvedMode(
+        let resolvedMode = SonicSphereMatrixPolicy.resolvedMode(
             requestedMode,
             sourceChannelCount: source.channelCount
         )
-        let coefficients = try PureAudioDanteMatrixPolicy.matrix(
+        let coefficients = try SonicSphereMatrixPolicy.matrix(
             sourceLayout: source.layout,
             renderMode: resolvedMode,
             physicalOutputCount: sessionFormat.dante.physicalChannelCount
@@ -617,7 +617,7 @@ private enum ReferenceStereoDownmixPolicy {
     }
 }
 
-private enum PureAudioDanteMatrixPolicy {
+enum SonicSphereMatrixPolicy {
     static func resolvedMode(_ requestedMode: RenderMode, sourceChannelCount: Int) -> RenderMode {
         if requestedMode != .automatic {
             return requestedMode
