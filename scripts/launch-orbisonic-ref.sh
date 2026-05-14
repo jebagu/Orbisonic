@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 3 ]; then
-  echo "Usage: $0 <git-ref> <branch|release> <display-name>" >&2
+  echo "Usage: $0 <git-ref> <branch|release|commit> <display-name>" >&2
   exit 64
 fi
 
@@ -21,7 +21,7 @@ bundle_path="$worktree_path/${app_name}.app"
 plist_path="$bundle_path/Contents/Info.plist"
 plist_buddy="/usr/libexec/PlistBuddy"
 
-if [ "$ref_kind" != "branch" ] && [ "$ref_kind" != "release" ]; then
+if [ "$ref_kind" != "branch" ] && [ "$ref_kind" != "release" ] && [ "$ref_kind" != "commit" ]; then
   echo "Unsupported launcher kind: $ref_kind" >&2
   exit 64
 fi

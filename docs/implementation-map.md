@@ -17,7 +17,7 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `docs/release-verification.md`: release, installer, app bundle, LaunchServices, helper, and manual hardware verification checklist.
 - `docs/readiness-summary.md`: current readiness result, automated evidence, manual verification still required, release blockers, and recommended next action.
 - `.tasks/`: bounded sequential task files for audits, test-gap passes, hardening, release verification docs, readiness refresh, and manual release verification.
-- Root `Open Orbisonic - *.command` launchers: double-clickable entry points for the current build, main branch, and selected release refs.
+- Root `Open Orbisonic - *.command` launchers: double-clickable entry points for the current build, main branch, selected release refs, and pinned commit snapshots such as `Atmos First Pass`.
 - `scripts/`: app refresh, LaunchServices reopen, installer, Roon bridge, branch launcher, deprecated-ref launcher, and embedded librespot build scripts.
 - `installer/`: app-only and suite package artifacts.
 - `Vendor/`: vendored librespot source and Orbisonic librespot FFI crate.

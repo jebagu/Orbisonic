@@ -684,7 +684,7 @@ Non-responsibilities:
 Scripts must not change source behavior outside their documented build/package purpose, rewrite audio policy, edit contracts without a docs task, or verify hardware behavior they do not actually exercise.
 
 Public interface or public-facing concepts:
-`scripts/refresh-orbisonic-app.sh`, `scripts/reopen-orbisonic-app.sh`, `scripts/build-installer.sh`, `scripts/install-roon-bridge.sh`, `scripts/build-embedded-librespot.sh`, branch/release launchers, `Orbisonic.app`, installer packages, and release notes.
+`scripts/refresh-orbisonic-app.sh`, `scripts/reopen-orbisonic-app.sh`, `scripts/build-installer.sh`, `scripts/install-roon-bridge.sh`, `scripts/build-embedded-librespot.sh`, branch/release/commit launchers, `Orbisonic.app`, installer packages, and release notes.
 
 Inputs:
 Swift package source, app bundle skeleton, built executable/resource bundle, git metadata, vendored Rust source, Roon bridge resource files, package version argument, and installer root.
