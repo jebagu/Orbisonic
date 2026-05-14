@@ -6,7 +6,7 @@ Date: 2026-05-05
 
 ## Executive Summary
 
-The project-control package is usable and the task order is broadly safe: docs and audits come before tests, tests come before production hardening, and hardware-only checks are repeatedly marked manual. No blocker prevents Prompt 11 from running.
+The project control package is usable and the task order is broadly safe: docs and audits come before tests, tests come before production hardening, and hardware-only checks are repeatedly marked manual. No blocker prevents Prompt 11 from running.
 
 The audit found three high-severity issues to fix before contract-test work starts:
 
@@ -14,7 +14,7 @@ The audit found three high-severity issues to fix before contract-test work star
 - README live-input setup lags current Spotify loopback support.
 - Task 010 allows low-risk script edits but its default verification command does not protect scripts.
 
-The remaining findings are medium or low. They mostly involve stale project-control wording, historical PureAudio docs that are not clearly labeled, readiness artifacts missing from status, and inconsistent `Local Files` versus `Local Music` naming context.
+The remaining findings are medium or low. They mostly involve stale project control wording, historical PureAudio docs that are not clearly labeled, readiness artifacts missing from status, and inconsistent `Local Files` versus `Local Music` naming context.
 
 ## Issues Found
 
@@ -75,7 +75,7 @@ In Prompt 11, either make Task 010 docs-only and move script work into a separat
 
 ### Medium
 
-#### M1. `docs/implementation-map.md` does not include the new project-control surfaces
+#### M1. `docs/implementation-map.md` does not include the new project control surfaces
 
 Evidence:
 
@@ -200,7 +200,7 @@ In Prompt 11 or a later docs refresh, add a short naming note to `docs/architect
 
 | Issue | Risk if ignored |
 | --- | --- |
-| H1 | Future agents may either violate prompt scope or skip the stated Definition of Done, creating inconsistent project-control behavior. |
+| H1 | Future agents may either violate prompt scope or skip the stated Definition of Done, creating inconsistent project control behavior. |
 | H2 | Spotify live capture can be omitted from setup and release verification despite source and tests supporting a dedicated Spotify input. |
 | H3 | Release-related scripts may change without enough verification, risking app refresh, installer, or LaunchServices behavior. |
 | M1 | Future sessions may miss `.tasks/` and audit files when using the implementation map as the project index. |

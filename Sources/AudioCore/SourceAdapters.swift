@@ -101,6 +101,43 @@ public enum LiveSourceChannelPolicy: Equatable, Hashable, Sendable {
     case routeChannelCount
 }
 
+public enum LiveMonitorAdmissionState: String, CaseIterable, Equatable, Hashable, Sendable {
+    case stereoPassThrough
+    case blockedRequiresExplicitDownmixOwner
+    case explicitDownmixAuthorized
+}
+
+public struct LiveMonitorAdmissionReport: Equatable, Hashable, Sendable {
+    public let sourceID: String
+    public let kind: SourceKind
+    public let capturedChannelCount: Int
+    public let capturedLayout: AudioChannelLayoutDescriptor
+    public let state: LiveMonitorAdmissionState
+    public let downmixOwner: AudioConversionOwner
+    public let canSubmitToStereoMonitor: Bool
+    public let diagnosticMessages: [String]
+
+    public init(
+        sourceID: String,
+        kind: SourceKind,
+        capturedChannelCount: Int,
+        capturedLayout: AudioChannelLayoutDescriptor,
+        state: LiveMonitorAdmissionState,
+        downmixOwner: AudioConversionOwner,
+        canSubmitToStereoMonitor: Bool,
+        diagnosticMessages: [String]
+    ) {
+        self.sourceID = sourceID
+        self.kind = kind
+        self.capturedChannelCount = capturedChannelCount
+        self.capturedLayout = capturedLayout
+        self.state = state
+        self.downmixOwner = downmixOwner
+        self.canSubmitToStereoMonitor = canSubmitToStereoMonitor
+        self.diagnosticMessages = diagnosticMessages
+    }
+}
+
 public class LiveLoopbackSourceAdapter: AudioSourceAdapter, @unchecked Sendable {
     public let descriptor: SourceDescriptor
     public let route: LiveInputRouteDescriptor
@@ -257,6 +294,53 @@ public class LiveLoopbackSourceAdapter: AudioSourceAdapter, @unchecked Sendable 
             framePosition: framePosition,
             validationMessages: validationMessages,
             diagnosticMessages: diagnosticMessages
+        )
+    }
+
+    public func monitorAdmission(
+        explicitDownmixOwner: AudioConversionOwner = .none
+    ) -> LiveMonitorAdmissionReport {
+        if captureFormat.channelCount == 2 {
+            return LiveMonitorAdmissionReport(
+                sourceID: descriptor.id,
+                kind: descriptor.kind,
+                capturedChannelCount: captureFormat.channelCount,
+                capturedLayout: captureFormat.layout,
+                state: .stereoPassThrough,
+                downmixOwner: .none,
+                canSubmitToStereoMonitor: true,
+                diagnosticMessages: [
+                    "\(descriptor.kind.rawValue) live capture is stereo and may pass to the stereo monitor without downmix."
+                ]
+            )
+        }
+
+        guard explicitDownmixOwner != .none else {
+            return LiveMonitorAdmissionReport(
+                sourceID: descriptor.id,
+                kind: descriptor.kind,
+                capturedChannelCount: captureFormat.channelCount,
+                capturedLayout: captureFormat.layout,
+                state: .blockedRequiresExplicitDownmixOwner,
+                downmixOwner: .none,
+                canSubmitToStereoMonitor: false,
+                diagnosticMessages: [
+                    "\(descriptor.kind.rawValue) live capture is \(captureFormat.channelCount) channels; stereo monitor downmix is blocked until an explicit owner is selected."
+                ]
+            )
+        }
+
+        return LiveMonitorAdmissionReport(
+            sourceID: descriptor.id,
+            kind: descriptor.kind,
+            capturedChannelCount: captureFormat.channelCount,
+            capturedLayout: captureFormat.layout,
+            state: .explicitDownmixAuthorized,
+            downmixOwner: explicitDownmixOwner,
+            canSubmitToStereoMonitor: true,
+            diagnosticMessages: [
+                "\(descriptor.kind.rawValue) live capture has explicit stereo monitor downmix owner \(explicitDownmixOwner.stableName)."
+            ]
         )
     }
 
@@ -706,6 +790,10 @@ public struct SourceAdapterFactory: Sendable {
             try adapter.prepare(sessionFormat: request.sessionFormat)
             return adapter
         case .aux:
+            let adapter = try AuxSourceAdapter(route: liveRoute(expectedUID: PureAudioLoopbackUID.aux, in: request.liveRoutes))
+            try adapter.prepare(sessionFormat: request.sessionFormat)
+            return adapter
+        case .atmosDRP:
             let adapter = try AuxSourceAdapter(route: liveRoute(expectedUID: PureAudioLoopbackUID.aux, in: request.liveRoutes))
             try adapter.prepare(sessionFormat: request.sessionFormat)
             return adapter

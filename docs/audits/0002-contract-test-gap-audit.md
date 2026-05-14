@@ -107,7 +107,7 @@ No direct contradiction was found where current tests assert behavior that confl
 
 One product/setup contradiction remains from the plan audit: README setup text omits the dedicated Spotify loopback in one live-input setup path while source and tests expose `Orbisonic Spotify Input`. That is a docs/setup readiness issue, not an automated-test contradiction.
 
-One coverage over-read was found in project-control docs: `docs/test-strategy.md` correctly lists all-zero live input as a critical invariant, but the automated coverage is uneven by source. Roon has explicit active-playback/no-signal status coverage, Spotify has stale-metadata/no-signal-adjacent coverage, and Aux needs a direct no-signal status test.
+One coverage over-read was found in project control docs: `docs/test-strategy.md` correctly lists all-zero live input as a critical invariant, but the automated coverage is uneven by source. Roon has explicit active-playback/no-signal status coverage, Spotify has stale-metadata/no-signal-adjacent coverage, and Aux needs a direct no-signal status test.
 
 ## Recommended Next Prompt
 

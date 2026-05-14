@@ -45,7 +45,7 @@ When docs and source disagree, inspect the current source and tests before chang
 - Prefer existing project patterns, helpers, scripts, and tests.
 - Do not introduce broad rewrites, major dependencies, or unrelated cleanup during bounded tasks.
 - Do not touch unrelated subsystems just because they are nearby.
-- Update project-control docs in the same change when behavior, flows, contracts, or file ownership maps change.
+- Update project control docs in the same change when behavior, flows, contracts, or file ownership maps change.
 - Treat hardware-only behavior honestly: document required manual verification instead of implying automated tests proved it.
 
 ## Documentation Requirements

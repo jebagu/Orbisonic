@@ -22,6 +22,10 @@ let package = Package(
         .library(
             name: "AudioCore",
             targets: ["AudioCore"]
+        ),
+        .library(
+            name: "OrbisonicVLCReference",
+            targets: ["OrbisonicVLCReference"]
         )
     ],
     targets: [
@@ -35,6 +39,10 @@ let package = Package(
         .target(
             name: "AudioCore",
             dependencies: ["AudioContracts", "AudioImport"]
+        ),
+        .target(
+            name: "OrbisonicVLCReference",
+            dependencies: ["AudioContracts"]
         ),
         .executableTarget(
             name: "Orbisonic",
@@ -76,6 +84,10 @@ let package = Package(
         .testTarget(
             name: "AudioCoreTests",
             dependencies: ["AudioCore", "AudioContracts", "AudioImport"]
+        ),
+        .testTarget(
+            name: "OrbisonicVLCReferenceTests",
+            dependencies: ["OrbisonicVLCReference", "AudioContracts"]
         )
     ]
 )

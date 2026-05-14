@@ -47,7 +47,8 @@ final class LocalGaplessSchedulerTests: XCTestCase {
         let format = try Self.makeFormat()
         let scheduler = LocalGaplessScheduler(
             format: format,
-            config: LocalGaplessSchedulerConfig(maxRetainedPCMBytes: 64 * 1_024)
+            config: LocalGaplessSchedulerConfig(maxRetainedPCMBytes: 64 * 1_024),
+            schedulingPlayer: FakeGaplessPlayer()
         )
         try scheduler.start(sources: [])
         let generation = scheduler.currentGeneration()

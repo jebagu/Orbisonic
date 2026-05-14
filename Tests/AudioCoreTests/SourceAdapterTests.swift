@@ -66,6 +66,180 @@ final class SourceAdapterTests: XCTestCase {
         XCTAssertEqual(adapter.descriptor.layout, .stereo)
     }
 
+    func testRoonStereoCapturePassesThroughToMonitorWithoutDownmix() throws {
+        let route = liveRoute(
+            uid: PureAudioLoopbackUID.roon,
+            name: "Orbisonic Roon Input",
+            channels: 2,
+            sampleRate: .defaultProduction
+        )
+        let adapter = try RoonSourceAdapter(route: route)
+
+        try adapter.prepare(sessionFormat: sessionFormat())
+        let admission = adapter.monitorAdmission()
+
+        XCTAssertEqual(adapter.descriptor.kind, .roon)
+        XCTAssertEqual(adapter.descriptor.channelCount, 2)
+        XCTAssertEqual(adapter.descriptor.layout, .stereo)
+        XCTAssertEqual(admission.state, .stereoPassThrough)
+        XCTAssertTrue(admission.canSubmitToStereoMonitor)
+        XCTAssertEqual(admission.downmixOwner, .none)
+    }
+
+    func testRoonFiveOneCaptureIsDetectedAndMonitorDownmixIsBlockedWithoutExplicitOwner() throws {
+        let route = liveRoute(
+            uid: PureAudioLoopbackUID.roon,
+            name: "Orbisonic Roon Input",
+            channels: 6,
+            sampleRate: .defaultProduction
+        )
+        let adapter = try RoonSourceAdapter(route: route)
+
+        try adapter.prepare(sessionFormat: sessionFormat())
+        let admission = adapter.monitorAdmission()
+
+        XCTAssertEqual(adapter.descriptor.kind, .roon)
+        XCTAssertEqual(adapter.descriptor.channelCount, 6)
+        XCTAssertEqual(adapter.descriptor.layout, .surround51)
+        XCTAssertEqual(admission.capturedChannelCount, 6)
+        XCTAssertEqual(admission.capturedLayout, .surround51)
+        XCTAssertEqual(admission.state, .blockedRequiresExplicitDownmixOwner)
+        XCTAssertFalse(admission.canSubmitToStereoMonitor)
+        XCTAssertEqual(admission.downmixOwner, .none)
+        XCTAssertTrue(admission.diagnosticMessages.joined(separator: " ").contains("blocked"))
+    }
+
+    func testRoonFiveOneMonitorAdmissionRequiresExplicitOwner() throws {
+        let adapter = try RoonSourceAdapter(
+            route: liveRoute(
+                uid: PureAudioLoopbackUID.roon,
+                name: "Orbisonic Roon Input",
+                channels: 6,
+                sampleRate: .defaultProduction
+            )
+        )
+
+        try adapter.prepare(sessionFormat: sessionFormat())
+        let admission = adapter.monitorAdmission(explicitDownmixOwner: .roon)
+
+        XCTAssertEqual(admission.state, .explicitDownmixAuthorized)
+        XCTAssertTrue(admission.canSubmitToStereoMonitor)
+        XCTAssertEqual(admission.downmixOwner, .roon)
+    }
+
+    func testRoonFiveOneDefaultPathStaysBlockedUnlessVlcLiveBridgeOwnerIsSelected() throws {
+        let adapter = try RoonSourceAdapter(
+            route: liveRoute(
+                uid: PureAudioLoopbackUID.roon,
+                name: "Orbisonic Roon Input",
+                channels: 6,
+                sampleRate: .defaultProduction
+            )
+        )
+
+        try adapter.prepare(sessionFormat: sessionFormat())
+
+        let defaultAdmission = adapter.monitorAdmission()
+        XCTAssertEqual(defaultAdmission.state, .blockedRequiresExplicitDownmixOwner)
+        XCTAssertFalse(defaultAdmission.canSubmitToStereoMonitor)
+        XCTAssertEqual(defaultAdmission.downmixOwner, .none)
+
+        let selectedAdmission = adapter.monitorAdmission(
+            explicitDownmixOwner: .external("VLC live PCM bridge")
+        )
+        XCTAssertEqual(selectedAdmission.state, .explicitDownmixAuthorized)
+        XCTAssertTrue(selectedAdmission.canSubmitToStereoMonitor)
+        XCTAssertEqual(selectedAdmission.downmixOwner, .external("VLC live PCM bridge"))
+    }
+
+    func testSpotifyMonitorBoundaryReportsStereo() throws {
+        let adapter = try SpotifySourceAdapter(
+            route: liveRoute(
+                uid: PureAudioLoopbackUID.spotify,
+                name: "Orbisonic Spotify Input",
+                channels: 8,
+                sampleRate: .defaultProduction
+            )
+        )
+
+        try adapter.prepare(sessionFormat: sessionFormat())
+        let admission = adapter.monitorAdmission()
+
+        XCTAssertEqual(admission.kind, .spotify)
+        XCTAssertEqual(admission.capturedChannelCount, 2)
+        XCTAssertEqual(admission.capturedLayout, .stereo)
+        XCTAssertEqual(admission.state, .stereoPassThrough)
+        XCTAssertTrue(admission.canSubmitToStereoMonitor)
+    }
+
+    func testLiveSourceFactoryDoesNotCarryStaleMetadataAcrossSourceModes() throws {
+        let staleSpotifySelection = SourceSelection.source(
+            SourceDescriptor(
+                id: "stale-local-metadata",
+                kind: .spotify,
+                sampleRate: .rate44100,
+                channelCount: 6,
+                layout: .surround51,
+                isLive: false,
+                codecDescription: "stale local file metadata",
+                originalPath: "old-local-5-1.wav"
+            )
+        )
+        let spotify = try SourceAdapterFactory().makeAdapter(
+            SourceAdapterFactoryRequest(
+                selection: staleSpotifySelection,
+                sessionFormat: sessionFormat(),
+                liveRoutes: [
+                    liveRoute(
+                        uid: PureAudioLoopbackUID.spotify,
+                        name: "Orbisonic Spotify Input",
+                        channels: 8,
+                        sampleRate: .defaultProduction
+                    )
+                ]
+            )
+        )
+
+        XCTAssertEqual(spotify.descriptor.kind, .spotify)
+        XCTAssertEqual(spotify.descriptor.sampleRate, .defaultProduction)
+        XCTAssertEqual(spotify.descriptor.channelCount, 2)
+        XCTAssertEqual(spotify.descriptor.layout, .stereo)
+        XCTAssertTrue(spotify.descriptor.isLive)
+        XCTAssertNil(spotify.descriptor.originalPath)
+
+        let staleRoonSelection = SourceSelection.source(
+            SourceDescriptor(
+                id: "stale-spotify-metadata",
+                kind: .roon,
+                sampleRate: .rate44100,
+                channelCount: 2,
+                layout: .stereo,
+                isLive: true,
+                codecDescription: "stale spotify metadata"
+            )
+        )
+        let roon = try SourceAdapterFactory().makeAdapter(
+            SourceAdapterFactoryRequest(
+                selection: staleRoonSelection,
+                sessionFormat: sessionFormat(),
+                liveRoutes: [
+                    liveRoute(
+                        uid: PureAudioLoopbackUID.roon,
+                        name: "Orbisonic Roon Input",
+                        channels: 6,
+                        sampleRate: .defaultProduction
+                    )
+                ]
+            )
+        )
+
+        XCTAssertEqual(roon.descriptor.kind, .roon)
+        XCTAssertEqual(roon.descriptor.sampleRate, .defaultProduction)
+        XCTAssertEqual(roon.descriptor.channelCount, 6)
+        XCTAssertEqual(roon.descriptor.layout, .surround51)
+        XCTAssertTrue(roon.descriptor.isLive)
+    }
+
     func testAuxAdapterUsesDiscoveredChannelCountAndRejectsMoreThanSixtyFour() throws {
         let route = liveRoute(
             uid: PureAudioLoopbackUID.aux,

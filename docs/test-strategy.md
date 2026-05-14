@@ -71,6 +71,8 @@ Counts are descriptive snapshots from the current repository. The completion rul
 
 ## Required Checks
 
+Run checks from the canonical repository root, where source, tests, scripts, docs, and task files now live directly. Do not use a wrapper workspace, copied app source tree, or separate control folder as an active verification source.
+
 Run the full SwiftPM test suite before accepting source or test changes:
 
 ```sh
@@ -90,6 +92,8 @@ When GUI or audio behavior needs runtime verification, reopen through LaunchServ
 ```
 
 Do not launch the raw GUI executable for GUI/audio verification.
+
+The root `Open Orbisonic.command` should remain a LaunchServices opener only. App refreshes, package rebuilds, signing, and installer work stay as explicit script or release-verification steps.
 
 For docs-only prompts, a build is not required unless source, tests, scripts, installer files, vendor files, or calibration files changed by mistake. The minimum docs-only checks are:
 

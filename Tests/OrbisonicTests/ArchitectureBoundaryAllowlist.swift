@@ -179,6 +179,9 @@ enum ArchitectureBoundaryAllowlist {
         "Sources/Orbisonic/BlackHoleRouteRepair.swift": [
             "importCoreAudio", "AudioDeviceID"
         ],
+        "Sources/Orbisonic/CoreAudioDanteOutputSession.swift": [
+            "importCoreAudio", "AudioDeviceID"
+        ],
         "Sources/Orbisonic/LiveAudioBridge.swift": [
             "importAudioToolbox", "importAVFoundation", "AudioUnit", "AudioDeviceID",
             "AudioBufferList", "AVAudioPCMBuffer", "UnsafeMutablePointer<Float>",
@@ -258,6 +261,8 @@ enum ArchitectureBoundaryAllowlist {
             "Legacy Core Audio route discovery until AudioCore route adapters exist.",
         "Sources/Orbisonic/BlackHoleRouteRepair.swift":
             "Legacy Core Audio route repair until route mutation is moved behind AudioCore.",
+        "Sources/Orbisonic/CoreAudioDanteOutputSession.swift":
+            "Task 012 DVS/CoreAudio route-fact query boundary behind ProductionOutputSession.",
         "Sources/AudioCore/Monitors/AppleSpatialHeadphoneMonitor.swift":
             "AudioCore-owned desktop monitor implementation; UI receives only value status and commands."
     ]

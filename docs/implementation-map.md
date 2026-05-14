@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This map helps a future Orbisonic maintainer or Codex session find the files and project-control surfaces that implement or govern a feature without first reading the whole repository. It is descriptive, not a contract. Binding behavior belongs in `docs/contracts.md`, accepted ADRs, and the current source/tests.
+This map helps a future Orbisonic maintainer or Codex session find the files and project control surfaces that implement or govern a feature without first reading the whole repository. It is descriptive, not a contract. Binding behavior belongs in `docs/contracts.md`, accepted ADRs, and the current source/tests.
 
 ## Top-Level Structure
 
@@ -11,15 +11,15 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `Package.swift`: SwiftPM products, targets, resources, linker settings, and test targets.
 - `Sources/`: Swift package source for `AudioContracts`, `AudioImport`, `AudioCore`, and `Orbisonic`.
 - `Tests/`: XCTest coverage for all SwiftPM targets.
-- `docs/`: feature, migration, project-control, and design docs.
+- `docs/`: feature, migration, project control, and design docs.
 - `docs/audits/`: retrofit audit reports and follow-up planning evidence.
 - `docs/PureAudio/`: PureAudio migration and boundary docs. Treat these as historical migration evidence unless a current contract, system flow, or accepted ADR elevates a claim.
 - `docs/release-verification.md`: release, installer, app bundle, LaunchServices, helper, and manual hardware verification checklist.
 - `docs/readiness-summary.md`: current readiness result, automated evidence, manual verification still required, release blockers, and recommended next action.
 - `.tasks/`: bounded sequential task files for audits, test-gap passes, hardening, release verification docs, readiness refresh, and manual release verification.
-- Root `Open Orbisonic - *.command` launchers: double-clickable entry points for the current build, main branch, selected release refs, and pinned commit snapshots such as `Atmos First Pass`.
-- `scripts/`: app refresh, LaunchServices reopen, installer, Roon bridge, branch launcher, deprecated-ref launcher, and embedded librespot build scripts.
-- `installer/`: app-only and suite package artifacts.
+- Root `Open Orbisonic.command`: the single double-clickable daily opener for the canonical app bundle. It reopens the existing bundle through LaunchServices and does not rebuild or re-sign the app.
+- `scripts/`: app refresh, LaunchServices reopen, app installer, suite installer, Roon bridge, branch/deprecated-ref launcher helpers, and embedded librespot build scripts.
+- `installer/`: app-only and suite package artifacts. Historical packages may remain for evidence, but current packages must be rebuilt from the merged canonical HEAD before release use.
 - `Vendor/`: vendored librespot source and Orbisonic librespot FFI crate.
 - `calibration/`: Sonic Sphere speaker layout JSON files.
 - `Orbisonic.app`: current double-clickable macOS app bundle.
@@ -346,11 +346,14 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
   - `scripts/refresh-orbisonic-app.sh`
   - `scripts/reopen-orbisonic-app.sh`
   - `scripts/build-installer.sh`
+  - `scripts/build-suite-installer.sh`
   - `scripts/install-roon-bridge.sh`
   - `scripts/build-embedded-librespot.sh`
   - `scripts/launch-orbisonic-ref.sh`
   - `scripts/deprecated-orbisonic-ref.sh`
   - `installer/`
+    - canonical package paths when rebuilt: `Orbisonic-1.3.pkg` and `OrbisonicSuite-1.3.pkg`
+    - historical artifacts: `Orbisonic-1.1.pkg` and `OrbisonicSuite-1.1.pkg`
   - `Orbisonic.app`
   - `Orbisonic.entitlements`
 - Related tests:
@@ -413,5 +416,5 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 
 ## Last Updated
 
-- 2026-05-04: Created by Prompt 03 as the baseline feature-to-file map for the project-control retrofit.
+- 2026-05-04: Created by Prompt 03 as the baseline feature-to-file map for the project control retrofit.
 - 2026-05-05: Refreshed by Prompt 19 to include release verification, readiness summary, and manual release-verification task ownership.

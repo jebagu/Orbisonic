@@ -142,6 +142,247 @@ final class AudioContractsTests: XCTestCase {
         XCTAssertEqual(ledger.validationStatus, .invalid([.productionSampleRateConversionForbidden]))
     }
 
+    func testStereoMonitorBlockRequiresFinishedStereoFloat32PCM() throws {
+        let stereo = AudioBlockContract(
+            sourceID: "local-file",
+            generation: 2,
+            sampleRate: .rate48000,
+            frameStart: 0,
+            frameCount: 512,
+            channelCount: 2,
+            processingFormat: .float32InterleavedPCM,
+            layout: SourceLayout(descriptor: .stereo, authority: .containerMetadata)
+        )
+
+        XCTAssertNoThrow(try StereoMonitorBlock(contract: stereo))
+
+        let surround = AudioBlockContract(
+            sourceID: "local-file",
+            generation: 2,
+            sampleRate: .rate48000,
+            frameStart: 0,
+            frameCount: 512,
+            channelCount: 6,
+            processingFormat: .float32InterleavedPCM,
+            layout: SourceLayout(descriptor: .surround51, authority: .containerMetadata)
+        )
+
+        XCTAssertThrowsError(try StereoMonitorBlock(contract: surround))
+    }
+
+    func testCanonicalSourceBlockRequiresPlanarProductionContract() throws {
+        let block = AudioBlockContract(
+            sourceID: "roon-capture",
+            generation: 8,
+            sampleRate: .rate48000,
+            frameStart: 1_024,
+            frameCount: 256,
+            channelCount: 6,
+            processingFormat: .float32NonInterleavedPCM,
+            layout: SourceLayout(descriptor: .surround51, authority: .liveCaptureContract, authorityID: "Orbisonic Roon Input")
+        )
+
+        let canonical = try CanonicalSourceBlock(contract: block)
+
+        XCTAssertEqual(canonical.sourceID, "roon-capture")
+        XCTAssertEqual(canonical.channelCount, 6)
+        XCTAssertEqual(canonical.layout.authority, .liveCaptureContract)
+    }
+
+    func testRenderedSphereBlockRequiresOutputMapAndSphereProfile() throws {
+        let block = AudioBlockContract(
+            sourceID: "sphere-bed",
+            generation: 4,
+            sampleRate: .rate48000,
+            frameStart: 0,
+            frameCount: 128,
+            channelCount: 31,
+            processingFormat: .float32NonInterleavedPCM,
+            layout: SourceLayout(descriptor: .direct31, authority: .rendererOutputMap, authorityID: "dante-31")
+        )
+
+        let rendered = try RenderedSphereBlock(
+            contract: block,
+            outputMapID: "dante-31",
+            sphereProfileID: "sonic-sphere-31"
+        )
+
+        XCTAssertEqual(rendered.outputMapID, "dante-31")
+        XCTAssertThrowsError(try RenderedSphereBlock(contract: block, outputMapID: "", sphereProfileID: "sonic-sphere-31"))
+    }
+
+    func testAudioConversionLedgerRepresentsRequiredOrbisonic2Paths() {
+        let source51 = AudioFormatSummary(
+            sampleRate: .rate48000,
+            channelCount: 6,
+            sampleFormat: "LPCM",
+            layoutName: "5.1 Surround"
+        )
+        let stereo = AudioFormatSummary(
+            sampleRate: .rate48000,
+            channelCount: 2,
+            sampleFormat: "Float32",
+            layoutName: "Stereo"
+        )
+        let sphere = AudioFormatSummary(
+            sampleRate: .rate48000,
+            channelCount: 31,
+            sampleFormat: "Float32",
+            layoutName: "Direct 30.1"
+        )
+        let dante = AudioFormatSummary(
+            sampleRate: .rate48000,
+            channelCount: 31,
+            sampleFormat: "PCM 24-bit",
+            layoutName: "Dante 31"
+        )
+
+        let localMonitor = AudioConversionLedger.localVLCMonitor(
+            sessionID: "s1",
+            sourceID: "local",
+            source: source51,
+            monitor: stereo
+        )
+        XCTAssertTrue(localMonitor.contains(stage: .decode, owner: .vlc))
+        XCTAssertTrue(localMonitor.contains(stage: .downmix, owner: .vlc))
+        XCTAssertTrue(localMonitor.contains(stage: .format, owner: .orbisonic))
+        XCTAssertTrue(localMonitor.contains(stage: .routeValidation, owner: .orbisonic))
+        XCTAssertFalse(localMonitor.hasHiddenConversionRisk)
+
+        let roon = AudioConversionLedger.roonCapture(
+            sessionID: "s2",
+            sourceID: "roon",
+            captured: source51
+        )
+        XCTAssertTrue(roon.contains(stage: .capture, owner: .roon))
+
+        let production = AudioConversionLedger.danteProduction(
+            sessionID: "s3",
+            sourceID: "local-prod",
+            source: source51,
+            rendered: sphere,
+            output: dante,
+            srcOccurred: true
+        )
+        XCTAssertTrue(production.contains(stage: .decode, owner: .orbisonic))
+        XCTAssertTrue(production.contains(stage: .sampleRateConversion, owner: .sourceRateConverter))
+        XCTAssertTrue(production.contains(stage: .render, owner: .sonicSphereRenderer))
+        XCTAssertTrue(production.contains(stage: .format, owner: .danteOutputFormatter))
+        XCTAssertTrue(production.contains(stage: .routeValidation, owner: .productionOutputSession))
+
+        let pure = AudioConversionLedger.pureSphericalDirect(
+            sessionID: "s4",
+            sourceID: "pure",
+            source: sphere,
+            output: dante
+        )
+        XCTAssertTrue(pure.contains(stage: .validation, owner: .pureSphericalLosslessValidator))
+        XCTAssertTrue(pure.contains(stage: .directRead, owner: .pureSphericalLosslessReader))
+        XCTAssertTrue(pure.contains(stage: .routeValidation, owner: .productionOutputSession))
+        XCTAssertFalse(pure.contains(stage: .render, owner: .sonicSphereRenderer))
+    }
+
+    func testPureSphericalLosslessBadgeTextIsRestrictedToApprovedLabels() {
+        XCTAssertNil(PureSphericalLosslessState.none.badgeText)
+        XCTAssertNil(PureSphericalLosslessState.candidate.badgeText)
+        XCTAssertNil(PureSphericalLosslessState.invalid(reason: "metadata missing").badgeText)
+        XCTAssertEqual(PureSphericalLosslessState.validForCurrentSphere.badgeText, "Pure Spherical Lossless")
+        XCTAssertEqual(PureSphericalLosslessState.validForDifferentSphere.badgeText, "Pure Spherical Lossless, different sphere")
+        XCTAssertEqual(PureSphericalLosslessState.routeNotReady.badgeText, "Pure Spherical Lossless, route not ready")
+    }
+
+    func testPlaybackDiagnosticSnapshotCarriesRequiredMinimumFacts() {
+        let source = AudioFormatSummary(
+            sampleRate: .rate48000,
+            channelCount: 6,
+            sampleFormat: "Float32",
+            layoutName: "5.1 Surround"
+        )
+        let output = AudioFormatSummary(
+            sampleRate: .rate48000,
+            channelCount: 31,
+            sampleFormat: "PCM 24-bit",
+            layoutName: "Dante 31"
+        )
+        let ledger = AudioConversionLedger.danteProduction(
+            sessionID: "diagnostic-session",
+            sourceID: "source",
+            source: source,
+            rendered: output,
+            output: output,
+            srcOccurred: false
+        )
+
+        let snapshot = PlaybackDiagnosticSnapshot(
+            sessionID: "diagnostic-session",
+            sourceID: "source",
+            sourceKind: .localFile,
+            sourceSampleRate: .rate48000,
+            sourceChannelCount: 6,
+            decodeOwner: .orbisonic,
+            rendererOwner: .sonicSphereRenderer,
+            outputFormatterOwner: .danteOutputFormatter,
+            requestedOutputFormat: output,
+            actualOutputFormat: output,
+            routeChannelCount: 31,
+            underflowCount: -1,
+            overflowCount: 2,
+            staleGenerationRejectedCount: 3,
+            pureSphericalLosslessState: .none,
+            conversionLedger: ledger
+        )
+
+        XCTAssertEqual(snapshot.sourceSampleRate, .rate48000)
+        XCTAssertEqual(snapshot.sourceChannelCount, 6)
+        XCTAssertEqual(snapshot.rendererOwner, .sonicSphereRenderer)
+        XCTAssertEqual(snapshot.outputFormatterOwner, .danteOutputFormatter)
+        XCTAssertEqual(snapshot.routeChannelCount, 31)
+        XCTAssertEqual(snapshot.underflowCount, 0)
+        XCTAssertEqual(snapshot.overflowCount, 2)
+        XCTAssertEqual(snapshot.staleGenerationRejectedCount, 3)
+        XCTAssertTrue(snapshot.conversionLedger.contains(stage: .render, owner: .sonicSphereRenderer))
+        XCTAssertTrue(snapshot.completenessIssues(requiredStages: [.decode, .render, .format, .routeValidation]).isEmpty)
+    }
+
+    func testPlaybackDiagnosticCompletenessReportsMissingLedgerStagesAndOwnerMismatches() {
+        let source = AudioFormatSummary(
+            sampleRate: .rate48000,
+            channelCount: 2,
+            sampleFormat: "Float32",
+            layoutName: "Stereo"
+        )
+        let ledger = AudioConversionLedger(
+            sessionID: "bad-session",
+            sourceID: "source",
+            sourceKind: .spotify,
+            entries: [
+                AudioConversionLedgerEntry(
+                    stage: .capture,
+                    owner: .spotify,
+                    output: source,
+                    isExplicit: true
+                )
+            ]
+        )
+        let snapshot = PlaybackDiagnosticSnapshot(
+            sessionID: "bad-session",
+            sourceID: "source",
+            sourceKind: .spotify,
+            sourceSampleRate: .rate48000,
+            sourceChannelCount: 2,
+            decodeOwner: .none,
+            requestedOutputFormat: source,
+            actualOutputFormat: source,
+            routeChannelCount: 2,
+            conversionLedger: ledger
+        )
+
+        let issues = snapshot.completenessIssues(requiredStages: [.capture, .format])
+
+        XCTAssertTrue(issues.contains(.missingLedgerStage(.format)))
+        XCTAssertTrue(issues.contains(.ownerMismatch(stage: .capture, snapshotOwner: .none, ledgerOwners: [.spotify])))
+    }
+
     func testAudioContractsSourceDoesNotImportForbiddenAudioFrameworks() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -6,7 +6,7 @@ Status: Accepted
 
 The current Orbisonic repository already contains a native Swift/macOS app, SwiftPM package targets, tests, app-bundle scripts, installer artifacts, local file playback, live loopback capture, Roon support, Spotify support, renderer code, monitor code, diagnostics, and project docs.
 
-The project-control prompt sequence is being run against this existing app. The purpose is to make the current architecture safer to change, not to replace it with a new product.
+The project control prompt sequence is being run against this existing app. The purpose is to make the current architecture safer to change, not to replace it with a new product.
 
 ## Decision
 

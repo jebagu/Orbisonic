@@ -237,12 +237,20 @@ final class OrbisonicEngine {
 
     private static let maxStreamingScheduledAheadSeconds: TimeInterval = 2
     private static let maxStreamingScheduledPCMBytes = 64 * 1_024 * 1_024
+    private static var isRunningUnitTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+            ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil ||
+            Bundle.allBundles.contains { $0.bundlePath.hasSuffix(".xctest") } ||
+            NSClassFromString("XCTest.XCTestCase") != nil ||
+            NSClassFromString("XCTestCase") != nil
+    }
 
-    private let engine = AVAudioEngine()
-    private let preVolumeMixer = AVAudioMixerNode()
-    private let outputGainMixer = AVAudioMixerNode()
+    private let audioGraphEnabled: Bool
+    private lazy var engine = AVAudioEngine()
+    private lazy var preVolumeMixer = AVAudioMixerNode()
+    private lazy var outputGainMixer = AVAudioMixerNode()
     private let loader = AudioFileLoader()
-    private let diagnosticMonitorEngine = AVAudioEngine()
+    private lazy var diagnosticMonitorEngine = AVAudioEngine()
     private let meteringService = MeteringService()
     private let fixedLocalGaplessConfig: LocalGaplessSchedulerConfig?
     private var localGaplessConfig: LocalGaplessSchedulerConfig {
@@ -281,11 +289,18 @@ final class OrbisonicEngine {
     var debugPausedPlaybackNeedsReschedule: Bool { pausedPlaybackNeedsReschedule }
 #endif
 
-    init(localGaplessConfig: LocalGaplessSchedulerConfig? = nil) {
+    init(localGaplessConfig: LocalGaplessSchedulerConfig? = nil, audioGraphEnabled: Bool? = nil) {
+        let resolvedAudioGraphEnabled = audioGraphEnabled ?? !Self.isRunningUnitTests
+        self.audioGraphEnabled = resolvedAudioGraphEnabled
         self.fixedLocalGaplessConfig = localGaplessConfig
-        configureGraph()
-        applyTuning(.default)
-        AppLogger.shared.notice(category: "engine", "Engine initialized. outputType=normal-monitor-stereo logFile=\(AppLogger.logFilePath)")
+        if resolvedAudioGraphEnabled {
+            configureGraph()
+            applyTuning(.default)
+        }
+        AppLogger.shared.notice(
+            category: "engine",
+            "Engine initialized. outputType=normal-monitor-stereo audioGraphEnabled=\(resolvedAudioGraphEnabled) logFile=\(AppLogger.logFilePath)"
+        )
     }
 
     func loadFile(url: URL) throws -> LoadedAudioFile {
@@ -331,8 +346,10 @@ final class OrbisonicEngine {
         state = .ready
         debugTiming?.log("replace current source end", fileURL: loaded.url)
 
-        rebuildPlaybackGraph(for: loaded, debugTiming: debugTiming)
-        applyTuning(tuning)
+        if audioGraphEnabled {
+            rebuildPlaybackGraph(for: loaded, debugTiming: debugTiming)
+            applyTuning(tuning)
+        }
 
         AppLogger.shared.notice(
             category: "engine",
@@ -398,6 +415,22 @@ final class OrbisonicEngine {
         state = .ready
         completionToken = context.token
 
+        if !audioGraphEnabled {
+            source.start()
+            do {
+                try await scheduleStreamingPreroll(for: context, debugTiming: debugTiming)
+            } catch {
+                cancelStreamingPlayback(reason: "initial preroll failed")
+                throw error
+            }
+            state = .playing
+            AppLogger.shared.notice(
+                category: "streaming",
+                "Started streaming playback without CoreAudio graph file=\(descriptor.url.lastPathComponent) channels=\(descriptor.channelCount)"
+            )
+            return
+        }
+
         rebuildStreamingPlaybackGraph(for: context, debugTiming: debugTiming)
         applyTuning(tuning)
 
@@ -457,6 +490,7 @@ final class OrbisonicEngine {
         rendererMode = mode
         rendererScene = scene
 
+        guard audioGraphEnabled else { return }
         guard let loadedFile, liveInputSource == nil, testToneNodes.isEmpty else { return }
         guard state != .playing, state != .paused else {
             AppLogger.shared.info(category: "renderer", "Deferred renderer graph rebuild until playback stops or resumes.")
@@ -472,6 +506,7 @@ final class OrbisonicEngine {
     }
 
     func setOutputVolume(_ volume: Float) {
+        guard audioGraphEnabled else { return }
         outputGainMixer.outputVolume = min(max(volume, 0), 1)
         diagnosticMonitorEngine.mainMixerNode.outputVolume = min(max(volume, 0), 1)
     }
@@ -483,6 +518,11 @@ final class OrbisonicEngine {
     func setDiagnosticMonitorOutputDevice(_ deviceID: AudioDeviceID?) throws {
         guard let deviceID, deviceID != 0 else {
             diagnosticMonitorOutputDeviceID = nil
+            return
+        }
+
+        guard audioGraphEnabled else {
+            diagnosticMonitorOutputDeviceID = deviceID
             return
         }
 
@@ -650,6 +690,18 @@ final class OrbisonicEngine {
             return
         }
 
+        guard audioGraphEnabled else {
+#if DEBUG
+            if pausedPlaybackNeedsReschedule {
+                debugScheduleFromCurrentPositionCount += 1
+            }
+#endif
+            pausedPlaybackNeedsReschedule = false
+            state = .playing
+            AppLogger.shared.notice(category: "transport", "Started playback without CoreAudio graph for tests.")
+            return
+        }
+
         if !engine.isRunning {
             try engine.start()
             AppLogger.shared.notice(category: "engine", "AVAudioEngine started successfully.")
@@ -733,6 +785,7 @@ final class OrbisonicEngine {
     }
 
     func setOutputDevice(_ deviceID: AudioDeviceID) throws {
+        guard audioGraphEnabled else { return }
         guard deviceID != 0 else {
             throw OutputDeviceSelectionError.invalidDevice
         }
@@ -767,6 +820,7 @@ final class OrbisonicEngine {
 
     @discardableResult
     func setOutputDevicePreservingPlayback(_ deviceID: AudioDeviceID) throws -> Bool {
+        guard audioGraphEnabled else { return false }
         let snapshot = OutputDevicePlaybackSnapshot(
             wasEngineRunning: engine.isRunning,
             transportState: state,
@@ -787,6 +841,16 @@ final class OrbisonicEngine {
 
     func stop() {
         let hadStreamingPlayback = streamingPlayback != nil
+        if !audioGraphEnabled {
+            cancelLocalGaplessScheduler(reason: "transport stop")
+            cancelStreamingPlayback(reason: "transport stop")
+            completionToken = UUID()
+            currentStartFrame = 0
+            pausedPlaybackNeedsReschedule = false
+            state = (loadedFile == nil && !hadStreamingPlayback) ? .idle : .ready
+            AppLogger.shared.notice(category: "transport", "Stopped playback without CoreAudio graph. state=\(state.rawValue)")
+            return
+        }
         cancelLocalGaplessScheduler(reason: "transport stop")
         playerNodes.forEach { $0.stop() }
         cancelStreamingPlayback(reason: "transport stop")
@@ -950,6 +1014,11 @@ final class OrbisonicEngine {
     }
 
     func stopTestTone() {
+        guard audioGraphEnabled else {
+            testToneNodes = []
+            diagnosticMonitorToneNodes = []
+            return
+        }
         stopDiagnosticMonitorTone()
         guard !testToneNodes.isEmpty else { return }
 
@@ -962,6 +1031,10 @@ final class OrbisonicEngine {
     }
 
     private func stopDiagnosticMonitorTone() {
+        guard audioGraphEnabled else {
+            diagnosticMonitorToneNodes = []
+            return
+        }
         guard !diagnosticMonitorToneNodes.isEmpty || diagnosticMonitorEngine.isRunning else { return }
 
         diagnosticMonitorToneNodes.forEach { node in
@@ -1156,6 +1229,7 @@ final class OrbisonicEngine {
     }
 
     func monitorMeterChannelCount() -> Int {
+        guard audioGraphEnabled else { return 2 }
         let mixerCount = Int(preVolumeMixer.outputFormat(forBus: 0).channelCount)
         if mixerCount > 0 {
             return mixerCount
@@ -2044,6 +2118,18 @@ final class OrbisonicEngine {
         _ context: StreamingPlaybackContext,
         debugTiming: DebugTimingContext?
     ) throws {
+        guard audioGraphEnabled else {
+            switch state {
+            case .paused, .idle, .ready:
+                state = .playing
+                pausedPlaybackNeedsReschedule = false
+                AppLogger.shared.notice(category: "streaming", "Started streaming playback without CoreAudio graph.")
+            case .playing:
+                AppLogger.shared.debug(category: "streaming", "Streaming play requested while already playing.")
+            }
+            return
+        }
+
         if !engine.isRunning {
             try engine.start()
             AppLogger.shared.notice(category: "engine", "AVAudioEngine started for streaming playback.")

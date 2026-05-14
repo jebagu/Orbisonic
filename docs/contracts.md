@@ -8,7 +8,7 @@
 - Every module should have tests matching its contract.
 - Modules should avoid reaching across boundaries.
 - Audio-path correctness outranks UI convenience.
-- Current source, tests, README, AGENTS.md, Package.swift, and project-control docs are the source of truth for this baseline.
+- Current source, tests, README, AGENTS.md, Package.swift, and project control docs are the source of truth for this baseline.
 - Hardware-only behavior must be documented as manual verification when it cannot run in automated tests.
 - Silent live input must remain diagnosable. Do not hide it with synthetic signal, gain, buffering tricks, fake channels, or fallback routing.
 - Local file playback and live loopback capture are separate paths.

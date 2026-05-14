@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-Post-retrofit readiness / manual release verification.
+Canonical one-directory readiness / manual release verification.
 
 ## Current Milestone
 
-Partial manual release verification complete; next milestone is clean signed installer rebuild plus hardware/service verification.
+Canonical directory merge complete. Next milestone is fresh release packaging plus manual hardware, service, installer, signing, and notarization gates from the merged repository.
 
 ## Project Summary
 
@@ -27,7 +27,9 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Roon metadata and transport bridge support in `Sources/Orbisonic/RoonNowPlayingMonitor.swift`, `Sources/Orbisonic/RoonBridgeClient.swift`, and `Sources/Orbisonic/Resources/RoonBridge/`.
 - Spotify receiver support in `Sources/Orbisonic/SpotifyReceiverClient.swift` with vendored librespot sources under `Vendor/`.
 - Atmos DRP source support in `Sources/Orbisonic/DolbyReferencePlayerController.swift`, with `SourceMode.atmosDRP` displayed as `Atmos`, temporary Aux loopback routing through `AtmosDRPRoutingPolicy`, and DRP bitstream metadata in app/web state.
-- Pinned Atmos first-pass launcher at `Open Orbisonic - Atmos First Pass.command`, using the existing isolated launcher helper against commit `76ca882`.
+- Single canonical opener at `Open Orbisonic.command`; historical branch/release/commit launchers are no longer active root entry points.
+- Imported app-source history is merged into this repository history; source, tests, scripts, docs, and tasks now live directly under the canonical root.
+- Former split-workspace control material has been flattened into `docs/` and `.tasks/`; deprecated prompts and task files are retained only under `deprecated/` or `.tasks/deprecated/`.
 - Renderer, monitor, metering, diagnostics, route monitoring, and test tone support in current source and tests.
 - PureAudio boundary, sample-rate, conversion-ledger, Apple spatial monitor, and system-flow docs under `docs/PureAudio/`.
 - Loopback input support spec, embedded librespot integration notes, local gapless playback plan, release notes, calibration layouts, and VU design-lab spec.
@@ -42,19 +44,25 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 
 ## In Progress Items
 
-- `.tasks/012-manual-release-verification.md` is partially complete and blocked on clean signed installer artifacts plus hardware and external-service checks.
-- The current repo-root app bundle has been refreshed, and the installed `/Applications/Orbisonic.app` launches through LaunchServices.
+- `.tasks/012-manual-release-verification.md` is partially complete and blocked on administrator-authenticated installer execution, signing/notarization credentials, and positive hardware/service checks.
+- The current repo-root app bundle is refreshed through explicit scripts; installed-app and package verification remain release-gate work.
 
 ## Pending Follow-Up Tasks
 
-- Rebuild signed installer artifacts from a clean tested commit, then finish `.tasks/012-manual-release-verification.md` before calling a release candidate ready.
+- Rebuild current installers from the canonical merged repo with administrator authentication, configure Developer ID signing/notarization if release distribution is intended, then finish `.tasks/018-hardware-readiness-manual-gates.md` before calling a release candidate ready.
 - Revalidate historical `docs/PureAudio/` claims before elevating any historical migration note into a binding contract.
 
 ## Blocked Items
 
 - No documentation-refresh blocker is known.
-- Release readiness is blocked until package artifacts match the tested code, packages are signed if public distribution requires it, and hardware/service verification is run and recorded.
+- Release readiness is blocked until the current packages are installer-executed, signed if public distribution requires it, notarized if needed, and hardware/service verification is run and recorded.
 - Hardware-only verification is not available from docs inspection alone and must remain manual until tested with the relevant devices.
+- 2026-05-09 hardware gate update: Dante Virtual Soundcard app and HAL driver are present and the DVS launch daemon is running, but Dante Controller is not installed, so Dante subscriptions, encoding, clock lock, latency, and physical channel identity remain unverified.
+- 2026-05-10 default-switch review update: no new default switches are approved from the current evidence set; the project is ready for implementation milestone review, not release-ready signoff.
+- 2026-05-10 full-suite check: `swift test --disable-sandbox` passed with 648 tests and 0 failures after isolating unit-test scheduler and engine paths from live CoreAudio graph construction.
+- 2026-05-10 implementation milestone review: project control Task 000 through Task 019 sequence is complete; full-suite health is restored, but release readiness still depends on manual hardware/service/installer/signing gates.
+- 2026-05-10 imported artifact update: the former sibling app-source branch built unsigned dirty-tree app and suite packages; those artifacts were not retained as active canonical release packages.
+- 2026-05-10 installer/signing gate attempt: CLI install from `/private/tmp` is blocked because `sudo` requires a password; installed `/Applications/Orbisonic.app` remains version `1.1` stamped `8ffa977`; signing and notarization are blocked because there are no valid local signing identities and no `notarytool` credentials.
 
 ## Current Risks
 
@@ -70,13 +78,22 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Embedded librespot linking depends on the local Rust-built static library being present in `.build/orbisonic-librespot`.
 - Sonic Sphere, Dante, loopback devices, Spotify receiver, Roon bridge, app signing, and installer behavior all require manual runtime verification beyond unit tests.
 - Real Dolby Reference Player/iLok behavior, Atmos playback, and loopback capture for the Atmos source require manual runtime verification beyond unit tests.
-- Current package files are unsigned.
-- The refreshed repo-root app bundle is stamped from a dirty working tree.
-- The installed package app is stamped `8ffa977`, while the tested working tree is `64f7fea` with uncommitted changes.
+- Current package files are unsigned and must be rebuilt from the merged canonical HEAD before release use.
+- The installed `/Applications/Orbisonic.app` may differ from the canonical repo bundle until installer execution is run.
+- Non-interactive CLI installation is blocked until administrator authentication is available.
+- Developer ID package signing and notarization are blocked until signing identities and notarytool credentials are configured.
+- Dante Virtual Soundcard installed/running does not prove the Dante network route, Sonic Sphere speaker order, Roon/Spotify/Aux capture, microphone permission, installer execution, signing, or notarization gates.
+- No proof harness, simulated backend, or guarded integration should become a default path until its focused tests, relevant manual gates, packaging/signing, and rollback evidence are recorded.
 
 ## Recent Changes
 
+- 2026-05-14: Completed the canonical directory merge on `codex/canonical-orbisonic-merge`, preserving both current main history and the imported app-source history, flattening control material into this repo, replacing versioned root launchers with `Open Orbisonic.command`, and moving the former sibling workspace out of active projects to a temporary rollback archive outside the repo.
+- 2026-05-14: Full SwiftPM suite passed after the merge with 656 tests and 0 failures; stale split-workspace naming and privacy scans passed for active files.
 - 2026-05-10: Added a separate `Atmos` source for Dolby Reference Player playback with modular DRP process ownership, temporary Aux loopback routing policy, output-layout setting, DRP metadata parsing, native/web state exposure, and focused tests. Real DRP/iLok and Atmos playback verification remain manual.
+- 2026-05-10: Completed release gate and default-switch review. No defaults were switched; rollback remains available; release readiness remains blocked by hardware, service, installer, signing, and packaging/license evidence gaps.
+- 2026-05-10: Completed implementation milestone review for the imported audio-chain work. Release readiness remains blocked by manual gates and release artifacts.
+- 2026-05-10: Fixed the LocalGaplessScheduler/CoreAudio full-suite blocker by avoiding live CoreAudio graph construction in unit-test scheduler and engine paths. The imported app source passed `swift test --disable-sandbox` with 648 tests and 0 failures before the canonical merge.
+- 2026-05-09: Updated `docs/release-verification.md` with explicit Dante Controller, physical channel-walk, route/permission, and current hardware-gate result sections. DVS is installed and running; Dante Controller and physical/service/installer/signing gates remain blocked or not run.
 - 2026-05-07: Added Task 16 final VLC/Orbisonic technical report under `docs/audio-vlc-investigation/`, recommending no VLC integration yet, defining native playback diagnostics and reference comparison as the next engineering step, and preserving VLC only as a conditional later decode bridge or diagnostic baseline; no app code changed.
 - 2026-05-07: Added Task 15 prototype plan under `docs/audio-vlc-investigation/`, recommending no VLC integration yet until the current Orbisonic playback fault is isolated, defining PR-sized diagnostics/reference/channel-identity steps before any guarded libVLC work, and documenting rollback/safety requirements; no app code changed.
 - 2026-05-07: Added Task 14 licensing/dependency/packaging risk analysis under `docs/audio-vlc-investigation/`, finding Path B has the lowest legal/packaging risk, Path A is the lowest-risk VLC dependency if VLC is still needed, and custom VLC module or copied-source work requires explicit legal review; no app code changed.
@@ -93,7 +110,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - 2026-05-07: Added Task 03 playback module boundary analysis under `docs/audio-vlc-investigation/`, separating Orbisonic transport, media opening, decode, PCM conversion, resampling, channel mapping, spatial renderer, device output, timing, and flush/drain ownership; no app code changed.
 - 2026-05-07: Added Task 02 Orbisonic playback architecture map under `docs/audio-vlc-investigation/`, covering local prepared playback, streaming/gapless playback, live loopback capture, renderer/metering, device backend, and PureAudio boundary evidence; no app code changed.
 - 2026-05-07: Started `docs/audio-vlc-investigation/` with Task 01 baseline for the Orbisonic playback and VLC/libVLC replacement investigation; no app code changed.
-- 2026-05-04: Prompt 02 created baseline project-control docs: `docs/status.md` and `docs/product-brief.md`.
+- 2026-05-04: Prompt 02 created baseline project control docs: `docs/status.md` and `docs/product-brief.md`.
 - 2026-05-04: Prompt 03 created `docs/architecture.md` and `docs/implementation-map.md`, and updated this status file.
 - 2026-05-04: Prompt 04 created `docs/contracts.md`, including module and feature-boundary contracts for audio contracts, import, core audio, app shell, engine, live loopback, local files, Roon, Spotify, Aux, renderer, monitor, diagnostics, and installer scripts.
 - 2026-05-04: Prompt 05 created `docs/system-flows.md` with Mermaid diagrams for system context, local files, Roon, Spotify, Aux, renderer, monitor, diagnostics, test tones, logging, and manual hardware verification.
@@ -101,17 +118,17 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - 2026-05-04: Prompt 07 created retrospective ADRs under `docs/decisions/` covering retrofit-not-rewrite, SwiftPM target boundaries, AudioContracts as shared language, selected-source-only behavior, Sonic Sphere 30.1 production output, embedded librespot, and Roon loopback boundaries.
 - 2026-05-05: Prompt 08 upgraded `AGENTS.md` into the repo-level operating constitution while preserving Orbisonic scope, privacy, LaunchServices, live audio, Roon, Aux, Sonic Sphere, and design rules.
 - 2026-05-05: Prompt 09 created the `.tasks/` control graph for audit, accepted doc fixes, contract-test gap work, boundary tests, audio hardening, installer/release verification docs, and final readiness refresh.
-- 2026-05-05: Prompt 10 created `docs/audits/0001-plan-audit.md` with prioritized findings comparing project-control docs, tasks, source evidence, and tests.
-- 2026-05-05: Prompt 11 applied accepted plan-audit fixes to docs and tasks, clarified project-control completion rules, updated task verification, refreshed stale project-control wording, and documented the carried-forward README setup issue.
+- 2026-05-05: Prompt 10 created `docs/audits/0001-plan-audit.md` with prioritized findings comparing project control docs, tasks, source evidence, and tests.
+- 2026-05-05: Prompt 11 applied accepted plan-audit fixes to docs and tasks, clarified project control completion rules, updated task verification, refreshed stale project control wording, and documented the carried-forward README setup issue.
 - 2026-05-05: Prompt 12 created `docs/audits/0002-contract-test-gap-audit.md`, identified selected live-source no-signal diagnostics as the first useful test gap, and updated `docs/test-strategy.md`.
-- 2026-05-05: Prompt 13 updated `Tests/OrbisonicTests/OrbisonicWebStateTests.swift` with deterministic selected live-source no-signal coverage for Roon, Spotify, and Aux, and updated project-control docs for the new coverage.
+- 2026-05-05: Prompt 13 updated `Tests/OrbisonicTests/OrbisonicWebStateTests.swift` with deterministic selected live-source no-signal coverage for Roon, Spotify, and Aux, and updated project control docs for the new coverage.
 - 2026-05-05: Prompt 14 strengthened `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift` and `ArchitectureBoundaryAllowlist.swift` to protect SwiftPM dependency direction, lower-target runtime leakage, source-integration renderer ownership, and monitor/production topology separation.
 - 2026-05-05: Prompt 15 added `LiveLoopbackDiagnostics`, surfaced capture diagnosis rows in Diagnostics, enriched silent-input warning logs, and added deterministic tests for route, sample-rate, channel-count, permission, buffer-counter, and player-activity separation cases.
 - 2026-05-05: Prompt 16 hardened source transitions so Off and Test Tone clear stale local playback snapshots, kept Spotify health reporting inside the fixed stereo boundary, and added deterministic web-state tests for those source-isolation cases.
 - 2026-05-05: Prompt 17 hardened the renderer/monitor boundary so normal-monitor route selection is explicitly independent from production renderer modes, including Direct 30/31, and added deterministic tests that monitor planning leaves the Sonic Sphere 30.1 scene topology unchanged.
 - 2026-05-05: Prompt 18 created `docs/release-verification.md`, updated release/setup documentation for `Orbisonic Spotify Input`, and connected release verification to the implementation map, test strategy, and task graph.
-- 2026-05-05: Prompt 19 created `docs/readiness-summary.md`, refreshed stale project-control claims, marked task status drift, added `.tasks/012-manual-release-verification.md`, and set manual release verification as the next action.
-- 2026-05-07: Task 012 partially verified the current release candidate: full SwiftPM suite passed, repo-root app bundle refresh passed, app-only and suite installers passed from `/private/tmp`, installed app verification passed, all three HAL drivers installed as `0.2.0`, Roon bridge dependency install passed, Core Audio sees all three Orbisonic inputs, and remaining clean-package / hardware / service checks were recorded as blockers.
+- 2026-05-05: Prompt 19 created `docs/readiness-summary.md`, refreshed stale project control claims, marked task status drift, added `.tasks/012-manual-release-verification.md`, and set manual release verification as the next action.
+- 2026-05-07: Task 012 partially verified the historical 1.1 release candidate: full SwiftPM suite passed, repo-root app bundle refresh passed, app-only and suite installers passed from `/private/tmp`, installed app verification passed, all three HAL drivers installed as `0.2.0`, Roon bridge dependency install passed, Core Audio sees all three Orbisonic inputs, and remaining clean-package / hardware / service checks were recorded as blockers.
 - 2026-05-07: Added `Open Orbisonic - Release - v1.1.command`, a root double-click launcher for the `v1.1` tag using the existing isolated per-ref launcher helper.
 
 ## Commands Run
@@ -127,7 +144,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `rg -n "^import " Sources Tests | sort`
 - `git status --short`
 - `git diff --name-only -- AGENTS.md README.md Package.swift Sources Tests scripts installer Vendor calibration`
-- Privacy-sensitive path/name scan across new project-control docs.
+- Privacy-sensitive path/name scan across new project control docs.
 - `rg -n "[ \t]+$" docs/status.md docs/product-brief.md docs/architecture.md docs/implementation-map.md`
 - `git diff --check`
 - `sed -n '1,180p' AGENTS.md`
@@ -140,8 +157,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `rg -n "SourceMode|OrbisonicLoopbackDevice|RendererAudioRoutingPolicy|RendererRenderMode|NormalMonitor|Roon|Spotify|Aux|source-channel|64|Direct 30|direct30|direct31|AudioError|ConversionLedger|LiveAudioSignalState|SampleRate|sample rate|channel count" Sources/AudioContracts Sources/AudioImport Sources/AudioCore Sources/Orbisonic Tests`
 - Contract field scan for required per-contract headings in `docs/contracts.md`.
 - Source/test/script/vendor/installer change check after Prompt 04.
-- Privacy-sensitive path/name scan across current project-control docs.
-- Trailing-whitespace scan across current project-control docs.
+- Privacy-sensitive path/name scan across current project control docs.
+- Trailing-whitespace scan across current project control docs.
 - `sed -n '523,618p' orbisonic_codex_prompt_sequence.md`
 - `sed -n '1,260p' docs/contracts.md`
 - `sed -n '261,620p' docs/contracts.md`
@@ -159,8 +176,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `find Tests -maxdepth 3 -type f | sort`
 - Source searches and targeted reads for local file, live loopback, Roon, Spotify, Aux, renderer, monitor, diagnostics, logging, and test-tone flows.
 - Prompt 05 docs/source/test/script/vendor/installer change check.
-- Prompt 05 privacy-sensitive path/name scan across current project-control docs.
-- Prompt 05 trailing-whitespace scan across current project-control docs.
+- Prompt 05 privacy-sensitive path/name scan across current project control docs.
+- Prompt 05 trailing-whitespace scan across current project control docs.
 - Prompt 05 `git diff --check`.
 - `sed -n '619,744p' orbisonic_codex_prompt_sequence.md`
 - `find Tests -maxdepth 2 -type f | sort`
@@ -177,8 +194,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `sed -n '220,460p' docs/system-flows.md`
 - `sed -n '260,620p' docs/implementation-map.md`
 - Prompt 06 docs/source/test/script/vendor/installer change check.
-- Prompt 06 privacy-sensitive path/name scan across current project-control docs.
-- Prompt 06 trailing-whitespace scan across current project-control docs.
+- Prompt 06 privacy-sensitive path/name scan across current project control docs.
+- Prompt 06 trailing-whitespace scan across current project control docs.
 - Prompt 06 `git diff --check`.
 - `sed -n '746,860p' orbisonic_codex_prompt_sequence.md`
 - `find docs -maxdepth 2 -type f | sort`
@@ -191,8 +208,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `sed -n '1,120p' Sources/Orbisonic/SpotifyReceiverClient.swift`
 - Prompt 07 docs/source/test/script/vendor/installer change check.
 - Prompt 07 ADR field check.
-- Prompt 07 privacy-sensitive path/name scan across current project-control docs.
-- Prompt 07 trailing-whitespace scan across current project-control docs.
+- Prompt 07 privacy-sensitive path/name scan across current project control docs.
+- Prompt 07 trailing-whitespace scan across current project control docs.
 - Prompt 07 `git diff --check`.
 - `sed -n '835,978p' orbisonic_codex_prompt_sequence.md`
 - `sed -n '1,260p' AGENTS.md`
@@ -212,8 +229,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `git diff -- AGENTS.md docs/status.md`
 - Prompt 08 required-section and preserved-rule scan across `AGENTS.md` and `docs/status.md`.
 - Prompt 08 source/test/script/vendor/installer/calibration change check.
-- Prompt 08 personal path/name scan across current project-control docs.
-- Prompt 08 trailing-whitespace scan across current project-control docs.
+- Prompt 08 personal path/name scan across current project control docs.
+- Prompt 08 trailing-whitespace scan across current project control docs.
 - Prompt 08 `git diff --check`.
 - `sed -n '978,1135p' orbisonic_codex_prompt_sequence.md`
 - `sed -n '1,260p' AGENTS.md`
@@ -232,8 +249,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `find .tasks -maxdepth 1 -type f | sort`
 - Prompt 09 required task-section scans across `.tasks/*.md`.
 - Prompt 09 source/test/script/vendor/installer/calibration change check.
-- Prompt 09 personal path/name scan across `.tasks/` and current project-control docs.
-- Prompt 09 trailing-whitespace scan across `.tasks/` and current project-control docs.
+- Prompt 09 personal path/name scan across `.tasks/` and current project control docs.
+- Prompt 09 trailing-whitespace scan across `.tasks/` and current project control docs.
 - Prompt 09 `git diff --check`.
 - Prompt 09 `git status --short`.
 - `sed -n '1095,1215p' orbisonic_codex_prompt_sequence.md`
@@ -260,8 +277,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `mkdir -p docs/audits`
 - Prompt 10 required audit-section scan.
 - Prompt 10 source/test/script/vendor/installer/calibration change check.
-- Prompt 10 personal path/name scan across audit, status, tasks, and current project-control docs.
-- Prompt 10 trailing-whitespace scan across audit, status, tasks, and current project-control docs.
+- Prompt 10 personal path/name scan across audit, status, tasks, and current project control docs.
+- Prompt 10 trailing-whitespace scan across audit, status, tasks, and current project control docs.
 - Prompt 10 `git diff --check`.
 - Prompt 10 `git status --short`.
 - `sed -n '1215,1375p' orbisonic_codex_prompt_sequence.md`
@@ -277,8 +294,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `sed -n '205,245p' docs/status.md`
 - Prompt 11 source/test/script/vendor/installer/calibration change check.
 - Prompt 11 required status/task/content scan.
-- Prompt 11 personal path/name scan across current project-control docs, audit docs, and task files.
-- Prompt 11 trailing-whitespace scan across current project-control docs, audit docs, and task files.
+- Prompt 11 personal path/name scan across current project control docs, audit docs, and task files.
+- Prompt 11 trailing-whitespace scan across current project control docs, audit docs, and task files.
 - Prompt 11 `git diff --check`.
 - Prompt 11 `git status --short`.
 - `sed -n '1340,1515p' orbisonic_codex_prompt_sequence.md`
@@ -331,7 +348,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `git diff --name-only -- Sources Package.swift README.md scripts installer Vendor calibration`
 - `git diff --check`
 - Prompt 16 privacy-sensitive scan over changed source-isolation docs and web-state tests; hits were expected test-token/artwork assertions, generated `.flac` fixture naming, and existing privacy-rule wording.
-- Prompt 17 targeted source/test/doc reads for renderer topology, Direct 30/31, normal-monitor routing, monitor graph topology, metering isolation, and project-control docs.
+- Prompt 17 targeted source/test/doc reads for renderer topology, Direct 30/31, normal-monitor routing, monitor graph topology, metering isolation, and project control docs.
 - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter RendererModuleTests/testNormalMonitorPlanningLeavesProductionSonicSphereSceneUnchanged`
 - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter NormalMonitorRouteBranchRemovalTests/testNormalMonitorDoesNotDependOnAnyRendererModeIncludingDirectBypass`
 - Test-count refresh for `AudioContractsTests`, `AudioImportTests`, `AudioCoreTests`, and `OrbisonicTests`.
@@ -340,7 +357,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `git diff --check`
 - `git diff --name-only -- AGENTS.md README.md Package.swift Sources Tests scripts installer Vendor calibration docs .tasks`
 - Prompt 17 privacy-sensitive scan over changed renderer/monitor docs, source, and tests; hits were expected privacy-rule wording in `docs/test-strategy.md` and prior Prompt 16 status wording.
-- Prompt 18 targeted reads for README, release notes, project-control docs, installer package inventory, scripts, Roon bridge resources, entitlements, and package payload metadata.
+- Prompt 18 targeted reads for README, release notes, project control docs, installer package inventory, scripts, Roon bridge resources, entitlements, and package payload metadata.
 - `find installer scripts -maxdepth 2 -type f | sort`
 - `pkgutil --payload-files installer/Orbisonic-1.1.pkg`
 - `pkgutil --payload-files installer/OrbisonicSuite-1.1.pkg`
@@ -354,7 +371,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - `git diff --name-only -- AGENTS.md README.md Package.swift Sources Tests scripts installer Vendor calibration`
 - `git diff --name-only -- Sources Tests Vendor calibration`
 - `git diff --check`
-- Prompt 19 privacy-sensitive and trailing-whitespace scans over readiness docs, project-control docs, and task files.
+- Prompt 19 privacy-sensitive and trailing-whitespace scans over readiness docs, project control docs, and task files.
 
 No build or test command was required for the docs-only prompts. Prompts 13 and 14 are tests-only prompts and passed focused plus full SwiftPM verification.
 
@@ -409,7 +426,7 @@ Prompt 19 is complete. `docs/readiness-summary.md` records that documentation an
 
 ### Manual Release Verification Status
 
-Task 012 is partially complete. Full SwiftPM tests passed with 544 tests and 0 failures, the repo-root app bundle refreshed, app-only and suite installers passed from `/private/tmp`, installed app verification passed, all three HAL drivers installed as version `0.2.0`, Roon bridge dependencies installed, the embedded librespot static library is present, AVFoundation sees all three Orbisonic inputs, and Dante Virtual Soundcard is running. Release readiness is still blocked because packages are unsigned, the installed package app is stamped `8ffa977` while the tested working tree is `64f7fea` with uncommitted changes, and real Roon / Aux / Spotify / monitor / Sonic Sphere / Dante / microphone-permission / entitlement checks were not run.
+Task 012 is partially complete. The 2026-05-10 imported app-source slice reran the full SwiftPM suite with 648 tests and 0 failures, built unsigned dirty-tree package candidates, confirmed all three Orbisonic HAL inputs are visible/openable, confirmed the Roon bridge is paired to a stopped Orbisonic zone, and recorded that the bounded loopback captures were silent. Historical 1.1 installer execution passed earlier. The canonical merged repo still needs fresh package rebuild, administrator-authenticated installer execution, signing/notarization setup, positive Roon / Aux / Spotify source-audio capture, monitor listening, Sonic Sphere / Dante channel walk, microphone permission, and entitlement checks.
 
 ## Assumptions
 
@@ -425,7 +442,7 @@ Task 012 is partially complete. Full SwiftPM tests passed with 544 tests and 0 f
 
 ## Next Recommended Prompt
 
-Clean signed installer rebuild plus hardware/service verification from `.tasks/012-manual-release-verification.md`.
+current administrator-authenticated installer execution plus signing/notarization setup and hardware/service verification from `.tasks/012-manual-release-verification.md`.
 
 ## Open Questions
 
@@ -447,12 +464,12 @@ Clean signed installer rebuild plus hardware/service verification from `.tasks/0
 ## Current State Snapshot
 
 - Current phase: post-retrofit readiness / manual release verification.
-- Current milestone: Task 012 is partially complete; clean signed installer rebuild plus hardware/service verification are next.
-- Completed retrofit work: project-control docs, contracts, system flows, implementation map, test strategy, ADRs, audits, task graph, release verification docs, readiness summary, and repo-level operating rules.
+- Current milestone: Task 012 is partially complete; imported artifacts were inspected before the canonical merge, but the merged repo still needs fresh package rebuild, administrator-authenticated installer execution, signing/notarization setup, and hardware/service verification.
+- Completed retrofit work: project control docs, contracts, system flows, implementation map, test strategy, ADRs, audits, task graph, release verification docs, readiness summary, and repo-level operating rules.
 - Completed hardening work: selected live-source no-signal tests, architecture boundary tests, live loopback diagnostic snapshots, Off/Test Tone stale-local cleanup, Spotify fixed-stereo health boundary, and renderer/monitor route-isolation tests.
 - Remaining risks: real loopback capture, Roon, Spotify Connect, Atmos DRP capture/playback, Aux capture, Sonic Sphere / Dante, monitor listening, microphone permission, signing, entitlements, unsigned packages, and package/tested-code mismatch remain.
 - Blockers: release readiness is blocked until clean signed package artifacts exist and live hardware/service checks are run and recorded.
 - Manual verification still needed: Roon authorization/transport/capture, Atmos DRP/iLok/playback/capture, Aux capture, Spotify Connect/capture, monitor listening, Sonic Sphere / Dante channel walk, microphone permission prompt, and entitlement-gated Apple spatial behavior.
-- Commands most recently run: full SwiftPM test suite, app refresh, app-only installer, suite installer, installed app LaunchServices open, package payload/signature inspection, suite package expansion, app plist/codesign checks, HAL driver version/signature checks, AVFoundation device listing, Roon bridge install, prerequisite process checks, v1.1 launcher syntax/existence checks, `git diff --check`, and privacy/trailing-whitespace scans.
-- Test status: current full SwiftPM suite passed with 552 tests and 0 failures.
-- Recommended next concrete task: rebuild signed installer artifacts from a clean tested commit, then finish hardware/service verification from `.tasks/012-manual-release-verification.md`.
+- Commands most recently run before this merge: full SwiftPM test suites, script syntax checks, app refresh, app-only installer, suite installer, package payload/signature/hash inspection, app plist/codesign checks, HAL driver version/signature checks, AVFoundation device listing, bounded silent loopback capture probes, Roon bridge checks, prerequisite process checks, `git diff --check`, and privacy/trailing-whitespace scans.
+- Test status: both pre-merge lines had passing full SwiftPM suites in their own checkouts; the merged canonical repo requires a fresh full-suite run.
+- Recommended next concrete task: finish canonical merge verification, then rebuild signed installer artifacts from a clean tested commit and complete hardware/service verification from `.tasks/018-hardware-readiness-manual-gates.md`.

@@ -11,18 +11,20 @@ Use this document before calling an app bundle or installer release-ready. Do no
 Current release-facing artifacts in this repository:
 
 - `Orbisonic.app`: repo-root development app bundle.
-- `installer/Orbisonic-1.1.pkg`: app-only installer. It installs `Orbisonic.app` into `/Applications`.
-- `installer/OrbisonicSuite-1.1.pkg`: suite installer. It contains the app package plus `OrbisonicInputsComponent-0.2.0.pkg`.
+- `installer/Orbisonic-1.3.pkg`: canonical app-only package path when rebuilt from the merged repo. It installs `Orbisonic.app` into `/Applications`.
+- `installer/OrbisonicSuite-1.3.pkg`: canonical suite package path when rebuilt from the merged repo. It contains the app package plus `OrbisonicInputsComponent-0.2.0.pkg`.
+- `installer/Orbisonic-1.1.pkg` and `installer/OrbisonicSuite-1.1.pkg`: historical 1.1 artifacts. Do not use them as the current candidate.
 - `scripts/refresh-orbisonic-app.sh`: canonical build, bundle refresh, metadata stamp, ad hoc signing, codesign verify, and plist lint path.
 - `scripts/reopen-orbisonic-app.sh`: canonical LaunchServices quit and reopen path.
 - `scripts/build-installer.sh`: app-only package build path.
+- `scripts/build-suite-installer.sh`: suite package assembly path. It combines the current app package with the existing input-driver component.
 - `scripts/install-roon-bridge.sh`: optional Roon bridge dependency install path.
 - `scripts/build-embedded-librespot.sh`: embedded Spotify receiver static-library build path.
 - `Orbisonic.entitlements`: entitlement template for Xcode signing when Apple spatial/head-tracking features are being verified.
 
 The suite installer payload should be verified as containing:
 
-- `Orbisonic-1.1.pkg` with `/Applications/Orbisonic.app`
+- `Orbisonic-1.3.pkg` with `/Applications/Orbisonic.app`
 - `OrbisonicInputsComponent-0.2.0.pkg` with:
   - `/Library/Audio/Plug-Ins/HAL/OrbisonicRoonInput.driver`
   - `/Library/Audio/Plug-Ins/HAL/OrbisonicAuxCable.driver`
@@ -72,7 +74,7 @@ Expected reopen evidence:
 Inspect the app-only package payload:
 
 ```sh
-pkgutil --payload-files installer/Orbisonic-1.1.pkg
+pkgutil --payload-files installer/Orbisonic-1.3.pkg
 ```
 
 Expected app-only package evidence:
@@ -86,13 +88,13 @@ Inspect the suite package by expanding it into a temporary directory:
 
 ```sh
 tmpdir="$(mktemp -d)"
-pkgutil --expand-full installer/OrbisonicSuite-1.1.pkg "$tmpdir/pkg"
+pkgutil --expand-full installer/OrbisonicSuite-1.3.pkg "$tmpdir/pkg"
 find "$tmpdir/pkg" -maxdepth 5 -name PackageInfo -print
 ```
 
 Expected suite package evidence:
 
-- component package `Orbisonic-1.1.pkg`
+- component package `Orbisonic-1.3.pkg`
 - component package `OrbisonicInputsComponent-0.2.0.pkg`
 - PackageInfo for `audio.orbisonic.app.pkg`
 - PackageInfo for `audio.orbisonic.inputs.pkg`
@@ -111,7 +113,7 @@ Installer execution requires an admin-capable macOS environment. Do not run inst
 App-only installer manual check:
 
 ```sh
-sudo installer -pkg installer/Orbisonic-1.1.pkg -target /
+sudo installer -pkg installer/Orbisonic-1.3.pkg -target /
 ```
 
 Record:
@@ -127,7 +129,7 @@ Record:
 Suite installer manual check:
 
 ```sh
-sudo installer -pkg installer/OrbisonicSuite-1.1.pkg -target /
+sudo installer -pkg installer/OrbisonicSuite-1.3.pkg -target /
 ```
 
 Record everything from the app-only installer check plus:
@@ -253,6 +255,93 @@ Record:
 
 If physical speakers, Dante routing, or channel order cannot be exercised, record this as not verified. Do not infer it from unit tests or VU activity.
 
+## Dante Controller Gate
+
+Manual prerequisites:
+
+- Dante Controller is installed.
+- Dante Virtual Soundcard, Dante Application Library, or an approved Dante endpoint is running.
+- the intended Dante transmit and receive devices are visible on the Dante network.
+- Orbisonic production output route is selected intentionally.
+
+Record:
+
+- Dante Controller app version
+- transmit device name
+- receive device name
+- route subscriptions for Orbisonic output channels
+- sample rate shown in Dante Controller
+- encoding bit depth shown in Dante Controller
+- clock leader and lock state
+- Dante latency setting
+- unresolved subscriptions, mute state, or clock warnings
+- confirmation that the route in Dante Controller matches the Core Audio route selected in Orbisonic
+
+Pass criteria:
+
+- subscriptions are resolved
+- Dante sample rate matches the target profile
+- Dante encoding bit depth matches the target profile
+- Dante clock is locked
+- route latency is recorded
+- no unresolved subscriptions or clock warnings remain
+
+Do not treat Core Audio host Float32 exposure as proof of Dante network Float32. Dante Controller or endpoint documentation must provide the network encoding evidence.
+
+## Physical Channel-Walk Gate
+
+Manual prerequisites:
+
+- Sonic Sphere or equivalent physical outputs are connected.
+- levels are safe for a channel walk.
+- active output map is known.
+- Output 2 Main Renderer route is selected intentionally.
+
+Record:
+
+- logical channels walked
+- expected speaker ID for each logical channel
+- observed physical speaker for each logical channel
+- LFE/sub behavior for 30.1 profiles
+- adjacent-channel bleed or crosstalk observations
+- polarity, trim, or delay anomalies
+- reserved physical channel 32 behavior when a 32-channel Dante route is used
+
+Pass criteria:
+
+- every active logical output reaches the expected physical speaker
+- reserved/silent outputs stay silent
+- no channel swap, truncation, duplication, or hidden downmix is observed
+
+If any physical output cannot be safely exercised, mark that channel as not verified rather than passing the full gate.
+
+## Route And Permission Gate
+
+Manual prerequisites:
+
+- Orbisonic launches through LaunchServices.
+- required loopback inputs are installed for the selected source tests.
+- monitor and production output routes are visible to Core Audio.
+
+Record:
+
+- Output 1 Monitor route name, UID, manufacturer, transport, channel count, and sample rate
+- Output 2 Main Renderer route name, UID, manufacturer, transport, channel count, and sample rate
+- whether monitor route changes leave production route selection unchanged
+- whether production refuses built-in output, Bluetooth, AirPlay, BlackHole, or unknown stereo routes
+- `Orbisonic Roon Input` visibility when Roon is in scope
+- `Orbisonic Aux Cable` visibility when Aux is in scope
+- `Orbisonic Spotify Input` visibility when Spotify is in scope
+- microphone permission prompt state and grant/deny result
+- route, sample-rate, channel-count, or permission diagnostics shown by Orbisonic
+
+Pass criteria:
+
+- all required routes are visible
+- permissions allow intended live capture
+- unsafe production routes are rejected or clearly diagnosed
+- monitor and production routes remain independent
+
 ## Headphone Or Normal Monitor Verification
 
 Manual prerequisites:
@@ -330,6 +419,106 @@ Before release-ready signoff, record pass/fail/not-tested for:
 - sample-rate and channel-count mismatches stay visible
 - microphone permission path is verified or explicitly not tested
 - signing and entitlement status is recorded
+
+## Current Hardware Gate Record
+
+Date: 2026-05-09
+
+Scope: local machine-readable readiness checks plus manual gate documentation. Physical Sonic Sphere/Dante, real Roon, real Spotify, real Aux, installer execution, and release signing were not exercised in this pass.
+
+Commands run:
+
+```sh
+ls -ld /Applications/Dante\ Virtual\ Soundcard.app /Applications/Dante\ Controller.app /Library/Audio/Plug-Ins/HAL/DvsAudioPlugIn.driver
+launchctl print system/com.audinate.dante.DanteVirtualSoundcard
+find /Applications -maxdepth 2 -iname '*Dante*' -print
+```
+
+Results:
+
+- Dante Virtual Soundcard app present: PASS.
+- DVS HAL driver present: PASS.
+- DVS launch daemon running: PASS.
+- Dante Controller installed: BLOCKED; `/Applications/Dante Controller.app` was not present and `/Applications` search found only Dante Virtual Soundcard.
+- Dante Controller subscriptions, encoding, clock lock, and latency: BLOCKED because Dante Controller is not installed.
+- physical Sonic Sphere/Dante channel walk: NOT RUN.
+- reserved physical channel 32 silence on hardware: NOT RUN.
+- Roon real loopback capture: NOT RUN.
+- Spotify real capture: NOT RUN.
+- Aux real capture: NOT RUN.
+- macOS microphone permission prompt: NOT RUN.
+- app-only installer execution: NOT RUN.
+- suite installer execution: NOT RUN.
+- release code signing/notarization: NOT RUN.
+
+Current release readiness conclusion:
+
+```text
+Do not call this build hardware-ready or release-ready from Task 018. DVS is installed and running on this Mac, but Dante Controller/network evidence, physical channel-walk evidence, live-source capture evidence, installer execution, and release signing evidence remain open gates.
+```
+
+## Current Default Switch Review
+
+Date: 2026-05-10
+
+Task 019 conclusion:
+
+```text
+No new default switches are approved.
+The project is ready for implementation milestone review, not release-ready signoff.
+Rollback remains available because no source-code defaults changed.
+```
+
+Default decisions:
+
+- real libVLC runtime integration is not a release default until packaging, plugin discovery, signing/notarization, and license inventory are solved.
+- Roon 5.1 VLC live PCM downmix remains proof-only and explicitly selected.
+- DVS/CoreAudio production output remains strict and validation-backed, but not hardware-proven until Dante Controller and physical channel-walk gates pass.
+- Pure Spherical Lossless direct playback remains metadata-gated and route-gated.
+- current installer artifacts are not release-ready because installer execution, package signing, notarization, and hardware/service gates are not proven.
+
+## Imported Pre-Merge Candidate Evidence
+
+Date: 2026-05-10
+
+The imported app-source branch had a local package rebuild and machine-verifiable release check before the canonical directory merge. That evidence is retained only as historical input for this repo; those package artifacts are not active release artifacts in the canonical tree.
+
+Historical results:
+
+- Full SwiftPM suite passed: 648 tests, 0 failures.
+- The app and suite packages from that pre-merge branch were unsigned and built from a dirty working tree.
+- Dante Virtual Soundcard app, HAL driver, and launch daemon were present.
+- Dante Controller was not installed.
+- AVFoundation could see and open `Orbisonic Roon Input`, `Orbisonic Aux Cable`, and `Orbisonic Spotify Input`.
+- Bounded captures measured silence, proving route visibility and capture access only, not source-audio success.
+- The Roon bridge endpoint was paired to a Roon Core and saw an `Orbisonic` zone in stopped state.
+
+Historical conclusion:
+
+```text
+Do not call the imported candidate release-ready. It was unsigned, not notarized, not installer-executed, and not proven by positive live-source audio, monitor listening, Dante Controller route, or physical Sonic Sphere/Dante channel-walk evidence.
+```
+
+## Current Installer And Signing Requirements
+
+The canonical merged repo must rebuild app and suite packages before any new release claim. Use the current scripts and inspect the resulting package paths:
+
+```sh
+./scripts/build-installer.sh
+./scripts/build-suite-installer.sh
+pkgutil --payload-files installer/Orbisonic-1.3.pkg
+pkgutil --check-signature installer/Orbisonic-1.3.pkg
+pkgutil --check-signature installer/OrbisonicSuite-1.3.pkg
+```
+
+Installer/signing gates still required:
+
+- Run app-only installer execution with administrator authentication.
+- Run suite installer execution if the suite package is the intended distribution artifact.
+- Verify `/Applications/Orbisonic.app` after installation.
+- Verify package receipts for `audio.orbisonic.app.pkg` and `audio.orbisonic.inputs.pkg`.
+- Configure Developer ID Installer signing if public distribution is intended.
+- Configure notarization credentials and run notarization if public distribution is intended.
 
 ## Known Hardware Requirements
 

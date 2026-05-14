@@ -1,0 +1,23 @@
+{
+  "schema": "com.orbisonic.audio-chain-lock.v1",
+  "created": "2026-05-09",
+  "uiFreeze": true,
+  "allowedVisibleUiAdditions": [
+    "Pure Spherical Lossless badge only"
+  ],
+  "vlcScope": "local-file stereo monitor decode/downmix only",
+  "productionOwner": "Orbisonic",
+  "danteDefault": {
+    "sampleRate": 48000,
+    "encoding": "PCM 24-bit"
+  },
+  "forbidden": [
+    "new UI screens",
+    "new transport controls",
+    "VLC production renderer",
+    "VLC Dante output owner",
+    "hidden downmix",
+    "hidden SRC",
+    "silent stereo fallback"
+  ]
+}
