@@ -977,14 +977,18 @@ struct ContentView: View {
     }
 
     private func migrateCenteredVUMeterDefaultsIfNeeded() {
+        let previousScaleVersion = UserDefaults.standard.integer(forKey: VUMeterDefaultsMigration.scaleVersionKey)
         guard VUMeterDefaultsMigration.migrate(defaults: .standard) else { return }
-        vuMeterReferenceDbFS = VUMeterCalibrationSettings.default.referenceDbFS
-        vuMeterResponseMode = VUMeterCalibrationSettings.default.responseMode
-        vuMeterMonitorTrimDb = VUMeterCalibrationSettings.default.monitorTrimDb
-        vuMeterSonicSphereTrimDb = VUMeterCalibrationSettings.default.sonicSphereTrimDb
-        vuMeterElementScale = 0
-        vuMeterMaxSizeRatio = 0
-        vuMeterOutlineWeight = 0
+        let settings = VUMeterDefaultsMigration.settings(defaults: .standard)
+        vuMeterReferenceDbFS = settings.referenceDbFS
+        vuMeterResponseMode = settings.responseMode
+        vuMeterMonitorTrimDb = settings.monitorTrimDb
+        vuMeterSonicSphereTrimDb = settings.sonicSphereTrimDb
+        if previousScaleVersion < 4 {
+            vuMeterElementScale = 0
+            vuMeterMaxSizeRatio = 0
+            vuMeterOutlineWeight = 0
+        }
         vuMeterScaleVersion = VUMeterDefaultsMigration.currentScaleVersion
         AppLogger.shared.notice(category: "settings", "Migrated VU meter signal calibration defaults.")
     }

@@ -27,7 +27,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Roon metadata and transport bridge support in `Sources/Orbisonic/RoonNowPlayingMonitor.swift`, `Sources/Orbisonic/RoonBridgeClient.swift`, and `Sources/Orbisonic/Resources/RoonBridge/`.
 - Spotify receiver support in `Sources/Orbisonic/SpotifyReceiverClient.swift` with vendored librespot sources under `Vendor/`.
 - Atmos DRP source support in `Sources/Orbisonic/DolbyReferencePlayerController.swift`, with `SourceMode.atmosDRP` displayed as `Atmos`, temporary Aux loopback routing through `AtmosDRPRoutingPolicy`, and DRP bitstream metadata in app/web state.
-- Single canonical opener at `Open Orbisonic.command`; historical branch/release/commit launchers are no longer active root entry points.
+- Single canonical daily opener at `Open Orbisonic.command`, now including the VU quiet-signal fix; `Open Orbisonic - VU Quiet Fix.command` remains as a named alias for the same canonical build. Historical branch/release/commit launchers are no longer active root entry points.
 - Imported app-source history is merged into this repository history; source, tests, scripts, docs, and tasks now live directly under the canonical root.
 - Former split-workspace control material has been flattened into `docs/` and `.tasks/`; deprecated prompts and task files are retained only under `deprecated/` or `.tasks/deprecated/`.
 - Renderer, monitor, metering, diagnostics, route monitoring, and test tone support in current source and tests.
@@ -87,6 +87,8 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 
 ## Recent Changes
 
+- 2026-05-20: Promoted the VU quiet-signal fix as the canonical build opened by `Open Orbisonic.command`; `Open Orbisonic - VU Quiet Fix.command` is retained as a named alias for the same LaunchServices reopen path.
+- 2026-05-20: Fixed VU quiet-signal display behavior by preserving the existing ordinary VU mapping, adding a low-level measured-signal visual tail so quiet input and Sonic Sphere meters do not blink off, and migrating existing version-4 Monitor Trim settings back to neutral `0 dB` while preserving Sonic Sphere trim.
 - 2026-05-14: Completed the canonical directory merge on `codex/canonical-orbisonic-merge`, preserving both current main history and the imported app-source history, flattening control material into this repo, replacing versioned root launchers with `Open Orbisonic.command`, and moving the former sibling workspace out of active projects to a temporary rollback archive outside the repo.
 - 2026-05-14: Full SwiftPM suite passed after the merge with 656 tests and 0 failures; stale split-workspace naming and privacy scans passed for active files.
 - 2026-05-10: Added a separate `Atmos` source for Dolby Reference Player playback with modular DRP process ownership, temporary Aux loopback routing policy, output-layout setting, DRP metadata parsing, native/web state exposure, and focused tests. Real DRP/iLok and Atmos playback verification remain manual.

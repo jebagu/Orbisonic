@@ -17,7 +17,8 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `docs/release-verification.md`: release, installer, app bundle, LaunchServices, helper, and manual hardware verification checklist.
 - `docs/readiness-summary.md`: current readiness result, automated evidence, manual verification still required, release blockers, and recommended next action.
 - `.tasks/`: bounded sequential task files for audits, test-gap passes, hardening, release verification docs, readiness refresh, and manual release verification.
-- Root `Open Orbisonic.command`: the single double-clickable daily opener for the canonical app bundle. It reopens the existing bundle through LaunchServices and does not rebuild or re-sign the app.
+- Root `Open Orbisonic.command`: the single double-clickable daily opener for the canonical app bundle, currently including the VU quiet-signal fix. It reopens the existing bundle through LaunchServices and does not rebuild or re-sign the app.
+- Root `Open Orbisonic - VU Quiet Fix.command`: named alias for the same canonical VU quiet-signal build. It delegates to the same LaunchServices reopen script and does not rebuild or re-sign the app.
 - `scripts/`: app refresh, LaunchServices reopen, app installer, suite installer, Roon bridge, branch/deprecated-ref launcher helpers, and embedded librespot build scripts.
 - `installer/`: app-only and suite package artifacts. Historical packages may remain for evidence, but current packages must be rebuilt from the merged canonical HEAD before release use.
 - `Vendor/`: vendored librespot source and Orbisonic librespot FFI crate.

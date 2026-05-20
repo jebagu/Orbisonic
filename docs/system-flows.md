@@ -7,7 +7,7 @@ This document describes the current Orbisonic runtime and verification flows wit
 ## How To Read These Diagrams
 
 - These flows describe the canonical repository root. Imported implementation work, release evidence, and task material now live directly under `Sources/`, `Tests/`, `scripts/`, `docs/`, and `.tasks/`.
-- The root `Open Orbisonic.command` is the single daily opener. Build or refresh flows stay in explicit scripts and are not hidden behind the opener.
+- The root `Open Orbisonic.command` is the single daily opener for the canonical build. Named root aliases, when present, delegate to the same LaunchServices reopen flow. Build or refresh flows stay in explicit scripts and are not hidden behind launchers.
 - Orbisonic is selected-source oriented. Local Files, Atmos DRP, Roon, Spotify, Aux Cable, and Test Tone are not automatically mixed.
 - Sonic Sphere output is the production path.
 - Headphone or normal monitor output is a monitor path and must not redefine production topology.

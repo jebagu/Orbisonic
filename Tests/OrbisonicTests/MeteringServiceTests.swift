@@ -37,6 +37,35 @@ final class MeteringServiceTests: XCTestCase {
         XCTAssertLessThan(shiftedLevel.displayLevel, defaultLevel.displayLevel)
     }
 
+    func testMeasuredQuietSignalBelowOldVisualFloorStillDisplaysLowTail() {
+        let service = MeteringService()
+        ingestConstant(service: service, signal: .input, amplitude: amplitude(dbFS: -70))
+
+        let level = service.levels(signal: .input, channelCount: 1)[0]
+
+        XCTAssertTrue(service.isActive(signal: .input))
+        XCTAssertEqual(level.rawRMSDbFS, -70, accuracy: 0.05)
+        XCTAssertEqual(level.peakDbFS, -70, accuracy: 0.05)
+        XCTAssertLessThan(level.vuDb, -36)
+        XCTAssertGreaterThan(level.displayLevel, 0)
+        XCTAssertLessThan(level.displayLevel, 0.012)
+    }
+
+    func testQuietVisualTailFallsAsMeasuredSignalGetsQuieter() {
+        let louder = MeteringService()
+        let quieter = MeteringService()
+        ingestConstant(service: louder, signal: .sonicSphere, amplitude: amplitude(dbFS: -60))
+        ingestConstant(service: quieter, signal: .sonicSphere, amplitude: amplitude(dbFS: -80))
+
+        let louderLevel = louder.levels(signal: .sonicSphere, channelCount: 1)[0]
+        let quieterLevel = quieter.levels(signal: .sonicSphere, channelCount: 1)[0]
+
+        XCTAssertTrue(louder.isActive(signal: .sonicSphere))
+        XCTAssertTrue(quieter.isActive(signal: .sonicSphere))
+        XCTAssertGreaterThan(louderLevel.displayLevel, quieterLevel.displayLevel)
+        XCTAssertGreaterThan(quieterLevel.displayLevel, 0)
+    }
+
     func testMonitorAndSonicTrimsAffectDisplayOnly() {
         let service = MeteringService()
         let amplitude = amplitude(dbFS: -18)
@@ -140,7 +169,7 @@ final class MeteringServiceTests: XCTestCase {
         XCTAssertTrue(levels.allSatisfy { $0.displayLevel == 0 })
     }
 
-    func testVersionFourMigrationResetsVisualBoostsAndInstallsSignalDefaults() {
+    func testVersionFiveMigrationFromLegacyDefaultsResetsVisualBoostsAndInstallsSignalDefaults() {
         let suiteName = "OrbisonicTests.VUMeterDefaultsMigration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -153,13 +182,39 @@ final class MeteringServiceTests: XCTestCase {
         defaults.set(-4.0, forKey: "Orbisonic.vuMeterRendererActivityTrimOffset")
 
         XCTAssertTrue(VUMeterDefaultsMigration.migrate(defaults: defaults))
-        XCTAssertEqual(defaults.integer(forKey: VUMeterDefaultsMigration.scaleVersionKey), 4)
+        XCTAssertEqual(defaults.integer(forKey: VUMeterDefaultsMigration.scaleVersionKey), 5)
         XCTAssertNil(defaults.object(forKey: "Orbisonic.vuMeterRendererVisualGainOffset"))
         XCTAssertNil(defaults.object(forKey: "Orbisonic.vuMeterNormalizesVisualEnergy"))
         XCTAssertEqual(defaults.double(forKey: VUMeterDefaultsMigration.referenceDbFSKey), -18, accuracy: 0.001)
         XCTAssertEqual(defaults.string(forKey: VUMeterDefaultsMigration.responseModeKey), VUMeterResponseMode.standard.rawValue)
         XCTAssertEqual(defaults.double(forKey: VUMeterDefaultsMigration.monitorTrimDbKey), 0, accuracy: 0.001)
         XCTAssertEqual(defaults.double(forKey: VUMeterDefaultsMigration.sonicSphereTrimDbKey), 0, accuracy: 0.001)
+    }
+
+    func testVersionFiveMigrationFromVersionFourOnlyNeutralizesMonitorTrim() {
+        let suiteName = "OrbisonicTests.VUMeterDefaultsMigration.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(4, forKey: VUMeterDefaultsMigration.scaleVersionKey)
+        defaults.set(-17.5, forKey: VUMeterDefaultsMigration.referenceDbFSKey)
+        defaults.set(VUMeterResponseMode.fast.rawValue, forKey: VUMeterDefaultsMigration.responseModeKey)
+        defaults.set(-5.5, forKey: VUMeterDefaultsMigration.monitorTrimDbKey)
+        defaults.set(1.75, forKey: VUMeterDefaultsMigration.sonicSphereTrimDbKey)
+
+        XCTAssertTrue(VUMeterDefaultsMigration.migrate(defaults: defaults))
+
+        XCTAssertEqual(defaults.integer(forKey: VUMeterDefaultsMigration.scaleVersionKey), 5)
+        XCTAssertEqual(defaults.double(forKey: VUMeterDefaultsMigration.referenceDbFSKey), -17.5, accuracy: 0.001)
+        XCTAssertEqual(defaults.string(forKey: VUMeterDefaultsMigration.responseModeKey), VUMeterResponseMode.fast.rawValue)
+        XCTAssertEqual(defaults.double(forKey: VUMeterDefaultsMigration.monitorTrimDbKey), 0, accuracy: 0.001)
+        XCTAssertEqual(defaults.double(forKey: VUMeterDefaultsMigration.sonicSphereTrimDbKey), 1.75, accuracy: 0.001)
+
+        let settings = VUMeterDefaultsMigration.settings(defaults: defaults)
+        XCTAssertEqual(settings.referenceDbFS, -17.5, accuracy: 0.001)
+        XCTAssertEqual(settings.responseMode, .fast)
+        XCTAssertEqual(settings.monitorTrimDb, 0, accuracy: 0.001)
+        XCTAssertEqual(settings.sonicSphereTrimDb, 1.75, accuracy: 0.001)
     }
 
     private func ingestConstant(

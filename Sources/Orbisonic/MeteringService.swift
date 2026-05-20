@@ -81,6 +81,7 @@ struct VUMeterCalibrationSettings: Equatable, Sendable {
 
 struct MeterChannelLevel: Equatable, Sendable {
     static let silenceDbFS: Float = -120
+    static let activePeakFloorDbFS: Float = -96
 
     var rawRMSDbFS: Float
     var peakDbFS: Float
@@ -96,7 +97,7 @@ struct MeterChannelLevel: Equatable, Sendable {
 }
 
 enum VUMeterDefaultsMigration {
-    static let currentScaleVersion = 4
+    static let currentScaleVersion = 5
 
     static let scaleVersionKey = "Orbisonic.vuMeterScaleVersion"
     static let referenceDbFSKey = "Orbisonic.vuMeterReferenceDbFS"
@@ -124,13 +125,33 @@ enum VUMeterDefaultsMigration {
         let storedVersion = defaults.integer(forKey: scaleVersionKey)
         guard storedVersion < currentScaleVersion else { return false }
 
-        retiredKeys.forEach { defaults.removeObject(forKey: $0) }
-        defaults.set(VUMeterCalibrationSettings.default.referenceDbFS, forKey: referenceDbFSKey)
-        defaults.set(VUMeterCalibrationSettings.default.responseMode.rawValue, forKey: responseModeKey)
-        defaults.set(VUMeterCalibrationSettings.default.monitorTrimDb, forKey: monitorTrimDbKey)
-        defaults.set(VUMeterCalibrationSettings.default.sonicSphereTrimDb, forKey: sonicSphereTrimDbKey)
+        if storedVersion < 4 {
+            retiredKeys.forEach { defaults.removeObject(forKey: $0) }
+            defaults.set(VUMeterCalibrationSettings.default.referenceDbFS, forKey: referenceDbFSKey)
+            defaults.set(VUMeterCalibrationSettings.default.responseMode.rawValue, forKey: responseModeKey)
+            defaults.set(VUMeterCalibrationSettings.default.sonicSphereTrimDb, forKey: sonicSphereTrimDbKey)
+        }
+        if storedVersion < 5 {
+            defaults.set(VUMeterCalibrationSettings.default.monitorTrimDb, forKey: monitorTrimDbKey)
+        }
         defaults.set(currentScaleVersion, forKey: scaleVersionKey)
         return true
+    }
+
+    static func settings(defaults: UserDefaults) -> VUMeterCalibrationSettings {
+        let responseMode = defaults.string(forKey: responseModeKey)
+            .flatMap(VUMeterResponseMode.init(rawValue:))
+            ?? VUMeterCalibrationSettings.default.responseMode
+
+        return VUMeterCalibrationSettings(
+            referenceDbFS: defaults.object(forKey: referenceDbFSKey) as? Double
+                ?? VUMeterCalibrationSettings.default.referenceDbFS,
+            responseMode: responseMode,
+            monitorTrimDb: defaults.object(forKey: monitorTrimDbKey) as? Double
+                ?? VUMeterCalibrationSettings.default.monitorTrimDb,
+            sonicSphereTrimDb: defaults.object(forKey: sonicSphereTrimDbKey) as? Double
+                ?? VUMeterCalibrationSettings.default.sonicSphereTrimDb
+        ).clamped()
     }
 }
 
@@ -319,7 +340,7 @@ final class MeteringService {
         }
 
         states[signal] = currentStates
-        if measurements.contains(where: { $0.peakDbFS > -96 }) {
+        if measurements.contains(where: { $0.peakDbFS > MeterChannelLevel.activePeakFloorDbFS }) {
             activeSignals.insert(signal)
         } else {
             activeSignals.remove(signal)
@@ -358,7 +379,7 @@ final class MeteringService {
             rawRMSDbFS: state.rawRMSDbFS,
             peakDbFS: state.peakDbFS,
             vuDb: vuDb,
-            displayLevel: displayLevel(forVU: vuDb)
+            displayLevel: displayLevel(forVU: vuDb, peakDbFS: state.peakDbFS)
         )
     }
 
@@ -366,7 +387,16 @@ final class MeteringService {
         20 * log10f(max(value, 0.000_001))
     }
 
-    private static func displayLevel(forVU vuDb: Float) -> Float {
-        min(max((vuDb + 36) / 42, 0), 1)
+    private static func displayLevel(forVU vuDb: Float, peakDbFS: Float) -> Float {
+        let mappedLevel = min(max((vuDb + 36) / 42, 0), 1)
+        guard mappedLevel == 0, peakDbFS > MeterChannelLevel.activePeakFloorDbFS else {
+            return mappedLevel
+        }
+
+        let tailStartVUDB: Float = -36
+        let tailEndVUDB: Float = -78
+        let tailMaxLevel: Float = 0.012
+        let tailPosition = min(max((vuDb - tailEndVUDB) / (tailStartVUDB - tailEndVUDB), 0), 1)
+        return tailPosition * tailMaxLevel
     }
 }
