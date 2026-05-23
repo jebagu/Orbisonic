@@ -14,9 +14,11 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `docs/`: feature, migration, project control, and design docs.
 - `docs/audits/`: retrofit audit reports and follow-up planning evidence.
 - `docs/PureAudio/`: PureAudio migration and boundary docs. Treat these as historical migration evidence unless a current contract, system flow, or accepted ADR elevates a claim.
+- `docs/realtime-audio-family/`: adopted Realtime Audio Family Standards Package, including callback doctrine, architecture standards, contracts, testing guidance, OpenSpec baseline, and templates.
+- `docs/project/`: Orbisonic-specific project profiles and specialization docs for inherited family standards.
 - `docs/release-verification.md`: release, installer, app bundle, LaunchServices, helper, and manual hardware verification checklist.
 - `docs/readiness-summary.md`: current readiness result, automated evidence, manual verification still required, release blockers, and recommended next action.
-- `.tasks/`: bounded sequential task files for audits, test-gap passes, hardening, release verification docs, readiness refresh, and manual release verification.
+- `.tasks/`: bounded sequential task files for audits, test-gap passes, hardening, realtime/orbital VU work, release verification docs, readiness refresh, and manual release verification.
 - Root `Open Orbisonic.command`: the single double-clickable daily opener for the canonical app bundle, currently including the VU quiet-signal fix. It reopens the existing bundle through LaunchServices and does not rebuild or re-sign the app.
 - Root `Open Orbisonic - VU Quiet Fix.command`: named alias for the same canonical VU quiet-signal build. It delegates to the same LaunchServices reopen script and does not rebuild or re-sign the app.
 - `scripts/`: app refresh, LaunchServices reopen, app installer, suite installer, Roon bridge, branch/deprecated-ref launcher helpers, and embedded librespot build scripts.
@@ -27,6 +29,25 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `Orbisonic.entitlements`: entitlement template for Xcode/signing work.
 - `RELEASE_NOTES.md`: release notes for packaged versions.
 - `archive/` and `deprecated/`: historical web or launcher artifacts, not active product source.
+
+## Realtime Audio Governance Map
+
+- Adopted family standard package: `docs/realtime-audio-family/`
+- Mandatory package rules: `docs/realtime-audio-family/PACKAGE-RULES.md`
+- Callback safety doctrine: `docs/realtime-audio-family/docs/standards/realtime-callback-safety-doctrine.md`
+- Realtime architecture standard: `docs/realtime-audio-family/docs/standards/realtime-audio-architecture-standard.md`
+- Event and state publication standard: `docs/realtime-audio-family/docs/standards/event-queue-and-state-publication-standard.md`
+- Performance gate standard: `docs/realtime-audio-family/docs/standards/performance-gate-standard.md`
+- Callback impact template: `docs/realtime-audio-family/examples/callback-impact-report.template.md`
+- Performance report template: `docs/realtime-audio-family/examples/performance-report.template.md`
+- Orbisonic inheritance ADR: `docs/decisions/0013-realtime-audio-family-standards-inheritance.md`
+- Orbisonic project profile: `docs/project/orbisonic-realtime-audio-profile.md`
+- Current callback reachability audit: `docs/audits/0003-callback-reachability-audit.md`
+- Current callback performance gate report: `docs/audits/0004-callback-safety-performance-gates.md`
+- Current final realtime compliance audit: `docs/audits/0005-realtime-family-compliance-final-audit.md`
+- Active work package: `.tasks/020-realtime-family-orbital-vu-work-package.md`
+
+Callback-adjacent work includes audio callbacks, render closures, event queues, controls used by audio, route plans, meter publication, panic/recovery, device I/O, and backend adapter boundaries.
 
 ## SwiftPM Target Map
 
@@ -144,6 +165,14 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 
 - Implementation:
   - `Sources/Orbisonic/LiveAudioBridge.swift`
+    - Owns `LiveInputCapture`, preallocated `LiveInputCaptureBufferStorage`, fixed-capacity `LiveChannelRingBuffer`, and `LiveAudioPipe`.
+    - `LiveInputCaptureBufferStorage` prepares a fixed 8,192-frame HAL callback buffer capacity before capture starts; oversized callback blocks return an error status rather than allocating in the callback.
+    - `LiveChannelRingBuffer` uses preallocated raw Float storage, atomic read/write cursors, atomic status counters, and nonblocking trim/read/peek coordination instead of callback-facing `NSLock`.
+    - `RealtimeMeterLevelStorage` stores latest live meter levels in fixed atomic slots so UI snapshots do not block the audio transfer path.
+  - `Sources/Orbisonic/RealtimeAtomicPrimitives.swift`
+    - Owns the project-local realtime atomic integer, flag, float, max-counter, and fixed meter-level storage helpers shared by live transfer, metering publication, and callback safety instrumentation.
+  - `Sources/Orbisonic/RealtimeCallbackSafetyInstrumentation.swift`
+    - Owns the Slice 8 callback performance budget, standard stress scene, preallocated callback duration probe, explicit safety counters, gate report, and synthetic local stress harness. Current gates warn on missing host-level malloc/free and lock/wait interposition and block on explicit nonzero callback allocation counts.
   - `Sources/Orbisonic/LoopbackSourceSupport.swift`
     - Owns `LiveLoopbackDiagnostics`, the deterministic route/sample-rate/channel/signal/buffer/permission/player-activity diagnostic snapshot for live sources.
   - `Sources/Orbisonic/OrbisonicEngine.swift`
@@ -151,12 +180,15 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
   - `Sources/AudioCore/SourceAdapters.swift`
 - Related tests:
   - `Tests/OrbisonicTests/LiveAudioBridgeTests.swift`
+  - `Tests/OrbisonicTests/RealtimeCallbackSafetyInstrumentationTests.swift`
   - `Tests/OrbisonicTests/LoopbackSourceSupportTests.swift`
   - `Tests/OrbisonicTests/LiveNormalMonitorRouteTests.swift`
   - `Tests/OrbisonicTests/OrbisonicWebStateTests.swift`
   - `Tests/AudioCoreTests/SourceAdapterTests.swift`
 - Related docs:
   - `docs/orbisonic-loopback-input-support-spec.md`
+  - `docs/audits/0003-callback-reachability-audit.md`
+  - `docs/audits/0004-callback-safety-performance-gates.md`
   - `docs/status.md`
 
 ### Roon Bridge And Roon Now-Playing Support
@@ -245,6 +277,9 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - Implementation:
   - `Sources/Orbisonic/RendererModule.swift`
   - `Sources/Orbisonic/RendererMatrixSampleRenderer.swift`
+  - `Sources/Orbisonic/OrbitalVUMeterModel.swift`
+  - `Sources/Orbisonic/ContentView.swift`
+    - Owns the active Renderer tab orbital VU panel and SceneKit marker styling for value-only meter state.
   - `Sources/Orbisonic/SpatialTuning.swift`
   - `Sources/Orbisonic/PureAudioRouteCapabilityBridge.swift`
   - `Sources/AudioCore/RenderGraphPlan.swift`
@@ -254,7 +289,8 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - Related tests:
   - `Tests/OrbisonicTests/RendererModuleTests.swift` including Sonic Sphere 30.1 topology, Direct 30/31, and normal-monitor planning non-mutation coverage.
   - `Tests/OrbisonicTests/RendererMatrixSampleRendererTests.swift`
-  - `Tests/OrbisonicTests/SonicSphereMeteringTests.swift`
+  - `Tests/OrbisonicTests/SonicSphereMeteringTests.swift` including Sonic Sphere meter independence and orbital VU value-model mapping coverage.
+  - `Tests/OrbisonicTests/OrbisonicUITweakTests.swift` including active Renderer tab orbital VU wiring coverage.
   - `Tests/AudioCoreTests/RenderGraphPlanTests.swift`
   - `Tests/AudioCoreTests/RenderKernelTests.swift`
   - `Tests/AudioCoreTests/OutputAdapterTests.swift`
@@ -298,12 +334,14 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
   - `Sources/Orbisonic/LoopbackSourceSupport.swift`
   - `Sources/Orbisonic/OrbisonicWebServer.swift`
   - `Sources/Orbisonic/MeteringService.swift`
+    - Owns fixed per-signal app meter publication for input, desktop monitor, and Sonic Sphere analysis meters; callback/tap ingress publishes bounded raw RMS/peak values while UI reads apply smoothing, trims, and display mapping.
 - Related tests:
   - `Tests/OrbisonicTests/DiagnosticsLogStoreTests.swift`
   - `Tests/OrbisonicTests/LoopbackSourceSupportTests.swift`
   - `Tests/OrbisonicTests/OrbisonicWebStateTests.swift`
   - `Tests/OrbisonicTests/VURoutingViewTests.swift`
   - `Tests/OrbisonicTests/MeteringServiceTests.swift`
+  - `Tests/OrbisonicTests/MeteringIsolationTests.swift`
   - `Tests/AudioCoreTests/MeteringTelemetryTests.swift`
 - Related docs:
   - `AGENTS.md`
@@ -419,3 +457,5 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 
 - 2026-05-04: Created by Prompt 03 as the baseline feature-to-file map for the project control retrofit.
 - 2026-05-05: Refreshed by Prompt 19 to include release verification, readiness summary, and manual release-verification task ownership.
+- 2026-05-23: Refreshed during Task 020 Slice 9 of 10 to include realtime family governance, callback safety instrumentation, orbital VU source/tests, and release-gate ownership.
+- 2026-05-23: Refreshed during Task 020 Slice 10 of 10 to include the final realtime compliance audit location.

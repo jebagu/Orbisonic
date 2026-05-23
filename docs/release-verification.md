@@ -6,6 +6,8 @@ This document defines the release and installer checks for Orbisonic. It separat
 
 Use this document before calling an app bundle or installer release-ready. Do not treat a unit-test pass as proof that hardware, route, service, or installer behavior was verified.
 
+The Task 020 Slice 10 final audit records the realtime/orbital VU work as brownfield-in-progress, not compliant. Do not call a build realtime-family-compliant while the current callback performance report blocks on live matrix scratch allocation or while host-level allocation/lock/wait, denormal, and real 60-second stress evidence are missing.
+
 ## Release Artifacts
 
 Current release-facing artifacts in this repository:
@@ -255,6 +257,32 @@ Record:
 
 If physical speakers, Dante routing, or channel order cannot be exercised, record this as not verified. Do not infer it from unit tests or VU activity.
 
+## Orbital VU Visual Verification
+
+Manual prerequisites:
+
+- Orbisonic is launched through LaunchServices.
+- the active Renderer tab is visible.
+- a safe source or diagnostic signal is available for the meter source being checked.
+
+Record:
+
+- visible meter source label, such as `Sonic Sphere Analysis Meter`
+- whether the label avoids `Dante Output Meter` unless actual post-render Dante/output bus metering is implemented and verified
+- inactive/silent marker behavior
+- active channel marker behavior
+- hot and clipping marker behavior if safely reproducible
+- LFE marker behavior
+- physical channel 32 / reserved-output marker behavior when a 32-channel route profile is represented
+- confirmation that monitor/stereo meters do not masquerade as Sonic Sphere production output
+
+Pass criteria:
+
+- orbital activity is fed by value snapshots only
+- source labels are truthful about analysis versus actual output
+- visual activity does not imply physical Sonic Sphere / Dante output unless the Sonic Sphere and Dante gates also pass
+- meter interaction does not change renderer route, renderer mode, output channel count, gain, or monitor route
+
 ## Dante Controller Gate
 
 Manual prerequisites:
@@ -415,8 +443,10 @@ Before release-ready signoff, record pass/fail/not-tested for:
 - Spotify Connect sees Orbisonic and `Orbisonic Spotify Input` captures stereo audio or reports a clear no-signal diagnostic
 - Output 1 Monitor produces expected stereo monitor audio
 - Output 2 Main Renderer is selected intentionally and does not get changed by monitor actions
+- active Renderer tab orbital VU shows truthful source labels and expected marker states
 - Sonic Sphere / Dante channel walk passes, including LFE behavior, when hardware is available
 - sample-rate and channel-count mismatches stay visible
+- realtime callback gates pass or are recorded as blockers: zero allocations/deallocations, zero blocking locks, zero waits/sleeps, p95/p99/max inside budget, zero deadline misses, denormal behavior verified, and a real 60-second standard scene run
 - microphone permission path is verified or explicitly not tested
 - signing and entitlement status is recorded
 
@@ -536,6 +566,8 @@ Installer/signing gates still required:
 
 - Automated tests do not prove physical Sonic Sphere / Dante output.
 - Automated tests do not prove real Roon, Aux, or Spotify audio reached a loopback input.
+- Automated tests and orbital VU activity do not prove physical Dante/Sonic Sphere output.
+- Current realtime callback gates are blocked by explicit live matrix scratch allocation plus missing host-level allocation/lock/wait, denormal, and real 60-second stress evidence.
 - Automated tests do not exercise macOS microphone permission prompts.
 - Automated tests do not prove installer behavior or LaunchServices behavior.
 - Ad hoc signing does not prove entitlement-gated Apple spatial/head-tracking behavior.

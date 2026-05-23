@@ -1,0 +1,9 @@
+{
+  "package": "realtime-audio-family-standards",
+  "revision": "2026-05-23-family-standard",
+  "generated_at": "2026-05-23T00:00:00+03:00",
+  "purpose": "Reusable realtime audio family standards, rules, contracts, OpenSpec specs, tests, and templates.",
+  "generalization": "Product-specific hardware, protocol, output-system, and file-format language has been replaced with generic family-level contracts.",
+  "mandatory_doctrine": "Project paraphrase of Ross Bencina realtime callback rules.",
+  "artifact_type": "zip-ready markdown and OpenSpec package"
+}

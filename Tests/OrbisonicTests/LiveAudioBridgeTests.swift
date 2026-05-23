@@ -1,3 +1,4 @@
+import AudioToolbox
 import XCTest
 @testable import Orbisonic
 
@@ -29,6 +30,42 @@ final class LiveAudioBridgeTests: XCTestCase {
             XCTAssertEqual(available, 128)
             XCTAssertEqual(maxSupported, 64)
         }
+    }
+
+    func testLiveInputCaptureBufferStorageReusesPreparedAudioBufferList() throws {
+        let storage = LiveInputCaptureBufferStorage(channelCount: 2, maxFrameCapacity: 8)
+
+        let first = try XCTUnwrap(storage.prepare(frameCount: 4))
+        let firstBuffers = UnsafeMutableAudioBufferListPointer(first)
+        let firstDataPointers = firstBuffers.map(\.mData)
+
+        XCTAssertEqual(first.pointee.mNumberBuffers, 2)
+        XCTAssertEqual(firstBuffers[0].mDataByteSize, 4 * UInt32(MemoryLayout<Float>.size))
+        XCTAssertEqual(firstBuffers[1].mDataByteSize, 4 * UInt32(MemoryLayout<Float>.size))
+        XCTAssertTrue(firstDataPointers.allSatisfy { $0 != nil })
+
+        let second = try XCTUnwrap(storage.prepare(frameCount: 6))
+        let secondBuffers = UnsafeMutableAudioBufferListPointer(second)
+        let secondDataPointers = secondBuffers.map(\.mData)
+
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(firstDataPointers, secondDataPointers)
+        XCTAssertEqual(secondBuffers[0].mDataByteSize, 6 * UInt32(MemoryLayout<Float>.size))
+        XCTAssertEqual(secondBuffers[1].mDataByteSize, 6 * UInt32(MemoryLayout<Float>.size))
+        XCTAssertEqual(storage.oversizedRenderCount, 0)
+    }
+
+    func testLiveInputCaptureBufferStorageRejectsOversizedFrameCountWithoutReallocating() throws {
+        let storage = LiveInputCaptureBufferStorage(channelCount: 1, maxFrameCapacity: 8)
+        let prepared = try XCTUnwrap(storage.prepare(frameCount: 8))
+        let preparedBuffers = UnsafeMutableAudioBufferListPointer(prepared)
+        let originalDataPointer = preparedBuffers[0].mData
+
+        XCTAssertNil(storage.prepare(frameCount: 9))
+        XCTAssertEqual(storage.oversizedRenderCount, 1)
+        XCTAssertEqual(storage.lastOversizedFrameCount, 9)
+        XCTAssertEqual(preparedBuffers[0].mData, originalDataPointer)
+        XCTAssertEqual(preparedBuffers[0].mDataByteSize, 8 * UInt32(MemoryLayout<Float>.size))
     }
 
     func testRingBufferPrimesBeforeReading() {
@@ -96,6 +133,32 @@ final class LiveAudioBridgeTests: XCTestCase {
         XCTAssertEqual(output, [6, 7, 8, 9])
     }
 
+    func testRingBufferPeekDoesNotConsumePlaybackFrames() {
+        let ring = LiveChannelRingBuffer(capacity: 16, targetLatencyFrames: 4, highWaterFrames: 8)
+        var peekOutput = Array(repeating: Float(-1), count: 2)
+        var readOutput = Array(repeating: Float(-1), count: 4)
+
+        write([1, 2, 3, 4], to: ring)
+        let peeked = peek(from: ring, into: &peekOutput)
+        let read = read(from: ring, into: &readOutput)
+
+        XCTAssertEqual(peeked, 2)
+        XCTAssertEqual(peekOutput, [1, 2])
+        XCTAssertEqual(read, 4)
+        XCTAssertEqual(readOutput, [1, 2, 3, 4])
+    }
+
+    func testLiveAudioBridgeDoesNotUseNSLockInTransferPath() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Orbisonic/LiveAudioBridge.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("NSLock"))
+    }
+
     private func write(_ values: [Float], to ring: LiveChannelRingBuffer) {
         values.withUnsafeBufferPointer { sourcePointer in
             ring.write(sourcePointer.baseAddress!, frameCount: values.count)
@@ -106,6 +169,13 @@ final class LiveAudioBridgeTests: XCTestCase {
         let frameCount = output.count
         return output.withUnsafeMutableBufferPointer { outputPointer in
             ring.read(into: outputPointer.baseAddress!, frameCount: frameCount)
+        }
+    }
+
+    private func peek(from ring: LiveChannelRingBuffer, into output: inout [Float]) -> Int {
+        let frameCount = output.count
+        return output.withUnsafeMutableBufferPointer { outputPointer in
+            ring.peek(into: outputPointer.baseAddress!, frameCount: frameCount)
         }
     }
 }

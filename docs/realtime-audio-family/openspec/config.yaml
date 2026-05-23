@@ -1,0 +1,25 @@
+project: realtime-audio-family-standards
+revision: 2026-05-23-family-standard
+status: reusable-baseline
+rules:
+  realtime_callback_doctrine: mandatory
+  project_specialization_may_weaken_family_standard: false
+  callback_allocation_allowed: false
+  callback_blocking_locks_allowed: false
+  callback_io_allowed: false
+  callback_logging_allowed: false
+  callback_ui_calls_allowed: false
+  callback_parsing_allowed: false
+  callback_device_discovery_allowed: false
+  callback_route_discovery_allowed: false
+  callback_unbounded_work_allowed: false
+required_specs:
+  - realtime-audio-core
+  - audio-device-io
+  - realtime-event-ingress
+  - control-state
+  - output-routing
+  - telemetry
+  - performance-gates
+  - brownfield-adoption
+  - project-specialization

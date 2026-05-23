@@ -1,0 +1,20 @@
+project_profile:
+  name: ExampleRealtimeAudioApp
+  inherited_family_revision: 2026-05-23-family-standard
+  app_type: standalone_and_plugin
+  backend_adapter: juce_or_native_platform_api
+  realtime_core_language: cxx20
+  sample_rates: [44100, 48000, 96000]
+  max_block_frames: 1024
+  preferred_block_frames: 128
+  max_input_channels: 32
+  max_output_channels: 32
+  event_sources:
+    - host_events
+    - midi
+    - ui_controls
+  control_state: latest_value_slots_and_prepared_snapshots
+  output_routing: explicit_prearmed_route_map
+  telemetry: lossy_latest_snapshot
+  stress_scene: example-release-stress-001
+  may_weaken_family_standard: false

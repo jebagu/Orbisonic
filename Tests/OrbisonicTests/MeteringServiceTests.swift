@@ -119,6 +119,8 @@ final class MeteringServiceTests: XCTestCase {
 
         ingestConstant(service: smooth, signal: .input, amplitude: amplitude(dbFS: -40))
         ingestConstant(service: fast, signal: .input, amplitude: amplitude(dbFS: -40))
+        _ = smooth.levels(signal: .input, channelCount: 1)
+        _ = fast.levels(signal: .input, channelCount: 1)
         ingestConstant(service: smooth, signal: .input, amplitude: amplitude(dbFS: -18))
         ingestConstant(service: fast, signal: .input, amplitude: amplitude(dbFS: -18))
 
@@ -140,6 +142,34 @@ final class MeteringServiceTests: XCTestCase {
         XCTAssertFalse(service.isActive(signal: .sonicSphere))
         XCTAssertTrue(service.levels(signal: .monitor, channelCount: 6).allSatisfy { $0.displayLevel == 0 })
         XCTAssertTrue(service.levels(signal: .sonicSphere, channelCount: 31).allSatisfy { $0.displayLevel == 0 })
+    }
+
+    func testMeteringOverloadDropsChannelsAboveRealtimeCapacity() {
+        let service = MeteringService()
+        let overflowChannelCount = MeteringService.maxRealtimeChannelCount + 4
+        let samples = (0..<overflowChannelCount).map { _ in Array(repeating: Float(0.25), count: 8) }
+
+        service.ingest(signal: .input, sampleBuffers: samples, frameCount: 8)
+
+        let status = service.status(signal: .input)
+        XCTAssertEqual(status.channelCount, MeteringService.maxRealtimeChannelCount)
+        XCTAssertEqual(status.maxChannelCount, MeteringService.maxRealtimeChannelCount)
+        XCTAssertEqual(status.droppedChannelMeasurementCount, 4)
+        XCTAssertTrue(service.isActive(signal: .input))
+        XCTAssertEqual(
+            service.levels(signal: .input, channelCount: overflowChannelCount).count,
+            MeteringService.maxRealtimeChannelCount
+        )
+    }
+
+    func testMeteringServiceCallbackIngressAvoidsLocksAndMeasurementArrays() throws {
+        let sourceURL = packageRoot().appendingPathComponent("Sources/Orbisonic/MeteringService.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("NSLock"))
+        XCTAssertFalse(source.contains("compactMap"))
+        XCTAssertFalse(source.contains("private var states"))
+        XCTAssertFalse(source.contains("activeSignals"))
     }
 
     func testIngestMultichannelPCMBufferWindow() throws {
@@ -260,5 +290,12 @@ final class MeteringServiceTests: XCTestCase {
 
     private static func dbFS(_ value: Float) -> Float {
         20 * log10f(max(value, 0.000_001))
+    }
+
+    private func packageRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

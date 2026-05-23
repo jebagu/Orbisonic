@@ -2,11 +2,13 @@
 
 ## Scope
 
-This summary records the state after the project control retrofit, contract-test audit, focused hardening work, and release-verification documentation pass. It is a current-state document for maintainers and future Codex sessions, not a claim that installer or hardware release checks have been completed.
+This summary records the state after the project control retrofit, contract-test audit, focused hardening work, release-verification documentation pass, and Task 020 realtime/orbital VU alignment through Slice 10 of 10. It is a current-state document for maintainers and future Codex sessions, not a claim that installer, hardware, or realtime compliance checks have been completed.
 
 ## Readiness Result
 
 Current result: partial manual release verification is complete for automated tests, prior app bundle/package inspection, installed input-driver visibility, Roon bridge dependency install, loopback input visibility, bounded silent-capture access checks, and local prerequisite checks. Historical 1.1 app-only and suite installer execution passed on 2026-05-05, but packages have not yet been rebuilt and installed from the canonical merged repo.
+
+Realtime family alignment is brownfield-in-progress, not compliant. The final Task 020 audit is `docs/audits/0005-realtime-family-compliance-final-audit.md`. Orbisonic has adopted the family standards locally, mapped callback reachability, removed several direct callback allocation/lock risks, moved metering toward bounded value publication, added the value-only orbital Sonic Sphere VU, and installed callback safety instrumentation. The current callback gate still blocks because `LiveAudioPipe.render(matrix:audioBufferList:frameCount:)` records scratch allocation, host-level malloc/free and lock/wait interposition are not installed, denormal handling is not verified, and the standard real 60-second stress scene has not been run.
 
 Orbisonic is not yet release-verified for a new public release because current package artifacts must be rebuilt from the merged canonical repo, signed/notarized if distribution requires it, installer-executed, and verified with real Roon / Aux / Spotify positive-audio loopback capture, Sonic Sphere / Dante channel walk, monitor listening, microphone permission prompts, and entitlement-gated Apple spatial behavior in the target macOS environment.
 
@@ -27,6 +29,7 @@ Orbisonic is not yet release-verified for a new public release because current p
 - Source isolation now clears stale local playback snapshots when switching to Off or Test Tone and keeps Spotify health inside the fixed stereo boundary.
 - Renderer/monitor boundary hardening now covers normal-monitor route selection across all renderer modes, including Direct 30 and Direct 30.1, and verifies monitor planning does not mutate the Sonic Sphere 30.1 scene topology.
 - Release verification is mapped in `docs/release-verification.md`.
+- Task 020 Slice 1 through Slice 10 adopted realtime family standards, added callback reachability and performance-gate audits, replaced direct HAL callback buffer allocation, removed callback-facing live ring buffer locks, moved legacy metering into fixed realtime value publication, added the value-only orbital VU model, wired the active Renderer tab orbital VU panel, aligned release/readiness docs with the remaining gates, and recorded the final compliance verdict as brownfield-in-progress / not compliant.
 
 ## Automated Checks Run During Retrofit
 
@@ -47,6 +50,8 @@ App bundle refresh was run after source changes in Prompts 15, 16, and 17. Launc
 Prompt 19 was docs-only. Task 012 reran the full suite: 544 tests, 0 failures.
 
 The current release-gate slice on 2026-05-10 reran the full suite: 648 tests, 0 failures.
+
+Task 020 realtime/orbital VU work through Slice 10 reran the full SwiftPM suite with 676 tests and 0 failures, refreshed the repo-root app bundle after source-affecting slices and after the Slice 9 release-gate alignment, and passed `git diff --check` after Slice 10.
 
 ## Manual Checks Run
 
@@ -106,6 +111,8 @@ Follow `docs/release-verification.md` and record pass, fail, or not tested for:
 - Output 1 Monitor listening and route behavior.
 - Output 2 Main Renderer route behavior.
 - Sonic Sphere / Dante channel walk, physical speaker order, LFE behavior, and channel 32 behavior where relevant.
+- visual orbital VU behavior in the active Renderer tab, including source-label truth and no `Dante Output Meter` claim unless actual post-render Dante/output bus metering is implemented and verified.
+- realtime callback compliance stress evidence: zero callback allocations/deallocations, zero blocking locks, zero waits/sleeps, p95/p99/max inside budget, zero deadline misses, denormal policy verified, telemetry/meter overload drops or coalesces without blocking, and a real 60-second standard scene run.
 - macOS microphone permission behavior for loopback capture.
 - signing, `Info.plist`, and entitlement status, especially for Apple spatial/head-tracking features.
 
@@ -113,6 +120,8 @@ Follow `docs/release-verification.md` and record pass, fail, or not tested for:
 
 - A player or bridge can report activity while loopback capture is silent; captured signal and route facts remain authoritative.
 - Physical Sonic Sphere / Dante output cannot be inferred from tests or VU meters.
+- The orbital VU is observational and snapshot-backed; it does not prove physical Sonic Sphere / Dante output.
+- Callback instrumentation is present but not final compliance proof because explicit live matrix scratch allocation, missing host-level interposition, missing denormal verification, and missing real 60-second stress evidence remain.
 - Installer path/access behavior can differ under administrator authorization; installing from `/private/tmp` worked in this pass.
 - Current package files have not yet been rebuilt from the canonical merged repo.
 - The installed `/Applications/Orbisonic.app` was not replaced by an imported package during the 2026-05-10 pass.
@@ -133,14 +142,16 @@ Follow `docs/release-verification.md` and record pass, fail, or not tested for:
 - Current CLI installer execution requires administrator authentication.
 - The refreshed app bundle must be rebuilt after the merge is committed.
 - Roon, Aux, Spotify Connect, monitor listening, Sonic Sphere / Dante, microphone permission prompt, and entitlement-gated Apple spatial behavior remain unverified.
+- Realtime callback compliance remains blocked by `docs/audits/0005-realtime-family-compliance-final-audit.md` and the current performance report; these blockers must be resolved before the app can be called compliant with the family standards.
+- The active Renderer tab orbital VU needs visual/manual confirmation in the app before it is treated as operator-verified UI behavior.
 - No reference Sonic Sphere / Dante hardware setup has been recorded as the release-verification environment.
 - App-only versus suite-installer release-readiness criteria are still an open product decision.
 - Spotify transport-control stability expectations remain an open product decision.
 
 ## Current Test Status
 
-The imported app-source branch passed the full SwiftPM suite on 2026-05-10 with 648 tests and 0 failures. The canonical merged repo needs a fresh full-suite run and app refresh.
+The canonical repo passed the full SwiftPM suite during Task 020 Slice 10 on 2026-05-23 with 676 tests and 0 failures. `git diff --check` passed after the final audit and docs updates.
 
 ## Recommended Next Action
 
-Run canonical full-suite verification and app refresh, then rebuild current installer artifacts with administrator-authenticated installer execution. Configure Developer ID signing and notarization credentials if this is intended for public distribution, then run live-source and hardware verification in the real macOS, loopback, Roon, Spotify, monitor, Sonic Sphere, and Dante environment.
+Start a follow-up callback remediation package for the blockers in `docs/audits/0005-realtime-family-compliance-final-audit.md`. Then rebuild current installer artifacts with administrator-authenticated installer execution, configure Developer ID signing and notarization credentials if this is intended for public distribution, and run live-source, orbital VU visual, callback stress, and hardware verification in the real macOS, loopback, Roon, Spotify, monitor, Sonic Sphere, and Dante environment.

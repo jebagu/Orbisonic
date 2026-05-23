@@ -11,6 +11,20 @@ final class OrbisonicUITweakTests: XCTestCase {
         XCTAssertTrue(source.contains("rendererAtmosNoteText"))
     }
 
+    func testRendererTabHostsObservedOrbitalVUMeterPanel() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+
+        XCTAssertTrue(source.contains("private struct OrbitalSonicSphereMeterPanel"))
+        XCTAssertTrue(source.contains("@ObservedObject var meterStore: ChannelMeterStore"))
+        XCTAssertTrue(source.contains("OrbitalVUMeterSnapshot("))
+        XCTAssertTrue(source.contains("source: .sonicSphereAnalysis"))
+        XCTAssertTrue(source.contains("meterState.meterSourceLabel"))
+        XCTAssertTrue(source.contains("orbitalVUMeterState: meterState"))
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Orbital VU meter source\")"))
+        XCTAssertTrue(source.contains("orbital-vu-state-ring"))
+        XCTAssertTrue(source.contains("makeReservedOutputMarker"))
+    }
+
     func testSettingsCleanupAndOutputWebpagePanel() throws {
         let source = try source("Sources/Orbisonic/ContentView.swift")
 

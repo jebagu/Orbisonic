@@ -116,13 +116,21 @@ sequenceDiagram
     VM->>RoonBridge: Refresh optional bridge snapshot
     VM->>RoonLog: Read fallback now-playing and signal path
     VM->>Engine: startLiveInput with selected input route
-    Engine->>Live: Start HAL capture and LiveAudioPipe
+    Engine->>Live: Preallocate HAL capture storage, start HAL capture and LiveAudioPipe
     Live-->>Engine: Buffered PCM, underflows, drops, signal state
     Engine-->>VM: Live input source metadata and meters
     VM-->>Diagnostics: Compare Roon metadata, route sample rate, channel count, live meter, and pipe status
 ```
 
 Roon transport controls may go through the local Roon bridge helper, but live admission still depends on the selected loopback input, channel count, sample rate, and captured signal. If Roon reports playback while live meters stay silent, the flow is a route or capture diagnostic case.
+
+The HAL callback uses preallocated `LiveInputCaptureBufferStorage` sized for the configured capture channels and 8,192 callback frames. If Core Audio supplies a larger callback block, the callback returns `kAudioUnitErr_TooManyFramesToProcess` instead of allocating a larger buffer in realtime.
+
+Captured samples enter fixed-capacity `LiveChannelRingBuffer` storage with atomic cursors and counters. Full buffers trim/drop oldest buffered or oldest incoming frames to stay near target latency when safe; if read/trim coordination is already active, the writer drops incoming frames instead of waiting. Empty reads output silence, count underflow frames, and re-prime. Meter peeks and UI status snapshots read without consuming playback data or blocking callback transfer.
+
+Legacy app meter ingress now publishes input, desktop monitor, and Sonic Sphere analysis measurements into fixed per-signal realtime state. Callback/tap paths store raw RMS and peak dBFS values into bounded atomic channel slots, capped by `OrbisonicAudioLimits.maxSourceChannelCount`; overflow channels increment drop counters rather than growing containers or waiting. Smoothing, calibration trims, display-level mapping, and source labels are applied only when the UI reads value snapshots through `MeteringService.levels(...)`.
+
+Slice 8 adds optional callback safety probes around live pipe render entry points. The probes record callback duration samples, deadline misses, explicit allocation/deallocation hooks, lock/wait hooks, event/telemetry/meter drop counters, and route mismatch blocks into preallocated atomic state. Report generation and percentile sorting happen off the callback path. The current performance report blocks compliance for the direct live matrix render path because it still allocates scratch arrays.
 
 ## 4. Aux Loopback Flow
 
@@ -223,6 +231,8 @@ flowchart TD
     Matrix["RendererMatrix or AudioCore RenderGraphPlan"]
     Render["FeyStaticBedRenderer or DanteSonicSphereRenderer"]
     MeterCopy["Meter-only renderer data"]
+    OrbitalVU["Value-only orbital VU state"]
+    OrbitalView["Renderer tab orbital view"]
     Production["Sonic Sphere 30.1 production output"]
     Diagnostics["Renderer diagnostics and validation messages"]
 
@@ -232,11 +242,15 @@ flowchart TD
     Matrix --> Render
     Render --> Production
     Matrix --> MeterCopy
+    MeterCopy --> OrbitalVU
+    OrbitalVU --> OrbitalView
     MeterCopy --> Diagnostics
     Matrix --> Diagnostics
 ```
 
 Direct 30 and Direct 30.1 are bypass modes only when source width matches. Renderer output must not be derived from monitor output, and monitor choices must not mutate the Sonic Sphere topology.
+
+Orbital Sonic Sphere VU state is prepared by `OrbitalVUMeterModel` from value snapshots only and rendered in the active Renderer tab by `OrbitalSonicSphereMeterPanel` and `SonicSphereRendererSceneView`. It carries marker labels, hot/clipping state, inactive silence, meter source labels, and whether the meter source is actual audible output; it does not read graph nodes, buffers, route handles, taps, or live renderer state. Stereo desktop/monitor meters map to monitor markers or are omitted from Sonic Sphere production markers, while Sonic Sphere analysis and future verified Dante output snapshots can map to the 30.1 output marker surface.
 
 ## 8. Headphone Or Normal Monitor Flow
 

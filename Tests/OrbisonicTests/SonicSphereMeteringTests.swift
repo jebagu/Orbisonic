@@ -3,6 +3,162 @@ import XCTest
 @testable import Orbisonic
 
 final class SonicSphereMeteringTests: XCTestCase {
+    func testOrbitalVUMonitorSnapshotMapsOnlyToMonitorMarkers() {
+        let monitorLayout = SurroundLayoutDetector.fallbackLayout(for: 2)
+        let snapshot = OrbitalVUMeterSnapshot(
+            source: .desktopOutput,
+            meterLevels: [
+                orbitalMeterLevel(0.42, peakDbFS: -18),
+                orbitalMeterLevel(0.31, peakDbFS: -21)
+            ],
+            isActive: true
+        )
+
+        let monitorState = OrbitalVUMeterModel.monitorState(
+            channels: monitorLayout.channels,
+            meterSnapshot: snapshot
+        )
+
+        XCTAssertEqual(monitorState.meterSourceLabel, "Desktop Output Meter")
+        XCTAssertTrue(monitorState.isActualAudibleOutput)
+        XCTAssertEqual(monitorState.markers.count, 2)
+        XCTAssertEqual(monitorState.markers.map(\.role), [.monitor, .monitor])
+        XCTAssertEqual(monitorState.markers.map(\.label), ["L", "R"])
+        XCTAssertEqual(monitorState.markers.map(\.normalizedLevel), [0.42, 0.31])
+        XCTAssertTrue(monitorState.hasActiveMarkers)
+
+        let scene = RendererMatrixBuilder.sceneModel(
+            for: monitorLayout,
+            preset: .sonicSphere30Point1,
+            renderMode: .automatic
+        )
+        let sonicSphereState = OrbitalVUMeterModel.sonicSphereOutputState(
+            scene: scene,
+            meterSnapshot: snapshot
+        )
+
+        XCTAssertEqual(sonicSphereState.meterSourceLabel, "Desktop Output Meter")
+        XCTAssertTrue(sonicSphereState.isActualAudibleOutput)
+        XCTAssertTrue(sonicSphereState.markers.isEmpty)
+        XCTAssertFalse(sonicSphereState.hasActiveMarkers)
+    }
+
+    func testOrbitalVUSonicSphereAnalysisMapsThirtyPointOneMarkers() {
+        let scene = RendererMatrixBuilder.sceneModel(
+            for: SurroundLayoutDetector.fallbackLayout(for: 31),
+            preset: .sonicSphere30Point1,
+            renderMode: .automatic
+        )
+        let levels = (0..<31).map { index in
+            orbitalMeterLevel(index == 30 ? 0.27 : 0.12, peakDbFS: index == 30 ? -16 : -30)
+        }
+        let snapshot = OrbitalVUMeterSnapshot(
+            source: .sonicSphereAnalysis,
+            meterLevels: levels,
+            isActive: true
+        )
+
+        let state = OrbitalVUMeterModel.sonicSphereOutputState(
+            scene: scene,
+            meterSnapshot: snapshot
+        )
+
+        XCTAssertEqual(state.meterSourceLabel, "Sonic Sphere Analysis Meter")
+        XCTAssertFalse(state.isActualAudibleOutput)
+        XCTAssertEqual(state.markers.count, 31)
+        XCTAssertEqual(state.markers.filter { $0.role == .sonicSphereFullRange }.count, 30)
+        XCTAssertEqual(state.markers.filter { $0.role == .sonicSphereLFE }.count, 1)
+        XCTAssertEqual(state.markers.first?.label, "1")
+        XCTAssertEqual(state.markers.last?.label, "LFE")
+        XCTAssertEqual(state.markers.last?.normalizedLevel, 0.27)
+        XCTAssertTrue(state.hasActiveMarkers)
+        XCTAssertTrue(state.markers.allSatisfy { $0.meterSourceLabel == "Sonic Sphere Analysis Meter" })
+        XCTAssertTrue(state.markers.allSatisfy { !$0.isActualAudibleOutput })
+    }
+
+    func testOrbitalVUPhysicalThirtyTwoKeepsChannelThirtyTwoReservedSilent() {
+        let scene = RendererMatrixBuilder.sceneModel(
+            for: SurroundLayoutDetector.fallbackLayout(for: 31),
+            preset: .sonicSphere30Point1,
+            renderMode: .automatic
+        )
+        var levels = Array(repeating: orbitalMeterLevel(0.08, peakDbFS: -42), count: 31)
+        levels.append(orbitalMeterLevel(1.0, peakDbFS: 0))
+        let snapshot = OrbitalVUMeterSnapshot(
+            source: .danteOutput,
+            meterLevels: levels,
+            isActive: true
+        )
+
+        let state = OrbitalVUMeterModel.sonicSphereOutputState(
+            scene: scene,
+            meterSnapshot: snapshot,
+            physicalOutputChannelCount: 32
+        )
+
+        XCTAssertEqual(state.meterSourceLabel, "Dante Output Meter")
+        XCTAssertTrue(state.isActualAudibleOutput)
+        XCTAssertEqual(state.markers.count, 32)
+
+        let reserved = state.markers[31]
+        XCTAssertEqual(reserved.channelID, "reserved-output-32")
+        XCTAssertEqual(reserved.label, "32")
+        XCTAssertEqual(reserved.role, .reservedPhysicalOutput)
+        XCTAssertEqual(reserved.normalizedLevel, 0)
+        XCTAssertFalse(reserved.isActive)
+        XCTAssertFalse(reserved.isHot)
+        XCTAssertFalse(reserved.isClipping)
+        XCTAssertEqual(reserved.meterSourceLabel, "Dante Output Meter")
+        XCTAssertTrue(reserved.isActualAudibleOutput)
+    }
+
+    func testOrbitalVUInactiveAndAllZeroMetersStayInactive() {
+        let scene = RendererMatrixBuilder.sceneModel(
+            for: SurroundLayoutDetector.fallbackLayout(for: 31),
+            preset: .sonicSphere30Point1,
+            renderMode: .automatic
+        )
+        let snapshot = OrbitalVUMeterSnapshot(
+            source: .sonicSphereAnalysis,
+            meterLevels: Array(repeating: .silence, count: 31),
+            isActive: false
+        )
+
+        let state = OrbitalVUMeterModel.sonicSphereOutputState(
+            scene: scene,
+            meterSnapshot: snapshot
+        )
+
+        XCTAssertEqual(state.markers.count, 31)
+        XCTAssertFalse(state.hasActiveMarkers)
+        XCTAssertTrue(state.markers.allSatisfy { $0.normalizedLevel == 0 })
+        XCTAssertTrue(state.markers.allSatisfy { !$0.isActive })
+        XCTAssertTrue(state.markers.allSatisfy { !$0.isHot })
+        XCTAssertTrue(state.markers.allSatisfy { !$0.isClipping })
+    }
+
+    func testOrbitalVUMeterModelDoesNotImportAudioGraphOrSceneTypes() throws {
+        let source = try String(
+            contentsOf: packageRoot().appendingPathComponent("Sources/Orbisonic/OrbitalVUMeterModel.swift"),
+            encoding: .utf8
+        )
+        let forbiddenTokens = [
+            "AVAudioEngine",
+            "AVAudioPCMBuffer",
+            "AudioBufferList",
+            "AudioUnit",
+            "SCNNode",
+            "SceneKit",
+            "installTap",
+            "AudioDeviceID",
+            "AVFoundation"
+        ]
+
+        for token in forbiddenTokens {
+            XCTAssertFalse(source.contains(token), "Orbital VU model should not reference \(token)")
+        }
+    }
+
     @MainActor
     func testMeterOnlySonicSphereBusWorksWithoutDirectRendererAudio() throws {
         let engine = OrbisonicEngine()
@@ -140,5 +296,21 @@ final class SonicSphereMeteringTests: XCTestCase {
 
     private func amplitude(dbFS: Float) -> Float {
         powf(10, dbFS / 20)
+    }
+
+    private func orbitalMeterLevel(_ level: Float, peakDbFS: Float) -> MeterChannelLevel {
+        MeterChannelLevel(
+            rawRMSDbFS: peakDbFS,
+            peakDbFS: peakDbFS,
+            vuDb: peakDbFS,
+            displayLevel: level
+        )
+    }
+
+    private func packageRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

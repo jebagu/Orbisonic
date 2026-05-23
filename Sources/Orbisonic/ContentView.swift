@@ -1847,6 +1847,13 @@ struct ContentView: View {
                 }
             }
 
+            OrbitalSonicSphereMeterPanel(
+                sceneModel: model.rendererScene,
+                isPlaying: model.isPlaying,
+                physicalOutputChannelCount: model.rendererOutputRoute.outputChannelCount,
+                meterStore: model.rendererMeterStore
+            )
+
             OrbisonicDisclosureTray(
                 isExpanded: $rendererTuningExpanded,
                 title: "Tuning",
@@ -1993,39 +2000,6 @@ struct ContentView: View {
     private var rendererAtmosNoteText: String? {
         guard let metadata = model.visibleLocalSourceMetadata else { return nil }
         return LocalFilePlayerRowsModel.rendererAtmosNote(metadata.formatNote)
-    }
-
-    private var rendererViewportGrid: some View {
-        HStack(alignment: .top, spacing: 18) {
-            rendererViewportPanel(title: "Plan", mode: .plan)
-            rendererViewportPanel(title: "Isometric", mode: .isometric)
-        }
-    }
-
-    private func rendererViewportPanel(title: String, mode: RendererViewportMode) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(LabTheme.text)
-
-            SonicSphereRendererSceneView(
-                sceneModel: model.rendererScene,
-                isPlaying: model.isPlaying,
-                viewportMode: mode,
-                isInteractive: false
-            )
-            .frame(minHeight: 300)
-            .background(
-                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.22))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
-                    .stroke(LabTheme.line, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var headerCard: some View {
@@ -5965,9 +5939,118 @@ private enum DenseVUMeterRenderer {
     }
 }
 
+private struct OrbitalSonicSphereMeterPanel: View {
+    let sceneModel: RendererSceneModel
+    let isPlaying: Bool
+    let physicalOutputChannelCount: Int
+    @ObservedObject var meterStore: ChannelMeterStore
+
+    var body: some View {
+        let meterState = orbitalVUMeterState
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Orbital View")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+
+                Text(meterState.meterSourceLabel)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(meterState.hasActiveMarkers ? LabTheme.cyan : LabTheme.textSoft)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityLabel("Orbital VU meter source")
+                    .accessibilityValue(meterState.meterSourceLabel)
+
+                Spacer(minLength: 0)
+
+                Text(activityText(for: meterState))
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(activityColor(for: meterState))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                    .accessibilityLabel("Orbital VU meter activity")
+            }
+            .frame(height: 18, alignment: .leading)
+
+            SonicSphereRendererSceneView(
+                sceneModel: sceneModel,
+                isPlaying: isPlaying,
+                orbitalVUMeterState: meterState,
+                viewportMode: .isometric,
+                isInteractive: false
+            )
+            .frame(minHeight: 300)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .fill(Color.black.opacity(0.22))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                    .stroke(LabTheme.line, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var orbitalVUMeterState: OrbitalVUMeterViewState {
+        let snapshot = OrbitalVUMeterSnapshot(
+            source: .sonicSphereAnalysis,
+            channels: meterStore.channelMeters.map { meter in
+                OrbitalVUMeterChannelSnapshot(
+                    normalizedLevel: meter.level,
+                    peakDbFS: meter.peakDbFS,
+                    isClipping: meter.peakDbFS >= 0
+                )
+            },
+            isActive: meterStore.isActive
+        )
+        let physicalOutputCount = physicalOutputChannelCount > sceneModel.outputSpeakers.count
+            ? min(physicalOutputChannelCount, 32)
+            : nil
+        return OrbitalVUMeterModel.sonicSphereOutputState(
+            scene: sceneModel,
+            meterSnapshot: snapshot,
+            physicalOutputChannelCount: physicalOutputCount
+        )
+    }
+
+    private func activityText(for state: OrbitalVUMeterViewState) -> String {
+        let activeCount = state.markers.filter { $0.isActive }.count
+        let totalCount = state.markers.count
+
+        if state.markers.contains(where: { $0.isClipping }) {
+            return "clip"
+        }
+        if state.markers.contains(where: { $0.isHot }) {
+            return "hot"
+        }
+        if activeCount > 0 {
+            return "\(activeCount)/\(totalCount) active"
+        }
+        return "inactive"
+    }
+
+    private func activityColor(for state: OrbitalVUMeterViewState) -> Color {
+        if state.markers.contains(where: { $0.isClipping }) {
+            return LabTheme.red
+        }
+        if state.markers.contains(where: { $0.isHot }) {
+            return LabTheme.amber
+        }
+        if state.hasActiveMarkers {
+            return LabTheme.cyan
+        }
+        return LabTheme.textSoft
+    }
+}
+
 private struct SonicSphereRendererSceneView: NSViewRepresentable {
     let sceneModel: RendererSceneModel
     let isPlaying: Bool
+    var orbitalVUMeterState: OrbitalVUMeterViewState = .empty(source: .sonicSphereAnalysis)
     var viewportMode: RendererViewportMode = .isometric
     var isInteractive = true
 
@@ -5992,8 +6075,10 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         context.coordinator.updateScene(
             sceneModel: sceneModel,
             isPlaying: isPlaying,
+            meterState: orbitalVUMeterState,
             makeOutputSpeaker: makeOutputSpeaker,
             makeInputSpeaker: makeInputSpeaker,
+            makeReservedOutputMarker: makeReservedOutputMarker,
             makeListener: makeListener
         )
         if isInteractive {
@@ -6011,8 +6096,10 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         context.coordinator.updateScene(
             sceneModel: sceneModel,
             isPlaying: isPlaying,
+            meterState: orbitalVUMeterState,
             makeOutputSpeaker: makeOutputSpeaker,
             makeInputSpeaker: makeInputSpeaker,
+            makeReservedOutputMarker: makeReservedOutputMarker,
             makeListener: makeListener
         )
     }
@@ -6121,6 +6208,25 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         return node
     }
 
+    private func makeReservedOutputMarker(_ marker: OrbitalVUMeterMarker, offset: Int) -> SCNNode {
+        let geometry = SCNSphere(radius: 0.026)
+        geometry.segmentCount = 12
+        geometry.firstMaterial = material(
+            color: NSColor(calibratedRed: 0.22, green: 0.28, blue: 0.31, alpha: 0.62),
+            emission: NSColor(calibratedRed: 0.015, green: 0.035, blue: 0.04, alpha: 1.0)
+        )
+
+        let node = SCNNode(geometry: geometry)
+        node.name = "Reserved Output \(marker.label)"
+        let angle = -Double.pi / 2.0 + Double(offset) * 0.12
+        node.position = SCNVector3(
+            Float(cos(angle) * 1.10),
+            -1.12,
+            Float(sin(angle) * 1.10)
+        )
+        return node
+    }
+
     private func makeInputSpeaker(_ speaker: RendererInputSpeaker) -> SCNNode {
         let geometry = SCNBox(width: 0.075, height: 0.075, length: 0.075, chamferRadius: 0.008)
         geometry.firstMaterial = material(
@@ -6225,13 +6331,20 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
         func updateScene(
             sceneModel: RendererSceneModel,
             isPlaying: Bool,
+            meterState: OrbitalVUMeterViewState,
             makeOutputSpeaker: (RendererOutputSpeaker) -> SCNNode,
             makeInputSpeaker: (RendererInputSpeaker) -> SCNNode,
+            makeReservedOutputMarker: (OrbitalVUMeterMarker, Int) -> SCNNode,
             makeListener: () -> SCNNode
         ) {
             guard let contentRoot else { return }
 
-            let outputIDs = Set(sceneModel.outputSpeakers.map(\.id))
+            var markersByID: [String: OrbitalVUMeterMarker] = [:]
+            for marker in meterState.markers {
+                markersByID[marker.channelID] = marker
+            }
+            let reservedMarkers = meterState.markers.filter { $0.role == .reservedPhysicalOutput }
+            let outputIDs = Set(sceneModel.outputSpeakers.map(\.id) + reservedMarkers.map(\.channelID))
             for id in outputNodes.keys.filter({ !outputIDs.contains($0) }) {
                 outputNodes.removeValue(forKey: id)?.removeFromParentNode()
             }
@@ -6248,6 +6361,31 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
                 }
                 node.name = speaker.displayName
                 node.position = speaker.position.scnVector
+                applyOutputMeterMarker(
+                    markersByID[speaker.id],
+                    to: node,
+                    isLFE: speaker.isLFE,
+                    isReserved: false
+                )
+            }
+
+            for (offset, marker) in reservedMarkers.enumerated() {
+                let node: SCNNode
+                if let existingNode = outputNodes[marker.channelID] {
+                    node = existingNode
+                } else {
+                    let newNode = makeReservedOutputMarker(marker, offset)
+                    outputNodes[marker.channelID] = newNode
+                    contentRoot.addChildNode(newNode)
+                    node = newNode
+                }
+                node.name = "Reserved Output \(marker.label)"
+                applyOutputMeterMarker(
+                    marker,
+                    to: node,
+                    isLFE: false,
+                    isReserved: true
+                )
             }
 
             let inputIDs = Set(sceneModel.inputSpeakers.map(\.id))
@@ -6276,6 +6414,142 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
                 listenerIsPlaying = isPlaying
                 contentRoot.addChildNode(node)
             }
+        }
+
+        private func applyOutputMeterMarker(
+            _ marker: OrbitalVUMeterMarker?,
+            to node: SCNNode,
+            isLFE: Bool,
+            isReserved: Bool
+        ) {
+            let level = CGFloat(marker?.normalizedLevel ?? 0).clamped(to: 0...1)
+            let isActive = marker?.isActive == true
+            let isHot = marker?.isHot == true
+            let isClipping = marker?.isClipping == true
+            let visual = outputMeterVisual(
+                level: level,
+                isActive: isActive,
+                isHot: isHot,
+                isClipping: isClipping,
+                isLFE: isLFE,
+                isReserved: isReserved
+            )
+            let scaleAmount: CGFloat
+            if isReserved {
+                scaleAmount = 1
+            } else if isLFE {
+                scaleAmount = isActive ? 1 + level * 0.32 : 1
+            } else {
+                scaleAmount = isActive ? 1 + level * 0.56 : 1
+            }
+
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = isActive ? 0.08 : 0
+            node.geometry?.firstMaterial = meterMaterial(color: visual.color, emission: visual.emission)
+            node.scale = SCNVector3(Float(scaleAmount), Float(scaleAmount), Float(scaleAmount))
+            updateOutputMeterRing(
+                on: node,
+                color: visual.ringColor,
+                isVisible: isHot || isClipping,
+                isLFE: isLFE,
+                isClipping: isClipping
+            )
+            SCNTransaction.commit()
+        }
+
+        private func updateOutputMeterRing(
+            on node: SCNNode,
+            color: NSColor,
+            isVisible: Bool,
+            isLFE: Bool,
+            isClipping: Bool
+        ) {
+            let ringName = "orbital-vu-state-ring"
+            guard isVisible else {
+                node.childNode(withName: ringName, recursively: false)?.removeFromParentNode()
+                return
+            }
+
+            let ringNode: SCNNode
+            if let existing = node.childNode(withName: ringName, recursively: false) {
+                ringNode = existing
+            } else {
+                let torus = SCNTorus(
+                    ringRadius: isLFE ? 0.080 : 0.062,
+                    pipeRadius: isClipping ? 0.0048 : 0.0034
+                )
+                torus.ringSegmentCount = 36
+                torus.pipeSegmentCount = 6
+                ringNode = SCNNode(geometry: torus)
+                ringNode.name = ringName
+                node.addChildNode(ringNode)
+            }
+
+            ringNode.geometry?.firstMaterial = meterMaterial(
+                color: color,
+                emission: color.withAlphaComponent(0.55)
+            )
+        }
+
+        private func outputMeterVisual(
+            level: CGFloat,
+            isActive: Bool,
+            isHot: Bool,
+            isClipping: Bool,
+            isLFE: Bool,
+            isReserved: Bool
+        ) -> (color: NSColor, emission: NSColor, ringColor: NSColor) {
+            if isReserved {
+                let color = NSColor(calibratedRed: 0.22, green: 0.28, blue: 0.31, alpha: 0.56)
+                return (color, NSColor(calibratedRed: 0.012, green: 0.025, blue: 0.028, alpha: 1), color)
+            }
+
+            if isClipping {
+                let color = NSColor(calibratedRed: 1.0, green: 0.16, blue: 0.20, alpha: 1)
+                return (color, NSColor(calibratedRed: 0.76, green: 0.025, blue: 0.04, alpha: 1), color)
+            }
+
+            if isHot {
+                let color = NSColor(calibratedRed: 1.0, green: 0.62, blue: 0.08, alpha: 1)
+                return (color, NSColor(calibratedRed: 0.62, green: 0.28, blue: 0.015, alpha: 1), color)
+            }
+
+            if isActive {
+                let glow = 0.22 + Double(level) * 0.48
+                if isLFE {
+                    let color = NSColor(calibratedRed: 0.96, green: 0.78, blue: 0.18, alpha: 0.98)
+                    return (
+                        color,
+                        NSColor(calibratedRed: 0.24 + glow * 0.34, green: 0.16 + glow * 0.22, blue: 0.025, alpha: 1),
+                        color
+                    )
+                }
+
+                let color = NSColor(calibratedRed: 0.38, green: 0.94, blue: 0.86, alpha: 1)
+                return (
+                    color,
+                    NSColor(calibratedRed: 0.035 + glow * 0.18, green: 0.22 + glow * 0.34, blue: 0.22 + glow * 0.30, alpha: 1),
+                    color
+                )
+            }
+
+            if isLFE {
+                let color = NSColor(calibratedRed: 0.48, green: 0.39, blue: 0.13, alpha: 0.72)
+                return (color, NSColor(calibratedRed: 0.035, green: 0.028, blue: 0.012, alpha: 1), color)
+            }
+
+            let color = NSColor(calibratedRed: 0.20, green: 0.36, blue: 0.38, alpha: 0.58)
+            return (color, NSColor(calibratedRed: 0.012, green: 0.045, blue: 0.048, alpha: 1), color)
+        }
+
+        private func meterMaterial(color: NSColor, emission: NSColor) -> SCNMaterial {
+            let material = SCNMaterial()
+            material.diffuse.contents = color
+            material.emission.contents = emission
+            material.lightingModel = .physicallyBased
+            material.transparency = CGFloat(color.alphaComponent)
+            material.isDoubleSided = true
+            return material
         }
 
         @objc func handlePan(_ gesture: NSPanGestureRecognizer) {

@@ -2,7 +2,22 @@
 
 ## Status
 
-planned
+Slice 10 complete; work package complete.
+
+Total slices: 10.
+
+## Slice Progress
+
+- Slice 1 completed on 2026-05-23: adopted the Realtime Audio Family Standards Package under `docs/realtime-audio-family/`, added Orbisonic inheritance ADR 0013, added the Orbisonic realtime audio project profile, and updated project control docs. No runtime source behavior changed.
+- Slice 2 completed on 2026-05-23: added `docs/audits/0003-callback-reachability-audit.md`, mapped current HAL callback, source-node, tap, diagnostic, metering, and future AudioCore callback-intended paths, and identified unsafe allocation, lock, meter, and queue behavior without changing runtime source.
+- Slice 3 completed on 2026-05-23: replaced per-callback HAL capture buffer allocation/deallocation with `LiveInputCaptureBufferStorage`, added an explicit 8,192-frame prepared callback capacity and oversized-frame rejection policy, added focused storage reuse tests, ran the full SwiftPM suite, refreshed the app bundle, and updated callback impact docs. Callback-facing locks and legacy metering risks remain.
+- Slice 4 completed on 2026-05-23: replaced `LiveChannelRingBuffer` storage and cursor state with a fixed-capacity preallocated transfer buffer, atomic cursor/counter snapshots, nonblocking gate behavior for trim/read/peek coordination, and atomic live meter-level slots; added non-consuming peek and no-`NSLock` regression tests, passed the full SwiftPM suite, and refreshed the app bundle. Legacy metering service ingestion and live matrix scratch allocation remain.
+- Slice 5 completed on 2026-05-23: replaced legacy `MeteringService` locking/dynamic measurement arrays with fixed per-signal realtime state, atomic raw RMS/peak publication, bounded channel-drop counters, UI-side smoothing/display mapping, shared realtime atomic primitives, and tests proving overload drops plus calibration non-mutation of audio hashes and renderer coefficients. Live matrix scratch allocation remains.
+- Slice 6 completed on 2026-05-23: added `OrbitalVUMeterModel`, a value-only orbital Sonic Sphere meter state mapper with source-label truth, audible-output flags, hot/clipping state, reserved physical output markers, and focused tests for monitor omission, 30.1 analysis mapping, channel 32 silence, inactive meters, and no audio graph or SceneKit imports; focused slice filters passed, the full SwiftPM suite passed with 671 tests, and the repo-root app bundle was refreshed.
+- Slice 7 completed on 2026-05-23: wired the value-only orbital VU state into the active Renderer tab through `OrbitalSonicSphereMeterPanel`, updated `SonicSphereRendererSceneView` to render inactive, active, hot, clipping, LFE, and reserved-output marker states, preserved the `Sonic Sphere Analysis Meter` source label, added focused UI wiring coverage, passed focused slice filters, passed the full SwiftPM suite with 672 tests, and refreshed the repo-root app bundle.
+- Slice 8 completed on 2026-05-23: added `RealtimeCallbackSafetyInstrumentation`, the standard Orbisonic maximum configured callback stress scene, family starting budgets, preallocated callback duration samples, explicit deadline/allocation/lock/wait/event/telemetry/meter/route counters, optional `LiveAudioPipe` hooks that expose the existing live matrix scratch allocation as a blocked gate, focused instrumentation tests, and performance report `docs/audits/0004-callback-safety-performance-gates.md`; focused slice filters passed, the full SwiftPM suite passed with 676 tests, and the repo-root app bundle was refreshed.
+- Slice 9 completed on 2026-05-23: aligned project control docs, readiness/release gates, test strategy, and this work package with the current realtime/orbital VU implementation state; kept Sonic Sphere/Dante/Roon/Spotify/Aux/microphone/signing/installer verification manual unless actually tested; recorded callback compliance as blocked by the existing live matrix scratch allocation plus host-level allocation/lock/wait, denormal, and real 60-second stress-run evidence gaps; passed the full SwiftPM suite with 676 tests, refreshed the repo-root app bundle, and passed `git diff --check`.
+- Slice 10 completed on 2026-05-23: produced final compliance audit `docs/audits/0005-realtime-family-compliance-final-audit.md`, recorded the verdict as brownfield-in-progress / not compliant, updated status/readiness docs with the final result, preserved all callback, orbital VU visual, Sonic Sphere/Dante, live-source, installer, signing, notarization, and microphone permission gates as blockers unless actually verified, passed the full SwiftPM suite with 676 tests, and passed `git diff --check`.
 
 ## Purpose
 
@@ -58,13 +73,15 @@ Orbisonic already has useful architecture pieces:
 
 Orbisonic is not yet compliant with the shared family standard because:
 
-- The family standards package is not adopted into the repo as a first-class standard layer.
-- There is no project ADR declaring inheritance of the Realtime Audio Family Standards.
-- There is no Orbisonic OpenSpec tree or equivalent callback-adjacent change process.
-- The HAL input callback currently allocates/deallocates callback-local buffer lists.
-- The live ring buffer uses `NSLock` in callback-reachable write/read paths.
-- Legacy metering can allocate and lock from callback-adjacent tap/capture paths.
-- There is no callback safety instrumentation for allocation count, blocking-lock count, callback duration p50/p95/p99/max, deadline misses, or telemetry drops.
+- The family standards package is adopted, and several callback-adjacent paths have been remediated, but the brownfield exception list is still active.
+- The project inheritance ADR exists, and the callback reachability audit plus performance gate report now exist, but the final compliance verdict is still blocked by the current gate results.
+- The HAL input callback no longer allocates/deallocates callback-local buffer lists.
+- The downstream live channel transfer no longer uses callback-facing `NSLock`, and latest live meter levels no longer require `meterLock`.
+- The live ring buffer no longer uses `NSLock` in callback-reachable write/read/peek/status paths.
+- Legacy meter ingestion now publishes bounded raw RMS/peak values into fixed per-signal realtime state without `NSLock` or dynamic measurement arrays; smoothing and display mapping happen outside callback ingress.
+- The orbital Sonic Sphere VU data model is value-only and maps meter snapshots to output/monitor markers without touching audio graph objects, route handles, taps, matrices, output channel count, or live buffers.
+- The active Renderer tab now renders orbital VU marker state from renderer meter snapshots and keeps the source label visible as `Sonic Sphere Analysis Meter`.
+- Callback safety instrumentation now reports callback duration p50/p95/p99/max, deadline misses, explicit allocation/deallocation hooks, explicit lock/wait hooks, event drops/coalesces, telemetry drops, meter drops/coalesces, and route mismatch blocks; compliance is still blocked because the direct live matrix render path records scratch allocation, host-level malloc/free and lock/wait interposition are not installed, denormal handling is not verified, and the standard real 60-second stress scene has not been run.
 
 ## Non-Negotiable Constraints
 
@@ -86,6 +103,8 @@ Orbisonic is not yet compliant with the shared family standard because:
 6. Render multichannel VU activity in the orbital view from real meter snapshots while preserving the existing Orbisonic visual language.
 7. Add focused tests for callback safety boundaries, meter source labels, orbital view model mapping, and no monitor-to-production mutation.
 8. Add callback performance gates and manual verification steps before calling the feature compliant.
+9. Align project control docs, release gates, readiness, and known blockers with the implementation state.
+10. Produce the final compliance audit and verdict.
 
 ## Slice 1: Adopt Family Standards As Project Governance
 
@@ -460,7 +479,7 @@ Manual checks:
 - Confirm orbital VU behavior visually.
 - Confirm live/hardware paths that require Sonic Sphere, Dante, Roon, Spotify, Aux, microphone permission, signing, or installer behavior are recorded as manual unless tested.
 
-Slice 9. I'm ready to do the next slice.
+Slice 9 of 10. I'm ready to do the next slice.
 
 ## Slice 10: Final Compliance Review
 
@@ -503,7 +522,7 @@ Manual verification:
 - Run any hardware/service checks needed to support the final verdict.
 - If they cannot be run, record them as blockers rather than passing criteria.
 
-Slice 10. I'm ready to do the next slice.
+Slice 10 of 10. I'm ready to do the next slice.
 
 ## Global Stopping Conditions
 

@@ -1,0 +1,22 @@
+event_queues:
+  musical_events:
+    producer: preparation_plane
+    consumer: realtime_callback
+    capacity: 4096
+    max_drain_per_block: 512
+    ordering: stable_by_sample_time_then_priority
+    full_policy:
+      note_off: preserve_or_drop_lower_priority
+      panic: preserve_highest_priority
+      note_on: drop_newest_and_set_overload_flag
+      automation: coalesce_latest_by_parameter
+    callback_waits_for_space: false
+    callback_allocates_on_full: false
+
+  telemetry_snapshots:
+    producer: realtime_callback
+    consumer: telemetry_thread
+    capacity: 3
+    full_policy: overwrite_oldest
+    callback_waits_for_space: false
+    callback_allocates_on_full: false

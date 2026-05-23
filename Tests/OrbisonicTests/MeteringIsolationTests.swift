@@ -235,6 +235,57 @@ final class MeteringIsolationTests: XCTestCase {
         }
     }
 
+    func testMeterCalibrationDoesNotMutateAudioHashOrRendererCoefficients() {
+        let service = MeteringService()
+        let matrix = RendererMatrix(gains: [
+            [0.5, 0.25, 0.0],
+            [0.0, 0.75, 0.5]
+        ])
+        let originalMatrix = matrix
+        let input: [[Float]] = [
+            [0.10, -0.20, 0.30, -0.40],
+            [-0.50, 0.25, -0.125, 0.0625]
+        ]
+        let baseline = RendererMatrixSampleRenderer.renderSampleBuffers(
+            matrix: matrix,
+            inputSamples: input,
+            frameCount: 4
+        )
+        let baselineHash = sampleHash(baseline.sampleBuffers)
+
+        service.updateCalibration(
+            VUMeterCalibrationSettings(
+                referenceDbFS: -12,
+                responseMode: .fast,
+                monitorTrimDb: 6,
+                sonicSphereTrimDb: -6
+            )
+        )
+        service.ingest(signal: .sonicSphere, sampleBuffers: baseline.sampleBuffers, frameCount: 4)
+        _ = service.levels(signal: .sonicSphere, channelCount: baseline.sampleBuffers.count)
+        service.updateCalibration(
+            VUMeterCalibrationSettings(
+                referenceDbFS: -24,
+                responseMode: .smooth,
+                monitorTrimDb: -6,
+                sonicSphereTrimDb: 6
+            )
+        )
+        _ = service.levels(signal: .sonicSphere, channelCount: baseline.sampleBuffers.count)
+
+        let afterCalibration = RendererMatrixSampleRenderer.renderSampleBuffers(
+            matrix: matrix,
+            inputSamples: input,
+            frameCount: 4
+        )
+
+        XCTAssertEqual(sampleHash(afterCalibration.sampleBuffers), baselineHash)
+        XCTAssertEqual(matrix, originalMatrix)
+        XCTAssertEqual(matrix.gains, originalMatrix.gains)
+        XCTAssertEqual(matrix.outputMajorGains, originalMatrix.outputMajorGains)
+        assertSamples(afterCalibration.sampleBuffers, equals: baseline.sampleBuffers)
+    }
+
     private func assertNormalMonitor(
         _ route: NormalMonitorRouteDescriptor,
         file: StaticString = #filePath,
@@ -284,6 +335,17 @@ final class MeteringIsolationTests: XCTestCase {
 
     private func dbFS(_ value: Float) -> Float {
         20 * log10f(max(value, 0.000_001))
+    }
+
+    private func sampleHash(_ samples: [[Float]]) -> Int {
+        var hasher = Hasher()
+        for channel in samples {
+            hasher.combine(channel.count)
+            for sample in channel {
+                hasher.combine(sample.bitPattern)
+            }
+        }
+        return hasher.finalize()
     }
 
     private func bufferAddress(_ samples: [Float]) -> Int {

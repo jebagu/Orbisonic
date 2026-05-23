@@ -1,5 +1,6 @@
 import AudioToolbox
 import AVFoundation
+import Darwin
 import Foundation
 
 struct LiveInputSource {
@@ -42,11 +43,14 @@ enum LiveInputError: LocalizedError {
 }
 
 final class LiveInputCapture {
+    static let maxCallbackFrameCapacity: UInt32 = 8_192
+
     private let inputRoute: InputRouteInfo
     private let pipe: LiveAudioPipe
     private let activeChannelCount: Int
     private let captureChannelCount: Int
     private let sampleRate: Double
+    private let captureStorage: LiveInputCaptureBufferStorage
     private var audioUnit: AudioUnit?
     private var isStarted = false
 
@@ -64,6 +68,10 @@ final class LiveInputCapture {
         )
         self.sampleRate = sampleRate
         self.pipe = pipe
+        self.captureStorage = LiveInputCaptureBufferStorage(
+            channelCount: captureChannelCount,
+            maxFrameCapacity: Self.maxCallbackFrameCapacity
+        )
 
         do {
             audioUnit = try Self.makeHALInputUnit(deviceName: inputRoute.deviceName)
@@ -94,7 +102,7 @@ final class LiveInputCapture {
         isStarted = true
         AppLogger.shared.notice(
             category: "live-input",
-            "Started HAL capture device=\(inputRoute.deviceName) uid=\(inputRoute.uid) captureChannels=\(captureChannelCount) activeChannels=\(activeChannelCount) sampleRate=\(sampleRate)"
+            "Started HAL capture device=\(inputRoute.deviceName) uid=\(inputRoute.uid) captureChannels=\(captureChannelCount) activeChannels=\(activeChannelCount) sampleRate=\(sampleRate) maxCallbackFrames=\(captureStorage.maxFrameCapacity)"
         )
     }
 
@@ -217,7 +225,7 @@ final class LiveInputCapture {
 
         AppLogger.shared.notice(
             category: "live-input",
-            "Configured direct HAL input device=\(inputRoute.deviceName) uid=\(inputRoute.uid) deviceID=\(inputRoute.deviceID) captureChannels=\(captureChannelCount) activeChannels=\(activeChannelCount) sampleRate=\(sampleRate)"
+            "Configured direct HAL input device=\(inputRoute.deviceName) uid=\(inputRoute.uid) deviceID=\(inputRoute.deviceID) captureChannels=\(captureChannelCount) activeChannels=\(activeChannelCount) sampleRate=\(sampleRate) maxCallbackFrames=\(captureStorage.maxFrameCapacity)"
         )
     }
 
@@ -270,9 +278,8 @@ final class LiveInputCapture {
             return noErr
         }
 
-        let bufferList = makeBufferList(frameCount: frameCount)
-        defer {
-            releaseBufferList(bufferList)
+        guard let bufferList = captureStorage.prepare(frameCount: frameCount) else {
+            return kAudioUnitErr_TooManyFramesToProcess
         }
 
         let status = AudioUnitRender(
@@ -292,47 +299,6 @@ final class LiveInputCapture {
         return noErr
     }
 
-    private func makeBufferList(frameCount: UInt32) -> UnsafeMutablePointer<AudioBufferList> {
-        let channelCount = max(captureChannelCount, 1)
-        let byteCount = MemoryLayout<AudioBufferList>.size
-            + MemoryLayout<AudioBuffer>.stride * (channelCount - 1)
-        let rawBufferList = UnsafeMutableRawPointer.allocate(
-            byteCount: byteCount,
-            alignment: MemoryLayout<AudioBufferList>.alignment
-        )
-        rawBufferList.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
-
-        let bufferList = rawBufferList.bindMemory(to: AudioBufferList.self, capacity: 1)
-        bufferList.pointee.mNumberBuffers = UInt32(channelCount)
-
-        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
-        let dataByteCount = Int(frameCount) * MemoryLayout<Float>.size
-
-        for index in buffers.indices {
-            let channelData = UnsafeMutableRawPointer.allocate(
-                byteCount: dataByteCount,
-                alignment: MemoryLayout<Float>.alignment
-            )
-            channelData.initializeMemory(as: Float.self, repeating: 0, count: Int(frameCount))
-
-            buffers[index] = AudioBuffer(
-                mNumberChannels: 1,
-                mDataByteSize: UInt32(dataByteCount),
-                mData: channelData
-            )
-        }
-
-        return bufferList
-    }
-
-    private func releaseBufferList(_ bufferList: UnsafeMutablePointer<AudioBufferList>) {
-        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
-        for index in buffers.indices {
-            buffers[index].mData?.deallocate()
-        }
-        UnsafeMutableRawPointer(bufferList).deallocate()
-    }
-
     private func dispose() {
         guard let audioUnit else { return }
 
@@ -347,81 +313,221 @@ final class LiveInputCapture {
     }
 }
 
+final class LiveInputCaptureBufferStorage {
+    let channelCount: Int
+    let maxFrameCapacity: UInt32
+    private(set) var oversizedRenderCount = 0
+    private(set) var lastOversizedFrameCount: UInt32 = 0
+
+    private let rawBufferList: UnsafeMutableRawPointer
+    private let bufferList: UnsafeMutablePointer<AudioBufferList>
+    private var channelStorage: [UnsafeMutablePointer<Float>]
+
+    init(channelCount: Int, maxFrameCapacity: UInt32) {
+        self.channelCount = max(channelCount, 1)
+        self.maxFrameCapacity = max(maxFrameCapacity, 1)
+
+        let byteCount = MemoryLayout<AudioBufferList>.size
+            + MemoryLayout<AudioBuffer>.stride * (self.channelCount - 1)
+        rawBufferList = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        rawBufferList.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+
+        bufferList = rawBufferList.bindMemory(to: AudioBufferList.self, capacity: 1)
+        bufferList.pointee.mNumberBuffers = UInt32(self.channelCount)
+        channelStorage = []
+        channelStorage.reserveCapacity(self.channelCount)
+
+        let maxFrameCount = Int(self.maxFrameCapacity)
+        for _ in 0..<self.channelCount {
+            let channelData = UnsafeMutablePointer<Float>.allocate(capacity: maxFrameCount)
+            channelData.initialize(repeating: 0, count: maxFrameCount)
+            channelStorage.append(channelData)
+        }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+        for index in buffers.indices {
+            buffers[index] = AudioBuffer(
+                mNumberChannels: 1,
+                mDataByteSize: 0,
+                mData: UnsafeMutableRawPointer(channelStorage[index])
+            )
+        }
+    }
+
+    deinit {
+        let maxFrameCount = Int(maxFrameCapacity)
+        for channelData in channelStorage {
+            channelData.deinitialize(count: maxFrameCount)
+            channelData.deallocate()
+        }
+        rawBufferList.deallocate()
+    }
+
+    func prepare(frameCount: UInt32) -> UnsafeMutablePointer<AudioBufferList>? {
+        guard frameCount <= maxFrameCapacity else {
+            oversizedRenderCount &+= 1
+            lastOversizedFrameCount = frameCount
+            return nil
+        }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+        let dataByteCount = frameCount * UInt32(MemoryLayout<Float>.size)
+        for index in buffers.indices {
+            buffers[index].mDataByteSize = dataByteCount
+        }
+        return bufferList
+    }
+}
+
 final class LiveChannelRingBuffer {
-    private var storage: [Float]
-    private var readIndex = 0
-    private var writeIndex = 0
-    private var availableFrames = 0
     private let targetLatencyFrames: Int
     private let highWaterFrames: Int
-    private var isPriming = true
-    private var underflowCount = 0
-    private var underflowFrames = 0
-    private var overflowDropFrames = 0
-    private let lock = NSLock()
+    private let storageCapacity: Int
+    private let storage: UnsafeMutablePointer<Float>
+    private let readCursor = RealtimeAtomicInt()
+    private let writeCursor = RealtimeAtomicInt()
+    private let isPriming = RealtimeAtomicFlag(initialValue: true)
+    private let underflowCount = RealtimeAtomicInt()
+    private let underflowFrames = RealtimeAtomicInt()
+    private let overflowDropFrames = RealtimeAtomicInt()
+    private let transferGate = RealtimeAtomicFlag()
 
     init(capacity: Int, targetLatencyFrames: Int, highWaterFrames: Int) {
         let clampedCapacity = max(capacity, 1_024)
-        storage = Array(repeating: 0, count: clampedCapacity)
+        storageCapacity = clampedCapacity
+        storage = UnsafeMutablePointer<Float>.allocate(capacity: clampedCapacity)
+        storage.initialize(repeating: 0, count: clampedCapacity)
         self.targetLatencyFrames = min(max(targetLatencyFrames, 1), clampedCapacity)
         self.highWaterFrames = min(max(highWaterFrames, self.targetLatencyFrames), clampedCapacity)
     }
 
+    deinit {
+        storage.deinitialize(count: storageCapacity)
+        storage.deallocate()
+    }
+
     var capacity: Int {
-        storage.count
+        storageCapacity
     }
 
     func write(_ source: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
 
-        lock.lock()
-        defer { lock.unlock() }
+        let candidateFrames = min(frameCount, storageCapacity)
+        let baseSourceOffset = frameCount - candidateFrames
+        var sourceOffset = baseSourceOffset
+        var framesToWrite = candidateFrames
+        var droppedFrames = baseSourceOffset
 
-        for frame in 0..<frameCount {
-            storage[writeIndex] = source[frame]
-            writeIndex = (writeIndex + 1) % storage.count
+        let currentRead = readCursor.load()
+        let currentWrite = writeCursor.load()
+        let available = clampedAvailableFrames(read: currentRead, write: currentWrite)
+        let projectedAvailable = available + candidateFrames
+        let capacityDrop = max(projectedAvailable - storageCapacity, 0)
+        let highWaterDrop = projectedAvailable > highWaterFrames
+            ? max(projectedAvailable - targetLatencyFrames, 0)
+            : 0
+        let totalDrop = min(max(capacityDrop, highWaterDrop), available + candidateFrames)
+        let oldFrameDrop = min(totalDrop, available)
+        let incomingFrameDrop = totalDrop - oldFrameDrop
 
-            if availableFrames == storage.count {
-                readIndex = (readIndex + 1) % storage.count
-                overflowDropFrames += 1
+        if oldFrameDrop > 0 {
+            if enterTransferGate() {
+                let gatedRead = readCursor.load()
+                let gatedWrite = writeCursor.load()
+                let gatedAvailable = clampedAvailableFrames(read: gatedRead, write: gatedWrite)
+                let gatedProjected = gatedAvailable + candidateFrames
+                let gatedCapacityDrop = max(gatedProjected - storageCapacity, 0)
+                let gatedHighWaterDrop = gatedProjected > highWaterFrames
+                    ? max(gatedProjected - targetLatencyFrames, 0)
+                    : 0
+                let gatedTotalDrop = min(max(gatedCapacityDrop, gatedHighWaterDrop), gatedAvailable + candidateFrames)
+                let gatedOldDrop = min(gatedTotalDrop, gatedAvailable)
+                let gatedIncomingDrop = gatedTotalDrop - gatedOldDrop
+
+                if gatedOldDrop > 0 {
+                    readCursor.store(gatedRead + gatedOldDrop)
+                }
+                sourceOffset = baseSourceOffset + gatedIncomingDrop
+                framesToWrite = max(candidateFrames - gatedIncomingDrop, 0)
+                droppedFrames = baseSourceOffset + gatedOldDrop + gatedIncomingDrop
+                leaveTransferGate()
             } else {
-                availableFrames += 1
+                let freeFrames = max(storageCapacity - available, 0)
+                framesToWrite = min(candidateFrames, freeFrames)
+                sourceOffset = frameCount - framesToWrite
+                droppedFrames = frameCount - framesToWrite
             }
+        } else if incomingFrameDrop > 0 {
+            sourceOffset = baseSourceOffset + incomingFrameDrop
+            framesToWrite = max(candidateFrames - incomingFrameDrop, 0)
+            droppedFrames = baseSourceOffset + incomingFrameDrop
         }
 
-        trimToTargetLatencyIfNeeded()
+        if droppedFrames > 0 {
+            overflowDropFrames.add(droppedFrames)
+        }
+
+        guard framesToWrite > 0 else { return }
+
+        let startWrite = writeCursor.load()
+        for frame in 0..<framesToWrite {
+            storage[(startWrite + frame) % storageCapacity] = source[sourceOffset + frame]
+        }
+        writeCursor.store(startWrite + framesToWrite)
     }
 
     func read(into destination: UnsafeMutablePointer<Float>, frameCount: Int) -> Int {
         guard frameCount > 0 else { return 0 }
 
-        lock.lock()
-        defer { lock.unlock() }
+        guard enterTransferGate() else {
+            destination.initialize(repeating: 0, count: frameCount)
+            underflowCount.add(1)
+            underflowFrames.add(frameCount)
+            isPriming.store(true)
+            return 0
+        }
+        defer { leaveTransferGate() }
 
-        if isPriming {
-            guard availableFrames >= targetLatencyFrames else {
+        var currentRead = readCursor.load()
+        let currentWrite = writeCursor.load()
+        var available = clampedAvailableFrames(read: currentRead, write: currentWrite)
+
+        if available > storageCapacity {
+            let drop = available - storageCapacity
+            currentRead += drop
+            readCursor.store(currentRead)
+            overflowDropFrames.add(drop)
+            available = storageCapacity
+        }
+
+        if isPriming.load() {
+            guard available >= targetLatencyFrames else {
                 destination.initialize(repeating: 0, count: frameCount)
                 return 0
             }
 
-            isPriming = false
+            isPriming.store(false)
         }
 
-        let framesToRead = min(frameCount, availableFrames)
+        let framesToRead = min(frameCount, available)
         if framesToRead > 0 {
             for frame in 0..<framesToRead {
-                destination[frame] = storage[readIndex]
-                readIndex = (readIndex + 1) % storage.count
+                destination[frame] = storage[(currentRead + frame) % storageCapacity]
             }
-            availableFrames -= framesToRead
+            currentRead += framesToRead
+            readCursor.store(currentRead)
         }
 
         if framesToRead < frameCount {
             let missingFrames = frameCount - framesToRead
             destination.advanced(by: framesToRead).initialize(repeating: 0, count: missingFrames)
-            underflowCount += 1
-            underflowFrames += missingFrames
-            isPriming = true
+            underflowCount.add(1)
+            underflowFrames.add(missingFrames)
+            isPriming.store(true)
         }
 
         return framesToRead
@@ -430,22 +536,25 @@ final class LiveChannelRingBuffer {
     func peek(into destination: UnsafeMutablePointer<Float>, frameCount: Int) -> Int {
         guard frameCount > 0 else { return 0 }
 
-        lock.lock()
-        defer { lock.unlock() }
+        guard enterTransferGate() else {
+            destination.initialize(repeating: 0, count: frameCount)
+            return 0
+        }
+        defer { leaveTransferGate() }
 
-        if isPriming, availableFrames < targetLatencyFrames {
-            for frame in 0..<frameCount {
-                destination[frame] = 0
-            }
+        let currentRead = readCursor.load()
+        let currentWrite = writeCursor.load()
+        let available = clampedAvailableFrames(read: currentRead, write: currentWrite)
+
+        if isPriming.load(), available < targetLatencyFrames {
+            destination.initialize(repeating: 0, count: frameCount)
             return 0
         }
 
-        let framesToRead = min(frameCount, availableFrames)
+        let framesToRead = min(frameCount, available)
         if framesToRead > 0 {
-            var cursor = readIndex
             for frame in 0..<framesToRead {
-                destination[frame] = storage[cursor]
-                cursor = (cursor + 1) % storage.count
+                destination[frame] = storage[(currentRead + frame) % storageCapacity]
             }
         }
 
@@ -459,43 +568,40 @@ final class LiveChannelRingBuffer {
     }
 
     func status() -> LiveChannelRingBufferStatus {
-        lock.lock()
-        defer { lock.unlock() }
+        let currentRead = readCursor.load()
+        let currentWrite = writeCursor.load()
 
         return LiveChannelRingBufferStatus(
-            availableFrames: availableFrames,
+            availableFrames: clampedAvailableFrames(read: currentRead, write: currentWrite),
             targetLatencyFrames: targetLatencyFrames,
             highWaterFrames: highWaterFrames,
-            capacityFrames: storage.count,
-            isPriming: isPriming,
-            underflowCount: underflowCount,
-            underflowFrames: underflowFrames,
-            overflowDropFrames: overflowDropFrames
+            capacityFrames: storageCapacity,
+            isPriming: isPriming.load(),
+            underflowCount: underflowCount.load(),
+            underflowFrames: underflowFrames.load(),
+            overflowDropFrames: overflowDropFrames.load()
         )
     }
 
     func reset() {
-        lock.lock()
-        readIndex = 0
-        writeIndex = 0
-        availableFrames = 0
-        isPriming = true
-        underflowCount = 0
-        underflowFrames = 0
-        overflowDropFrames = 0
-        lock.unlock()
+        readCursor.store(0)
+        writeCursor.store(0)
+        isPriming.store(true)
+        underflowCount.store(0)
+        underflowFrames.store(0)
+        overflowDropFrames.store(0)
     }
 
-    private func trimToTargetLatencyIfNeeded() {
-        guard availableFrames > highWaterFrames else { return }
+    private func clampedAvailableFrames(read: Int, write: Int) -> Int {
+        min(max(write - read, 0), storageCapacity)
+    }
 
-        let framesToDrop = max(availableFrames - targetLatencyFrames, 0)
-        guard framesToDrop > 0 else { return }
+    private func enterTransferGate() -> Bool {
+        transferGate.tryEnter()
+    }
 
-        readIndex = (readIndex + framesToDrop) % storage.count
-        availableFrames -= framesToDrop
-        overflowDropFrames += framesToDrop
-        isPriming = false
+    private func leaveTransferGate() {
+        transferGate.store(false)
     }
 }
 
@@ -542,18 +648,20 @@ final class LiveAudioPipe {
 
     private let rings: [LiveChannelRingBuffer]
     private let meteringService: MeteringService?
-    private let meterLock = NSLock()
-    private var meterLevels: [Float]
+    private let meterLevels: RealtimeMeterLevelStorage
+    private let callbackSafetyProbe: RealtimeCallbackSafetyProbe?
 
     init(
         channelCount: Int,
         sampleRate: Double,
         latencySeconds: Double = 0.15,
-        meteringService: MeteringService? = nil
+        meteringService: MeteringService? = nil,
+        callbackSafetyProbe: RealtimeCallbackSafetyProbe? = nil
     ) {
         self.channelCount = channelCount
         self.sampleRate = sampleRate
         self.meteringService = meteringService
+        self.callbackSafetyProbe = callbackSafetyProbe
         let targetLatencyFrames = max(Int(sampleRate * max(latencySeconds, 0.05)), 512)
         let highWaterFrames = max(Int(Double(targetLatencyFrames) * 1.75), targetLatencyFrames + 1_024)
         let capacity = max(Int(sampleRate * max(latencySeconds * 8, 0.75)), highWaterFrames * 2, 4_096)
@@ -564,7 +672,7 @@ final class LiveAudioPipe {
                 highWaterFrames: highWaterFrames
             )
         }
-        meterLevels = Array(repeating: 0, count: channelCount)
+        meterLevels = RealtimeMeterLevelStorage(channelCount: channelCount)
     }
 
     func write(buffer: AVAudioPCMBuffer) {
@@ -577,17 +685,14 @@ final class LiveAudioPipe {
         let channelsToWrite = min(channelCount, sourceChannelCount)
         guard frames > 0, channelsToWrite > 0 else { return }
 
-        var nextMeters = Array(repeating: Float(0), count: channelCount)
+        meterLevels.clear()
 
         for channel in 0..<channelsToWrite {
             let source = channelData[channel]
             rings[channel].write(source, frameCount: frames)
-            nextMeters[channel] = Self.meterLevel(samples: source, frameCount: frames)
+            meterLevels.store(channel: channel, level: Self.meterLevel(samples: source, frameCount: frames))
         }
 
-        meterLock.lock()
-        meterLevels = nextMeters
-        meterLock.unlock()
         meteringService?.ingest(
             signal: .input,
             bufferList: UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList),
@@ -599,7 +704,7 @@ final class LiveAudioPipe {
         let channelsToWrite = min(channelCount, bufferList.count)
         guard frameCount > 0, channelsToWrite > 0 else { return }
 
-        var nextMeters = Array(repeating: Float(0), count: channelCount)
+        meterLevels.clear()
 
         for channel in 0..<channelsToWrite {
             guard let rawData = bufferList[channel].mData else {
@@ -614,22 +719,27 @@ final class LiveAudioPipe {
             }
 
             rings[channel].write(source, frameCount: framesToWrite)
-            nextMeters[channel] = Self.meterLevel(samples: source, frameCount: framesToWrite)
+            meterLevels.store(channel: channel, level: Self.meterLevel(samples: source, frameCount: framesToWrite))
         }
 
-        meterLock.lock()
-        meterLevels = nextMeters
-        meterLock.unlock()
         meteringService?.ingest(signal: .input, bufferList: bufferList, frameCount: frameCount)
     }
 
     func render(channelIndex: Int, audioBufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: AVAudioFrameCount) -> OSStatus {
+        let frames = Int(frameCount)
+        let callbackTrace = callbackSafetyProbe?.begin(blockSize: frames)
+        defer {
+            if let callbackTrace {
+                callbackSafetyProbe?.end(callbackTrace)
+            }
+        }
+
         guard channelIndex >= 0, channelIndex < rings.count else {
+            callbackSafetyProbe?.recordRouteMismatchBlocked()
             return noErr
         }
 
         let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
-        let frames = Int(frameCount)
 
         for bufferIndex in buffers.indices {
             guard let rawData = buffers[bufferIndex].mData else {
@@ -652,16 +762,25 @@ final class LiveAudioPipe {
         audioBufferList: UnsafeMutablePointer<AudioBufferList>,
         frameCount: AVAudioFrameCount
     ) -> OSStatus {
-        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
         let frames = Int(frameCount)
+        let callbackTrace = callbackSafetyProbe?.begin(blockSize: frames)
+        defer {
+            if let callbackTrace {
+                callbackSafetyProbe?.end(callbackTrace)
+            }
+        }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
         guard frames > 0,
               matrix.inputCount == rings.count,
               matrix.outputCount > 0
         else {
+            callbackSafetyProbe?.recordRouteMismatchBlocked()
             clear(audioBufferList: audioBufferList, frameCount: frames)
             return noErr
         }
 
+        callbackSafetyProbe?.recordCallbackAllocation(count: matrix.inputCount + 1)
         var inputScratch = Array(
             repeating: Array(repeating: Float(0), count: frames),
             count: matrix.inputCount
@@ -722,10 +841,7 @@ final class LiveAudioPipe {
     }
 
     func latestMeterLevels() -> [Float] {
-        meterLock.lock()
-        let levels = meterLevels
-        meterLock.unlock()
-        return levels
+        meterLevels.snapshot()
     }
 
     func status() -> LiveAudioPipeStatus? {
@@ -747,9 +863,7 @@ final class LiveAudioPipe {
 
     func reset() {
         rings.forEach { $0.reset() }
-        meterLock.lock()
-        meterLevels = Array(repeating: 0, count: channelCount)
-        meterLock.unlock()
+        meterLevels.clear()
     }
 
     private static func meterLevel(samples: UnsafePointer<Float>, frameCount: Int) -> Float {

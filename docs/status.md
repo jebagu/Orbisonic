@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-Canonical one-directory readiness / manual release verification.
+Realtime family compliance work package complete / canonical one-directory readiness.
 
 ## Current Milestone
 
-Canonical directory merge complete. Next milestone is fresh release packaging plus manual hardware, service, installer, signing, and notarization gates from the merged repository.
+Task 020 Slice 10 of 10 is complete. The final realtime compliance audit verdict is brownfield-in-progress, not compliant. Next milestone is callback blocker remediation plus fresh release packaging and manual hardware, service, installer, signing, and notarization gates from the merged repository.
 
 ## Project Summary
 
@@ -24,6 +24,11 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Packaged app and suite installers under `installer/`.
 - Local file playback and local library support in `Sources/Orbisonic/`.
 - Live loopback capture and source support in `Sources/Orbisonic/LiveAudioBridge.swift` and `Sources/Orbisonic/LoopbackSourceSupport.swift`.
+- Live HAL capture now uses preallocated callback buffer storage with an explicit 8,192-frame callback capacity.
+- Live channel transfer now uses preallocated fixed-capacity buffers plus atomic cursor/counter snapshots instead of callback-facing `NSLock` in `LiveAudioBridge`.
+- Legacy app metering now publishes callback/tap measurements into fixed per-signal realtime state without `NSLock` or dynamic measurement arrays; UI reads apply smoothing, trims, labels, and display levels outside callback ingress.
+- Orbital Sonic Sphere VU state now has a value-only model in `Sources/Orbisonic/OrbitalVUMeterModel.swift` that maps meter snapshots to monitor or Sonic Sphere markers while preserving source labels, audible-output truth, hot/clipping state, inactive silence, and reserved physical output channels.
+- The active Renderer tab now renders the orbital Sonic Sphere VU state from renderer meter snapshots with inactive, active, hot, clipping, LFE, and reserved-output marker styles plus the visible `Sonic Sphere Analysis Meter` label.
 - Roon metadata and transport bridge support in `Sources/Orbisonic/RoonNowPlayingMonitor.swift`, `Sources/Orbisonic/RoonBridgeClient.swift`, and `Sources/Orbisonic/Resources/RoonBridge/`.
 - Spotify receiver support in `Sources/Orbisonic/SpotifyReceiverClient.swift` with vendored librespot sources under `Vendor/`.
 - Atmos DRP source support in `Sources/Orbisonic/DolbyReferencePlayerController.swift`, with `SourceMode.atmosDRP` displayed as `Atmos`, temporary Aux loopback routing through `AtmosDRPRoutingPolicy`, and DRP bitstream metadata in app/web state.
@@ -32,6 +37,9 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Former split-workspace control material has been flattened into `docs/` and `.tasks/`; deprecated prompts and task files are retained only under `deprecated/` or `.tasks/deprecated/`.
 - Renderer, monitor, metering, diagnostics, route monitoring, and test tone support in current source and tests.
 - PureAudio boundary, sample-rate, conversion-ledger, Apple spatial monitor, and system-flow docs under `docs/PureAudio/`.
+- Realtime Audio Family Standards Package adopted under `docs/realtime-audio-family/`, with Orbisonic inheritance captured in `docs/decisions/0013-realtime-audio-family-standards-inheritance.md` and project specialization in `docs/project/orbisonic-realtime-audio-profile.md`.
+- Callback reachability audit report under `docs/audits/0003-callback-reachability-audit.md`.
+- Callback safety performance gate report under `docs/audits/0004-callback-safety-performance-gates.md`; the installed Slice 8 probe warns on missing host-level evidence and blocks on the existing live matrix scratch allocation.
 - Loopback input support spec, embedded librespot integration notes, local gapless playback plan, release notes, calibration layouts, and VU design-lab spec.
 - Sequential retrofit and hardening task graph under `.tasks/`.
 - Plan audit report under `docs/audits/0001-plan-audit.md`.
@@ -44,13 +52,15 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 
 ## In Progress Items
 
-- `.tasks/012-manual-release-verification.md` is partially complete and blocked on administrator-authenticated installer execution, signing/notarization credentials, and positive hardware/service checks.
+- `.tasks/020-realtime-family-orbital-vu-work-package.md` is complete through Slice 10 of 10.
+- Release verification remains blocked on administrator-authenticated installer execution, signing/notarization credentials, and positive hardware/service checks recorded in `docs/release-verification.md` and `.tasks/018-hardware-readiness-manual-gates.md`.
 - The current repo-root app bundle is refreshed through explicit scripts; installed-app and package verification remain release-gate work.
 
 ## Pending Follow-Up Tasks
 
 - Rebuild current installers from the canonical merged repo with administrator authentication, configure Developer ID signing/notarization if release distribution is intended, then finish `.tasks/018-hardware-readiness-manual-gates.md` before calling a release candidate ready.
 - Revalidate historical `docs/PureAudio/` claims before elevating any historical migration note into a binding contract.
+- Start a follow-up callback remediation package for the blockers listed in `docs/audits/0005-realtime-family-compliance-final-audit.md` before claiming realtime-family compliance.
 
 ## Blocked Items
 
@@ -83,10 +93,22 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Non-interactive CLI installation is blocked until administrator authentication is available.
 - Developer ID package signing and notarization are blocked until signing identities and notarytool credentials are configured.
 - Dante Virtual Soundcard installed/running does not prove the Dante network route, Sonic Sphere speaker order, Roon/Spotify/Aux capture, microphone permission, installer execution, signing, or notarization gates.
+- The realtime callback performance gates are not yet passing: the direct live matrix render path still records scratch allocation, host-level malloc/free and lock/wait interposition are missing, denormal handling is unverified, and the real 60-second standard stress scene has not been run.
+- The orbital Sonic Sphere VU is an analysis/metering view backed by value snapshots; it is not proof of physical Dante/Sonic Sphere output until the release-verification hardware gates pass.
 - No proof harness, simulated backend, or guarded integration should become a default path until its focused tests, relevant manual gates, packaging/signing, and rollback evidence are recorded.
 
 ## Recent Changes
 
+- 2026-05-23: Completed Task 020 Slice 10 of 10 by adding final audit `docs/audits/0005-realtime-family-compliance-final-audit.md`; verdict is brownfield-in-progress / not compliant because callback allocations, host-level allocation/lock/wait proof, denormal proof, real 60-second stress evidence, orbital VU visual verification, and hardware/service/release gates remain open; the full SwiftPM suite passed with 676 tests and `git diff --check` passed.
+- 2026-05-23: Completed Task 020 Slice 9 of 10 by aligning project control docs, readiness/release gates, and the work package with the current realtime/orbital VU state; no public contracts changed, Sonic Sphere/Dante/Roon/Spotify/Aux/microphone/signing/installer checks remain manual unless actually tested, callback compliance remains blocked by the current performance gate results, the full SwiftPM suite passed with 676 tests, the repo-root app bundle was refreshed, and `git diff --check` passed.
+- 2026-05-23: Completed Task 020 Slice 8 of 10 by adding the callback safety instrumentation probe, standard maximum-configured stress scene, family starting budgets, report-layer counters for duration/deadline/allocation/lock/wait/event/telemetry/meter/route facts, and live-pipe hooks that expose the existing matrix scratch allocation as a blocked gate; focused instrumentation, LiveAudioBridge, and PureAudioArchitectureBoundary tests passed, the full SwiftPM suite passed with 676 tests, and the repo-root app bundle was refreshed.
+- 2026-05-23: Completed Task 020 Slice 7 of 10 by wiring `OrbitalSonicSphereMeterPanel` into the active Renderer tab and extending `SonicSphereRendererSceneView` to render multichannel orbital VU states from value snapshots; focused OrbisonicUITweak, SonicSphereMetering, and PureAudioArchitectureBoundary tests passed, the full SwiftPM suite passed with 672 tests, and the repo-root app bundle was refreshed.
+- 2026-05-23: Completed Task 020 Slice 6 of 10 by adding the value-only `OrbitalVUMeterModel` for orbital Sonic Sphere VU marker state; focused SonicSphereMetering tests now cover monitor-only omission from production markers, 30.1 analysis mapping, physical channel 32 reserved silence, inactive all-zero meters, and no direct audio graph or SceneKit imports. Focused slice filters passed, the full SwiftPM suite passed with 671 tests, and the repo-root app bundle was refreshed.
+- 2026-05-23: Completed Task 020 Slice 5 by replacing legacy `MeteringService` locking/dynamic measurement arrays with fixed per-signal realtime state, atomic raw RMS/peak publication, bounded channel-drop counters, UI-side smoothing/display mapping, and shared realtime atomic primitives; focused MeteringService, MeteringIsolation, MeteringTelemetry, SonicSphereMetering, and PureAudioArchitectureBoundary tests passed.
+- 2026-05-23: Completed Task 020 Slice 4 by replacing `LiveChannelRingBuffer` `NSLock` state with preallocated fixed-capacity transfer storage, atomic cursors/counters, nonblocking trim/read/peek coordination, and atomic live meter-level slots; focused LiveAudioBridge, LiveNormalMonitorRoute, and MeteringIsolation tests passed, the full SwiftPM suite passed with 663 tests, and the repo-root app bundle was refreshed.
+- 2026-05-23: Completed Task 020 Slice 3 by moving HAL input capture buffer allocation into pre-start `LiveInputCaptureBufferStorage`, setting an explicit 8,192-frame callback capacity, returning `kAudioUnitErr_TooManyFramesToProcess` for oversized callback blocks without allocation, adding focused LiveAudioBridge tests, passing the full SwiftPM suite with 661 tests, and refreshing the repo-root app bundle; callback-facing locks and legacy metering risks remain.
+- 2026-05-23: Completed Task 020 Slice 2 by adding `docs/audits/0003-callback-reachability-audit.md`, mapping current HAL callback, AVAudioSourceNode, monitor tap, diagnostic, metering, and future AudioCore callback-intended paths, and recording the precise allocation/lock/metering risks that must be remediated before compliance can be claimed; no app source behavior changed.
+- 2026-05-23: Completed Task 020 Slice 1 by adopting the Realtime Audio Family Standards Package under `docs/realtime-audio-family/`, adding Orbisonic inheritance ADR 0013, adding the Orbisonic realtime audio project profile, and wiring project control docs to the new governance layer; no app source behavior changed.
 - 2026-05-20: Promoted the VU quiet-signal fix as the canonical build opened by `Open Orbisonic.command`; `Open Orbisonic - VU Quiet Fix.command` is retained as a named alias for the same LaunchServices reopen path.
 - 2026-05-20: Fixed VU quiet-signal display behavior by preserving the existing ordinary VU mapping, adding a low-level measured-signal visual tail so quiet input and Sonic Sphere meters do not blink off, and migrating existing version-4 Monitor Trim settings back to neutral `0 dB` while preserving Sonic Sphere trim.
 - 2026-05-14: Completed the canonical directory merge on `codex/canonical-orbisonic-merge`, preserving both current main history and the imported app-source history, flattening control material into this repo, replacing versioned root launchers with `Open Orbisonic.command`, and moving the former sibling workspace out of active projects to a temporary rollback archive outside the repo.
@@ -393,7 +415,7 @@ No build or test command was required for the docs-only prompts. Prompts 13 and 
 
 ### Audit Issues Left Open
 
-- No Prompt 10 audit issues remain open after Prompt 19. Release/setup readiness still depends on the manual verification documented in `docs/release-verification.md` and `.tasks/012-manual-release-verification.md`.
+- No Prompt 10 audit issues remain open after Prompt 19. Release/setup readiness still depends on the manual verification documented in `docs/release-verification.md` and the active hardware/readiness gate task `.tasks/018-hardware-readiness-manual-gates.md`; the older Task 012 record is historical/deprecated.
 
 ### Questions Requiring User Decision
 
@@ -424,11 +446,11 @@ Prompt 18 is complete. `docs/release-verification.md` now separates automated re
 
 ### Readiness Review Status
 
-Prompt 19 is complete. `docs/readiness-summary.md` records that documentation and automated hardening are ready for a manual release-verification pass, but Orbisonic is not release-verified until `.tasks/012-manual-release-verification.md` is run in the real macOS, loopback, Roon, Spotify, monitor, Sonic Sphere, and Dante environment. `.tasks/006-audio-boundary-hardening-plan.md` is marked skipped / superseded because the prompt sequence moved directly from the test-gap passes into Prompts 15 through 17 hardening.
+Prompt 19 is complete. `docs/readiness-summary.md` records that documentation and automated hardening are ready for a manual release-verification pass, but Orbisonic is not release-verified until the active release/hardware gates in `docs/release-verification.md` and `.tasks/018-hardware-readiness-manual-gates.md` are run in the real macOS, loopback, Roon, Spotify, monitor, Sonic Sphere, and Dante environment. `.tasks/006-audio-boundary-hardening-plan.md` is marked skipped / superseded because the prompt sequence moved directly from the test-gap passes into Prompts 15 through 17 hardening.
 
 ### Manual Release Verification Status
 
-Task 012 is partially complete. The 2026-05-10 imported app-source slice reran the full SwiftPM suite with 648 tests and 0 failures, built unsigned dirty-tree package candidates, confirmed all three Orbisonic HAL inputs are visible/openable, confirmed the Roon bridge is paired to a stopped Orbisonic zone, and recorded that the bounded loopback captures were silent. Historical 1.1 installer execution passed earlier. The canonical merged repo still needs fresh package rebuild, administrator-authenticated installer execution, signing/notarization setup, positive Roon / Aux / Spotify source-audio capture, monitor listening, Sonic Sphere / Dante channel walk, microphone permission, and entitlement checks.
+The historical Task 012 manual-release record is partially complete and now retained under deprecated task history. The 2026-05-10 imported app-source slice reran the full SwiftPM suite with 648 tests and 0 failures, built unsigned dirty-tree package candidates, confirmed all three Orbisonic HAL inputs are visible/openable, confirmed the Roon bridge is paired to a stopped Orbisonic zone, and recorded that the bounded loopback captures were silent. Historical 1.1 installer execution passed earlier. The active manual gate surface is now `.tasks/018-hardware-readiness-manual-gates.md`. The canonical merged repo still needs fresh package rebuild, administrator-authenticated installer execution, signing/notarization setup, positive Roon / Aux / Spotify source-audio capture, monitor listening, Sonic Sphere / Dante channel walk, microphone permission, and entitlement checks.
 
 ## Assumptions
 
@@ -440,11 +462,11 @@ Task 012 is partially complete. The 2026-05-10 imported app-source slice reran t
 - Orbisonic does not decode Dolby Atmos object metadata; it renders channel beds or discrete channels exposed by Core Audio or an upstream decoder.
 - Hardware-only behavior should be documented honestly rather than simulated in tests.
 - The Prompt 19 refresh made no production source or test changes.
-- Task 012 did not modify production source or tests.
+- Historical Task 012 did not modify production source or tests.
 
 ## Next Recommended Prompt
 
-current administrator-authenticated installer execution plus signing/notarization setup and hardware/service verification from `.tasks/012-manual-release-verification.md`.
+For the current Task 020 sequence, run Slice 10 of 10: final realtime compliance audit and verdict. After that, continue administrator-authenticated installer execution plus signing/notarization setup and hardware/service verification from `docs/release-verification.md` and `.tasks/018-hardware-readiness-manual-gates.md`.
 
 ## Open Questions
 

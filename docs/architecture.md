@@ -1,5 +1,11 @@
 # Orbisonic Architecture
 
+## Realtime Audio Family Inheritance
+
+This project inherits the Realtime Audio Family Standards Package. The Bencina Realtime Callback Doctrine is mandatory for every callback and every callback-reachable function. Project-specific requirements may add stricter rules but may not weaken the family standard.
+
+The adopted standards package lives under `docs/realtime-audio-family/`. Orbisonic-specific specialization lives in `docs/project/orbisonic-realtime-audio-profile.md`.
+
 ## Overview
 
 Orbisonic is a native Swift/macOS app that routes, monitors, and renders local and live multichannel audio for Sonic Sphere. The current repository is a Swift Package Manager project with one executable target and three library targets:
@@ -47,11 +53,13 @@ This layer can use `AudioContracts` and `AudioImport`, but should not depend on 
 - SwiftUI entry and shell: `OrbisonicApp.swift`, `ContentView.swift`, `DiagnosticsView.swift`, `OrbisonicDisclosureTray.swift`.
 - App state and orchestration: `OrbisonicViewModel.swift`.
 - AVAudioEngine ownership: `OrbisonicEngine.swift`.
-- Live loopback capture: `LiveAudioBridge.swift`, `LoopbackSourceSupport.swift`.
+- Live loopback capture: `LiveAudioBridge.swift`, `LoopbackSourceSupport.swift`, `RealtimeAtomicPrimitives.swift`, `RealtimeCallbackSafetyInstrumentation.swift`.
 - Local file and library paths: `AudioFileLoader.swift`, `AudioFileProbe.swift`, `LocalAudioFileSource.swift`, `StreamingAudioFileSource.swift`, `LocalGaplessScheduler.swift`, `LocalGaplessTypes.swift`, `LocalMusicLibrary.swift`, `LocalMusicMetadataEnrichment.swift`, `MatroskaFLACSupport.swift`.
 - Renderer and monitor paths: `RendererModule.swift`, `RendererMatrixSampleRenderer.swift`, `NormalMonitorStereoDownmixer.swift`, `NormalMonitorGraphTopology.swift`, `NormalMonitorRouteDescriptor.swift`, `NormalMonitorConversionLedger.swift`, `SpatialTuning.swift`, `PureAudioRouteCapabilityBridge.swift`.
 - Integrations: `RoonNowPlayingMonitor.swift`, `RoonBridgeClient.swift`, `RoonArtworkCache.swift`, `SpotifyReceiverClient.swift`.
 - Diagnostics and routes: `AppLogger.swift`, `DiagnosticsLogStore.swift`, `DebugTimingLog.swift`, `OutputRouteMonitor.swift`, `BlackHoleRouteRepair.swift`, `AudioSpatialUsageAudit.swift`, `MeteringService.swift`, `TestToneSupport.swift`, `OrbisonicWebServer.swift`.
+  `MeteringService.swift` publishes fixed-size raw meter values from callback/tap ingress and leaves smoothing, calibration, and display-level mapping to value reads outside the callback path.
+  `RealtimeCallbackSafetyInstrumentation.swift` defines Orbisonic's current callback performance budget, standard stress scene, preallocated timing probe, report counters, and gate status model. It is evidence plumbing; the current performance gate report still blocks full callback compliance for live matrix scratch allocation.
 
 ## Runtime Architecture
 
@@ -112,6 +120,8 @@ Renderer code exists in both the app target and the PureAudio target:
 
 - `Sources/Orbisonic/RendererModule.swift` defines the user-facing Sonic Sphere renderer model, FEY static-bed renderer, preset store, supported bed modes, Auro modes, Direct 30, and Direct 30.1 behavior.
 - `Sources/Orbisonic/RendererMatrixSampleRenderer.swift` renders matrix sample windows for tests and metering support.
+- `Sources/Orbisonic/OrbitalVUMeterModel.swift` maps value-only meter snapshots to orbital monitor or Sonic Sphere marker state without owning audio graph, route, tap, buffer, or SceneKit objects.
+- `Sources/Orbisonic/ContentView.swift` owns the active Renderer tab orbital VU presentation through `OrbitalSonicSphereMeterPanel` and `SonicSphereRendererSceneView`, fed only by value meter state.
 - `Sources/AudioCore/RenderGraphPlan.swift` and `Sources/AudioCore/RenderKernels.swift` model immutable render graph planning and deterministic render kernels.
 
 The current default production topology is Sonic Sphere 30.1: 30 full-range spatial outputs plus one LFE output. Renderer changes should be treated as high risk because they can alter production output.
