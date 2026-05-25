@@ -36,11 +36,10 @@ final class ExistingUIFreezeTests: XCTestCase {
         XCTAssertTrue(content.contains("private var primarySourceModes: [SourceMode]"))
         XCTAssertTrue(content.contains("SourceMode.musicInputs"))
         XCTAssertTrue(sourceModeBlock.contains("static var musicInputs: [SourceMode]"))
-        XCTAssertTrue(sourceModeBlock.contains("[.filePlayback, .atmosDRP, .spotify, .roon, .aux, .off]"))
+        XCTAssertTrue(sourceModeBlock.contains("[.filePlayback, .spotify, .roon, .aux, .off]"))
 
         for visibleName in [
             #"case filePlayback = "Local Files""#,
-            #"case atmosDRP = "Atmos DRP""#,
             #"case spotify = "Spotify""#,
             #"case roon = "Roon""#,
             #"case aux = "Aux Cable""#,
@@ -48,6 +47,7 @@ final class ExistingUIFreezeTests: XCTestCase {
         ] {
             XCTAssertTrue(sourceModeBlock.contains(visibleName), "Missing source mode: \(visibleName)")
         }
+        XCTAssertFalse(sourceModeBlock.contains("[.filePlayback, .atmosDRP"))
     }
 
     func testLocalMusicPanelBaselineRemainsStable() throws {
@@ -150,6 +150,52 @@ final class ExistingUIFreezeTests: XCTestCase {
                 XCTAssertFalse(source.contains(protectedSymbol), "\(file) references \(protectedSymbol)")
             }
         }
+    }
+
+    func testUnitTestDetectionDoesNotEnumerateBundlesOnMainActor() throws {
+        for file in [
+            "Sources/Orbisonic/OrbisonicViewModel.swift",
+            "Sources/Orbisonic/OrbisonicEngine.swift"
+        ] {
+            let source = try source(file)
+            XCTAssertFalse(source.contains("Bundle.allBundles"), "\(file) should not enumerate bundles for unit-test detection.")
+            XCTAssertTrue(source.contains("private static let isRunningUnitTests"))
+        }
+    }
+
+    func testRouteEnumerationIsNotDoneInsideMainActorRefreshApplication() throws {
+        let source = try source("Sources/Orbisonic/OrbisonicViewModel.swift")
+        let schedulerBlock = try block(
+            named: "private func refreshRoutesIfNeeded",
+            endingBefore: "private func applyRouteRefreshSnapshot",
+            in: source
+        )
+        let applicationBlock = try block(
+            named: "private func applyRouteRefreshSnapshot",
+            endingBefore: "private func publishTuning",
+            in: source
+        )
+
+        XCTAssertTrue(schedulerBlock.contains("guard !Self.isRunningUnitTests else { return }"))
+        XCTAssertTrue(schedulerBlock.contains("Task.detached(priority: .utility)"))
+        XCTAssertTrue(schedulerBlock.contains("OutputRouteMonitor.availableOutputRoutes()"))
+        XCTAssertTrue(schedulerBlock.contains("OutputRouteMonitor.availableInputRoutes()"))
+        XCTAssertFalse(applicationBlock.contains("OutputRouteMonitor.availableOutputRoutes()"))
+        XCTAssertFalse(applicationBlock.contains("OutputRouteMonitor.availableInputRoutes()"))
+        XCTAssertFalse(applicationBlock.contains("OutputRouteMonitor.currentRoute()"))
+        XCTAssertFalse(applicationBlock.contains("OutputRouteMonitor.currentInputRoute()"))
+    }
+
+    func testRendererMeterDisplayReusesSceneOutputSpeakers() throws {
+        let source = try source("Sources/Orbisonic/OrbisonicViewModel.swift")
+        let rendererMeterBlock = try block(
+            named: "enum RendererMeterDisplayModel",
+            endingBefore: "enum MonitorMeterDisplayModel",
+            in: source
+        )
+
+        XCTAssertTrue(rendererMeterBlock.contains("return scene.outputSpeakers.enumerated().map"))
+        XCTAssertFalse(rendererMeterBlock.contains("SonicSphereTopology.outputSpeakers(for: scene.preset"))
     }
 
     private func block(named startMarker: String, endingBefore endMarker: String, in source: String) throws -> String {

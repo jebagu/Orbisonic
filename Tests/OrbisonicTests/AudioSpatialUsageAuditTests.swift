@@ -83,9 +83,9 @@ final class AudioSpatialUsageAuditTests: XCTestCase {
         }
     }
 
-    func testRoutePlannerHasNoBinauralMode() throws {
-        XCTAssertFalse(RendererRenderMode.allCases.map(\.rawValue).contains("binaural"))
-        XCTAssertFalse(RendererTwoChannelPreference.allCases.map(\.rawValue).contains("binaural"))
+    func testMonitorRoutePlannerHasNoBinauralPreviewMode() throws {
+        XCTAssertTrue(RendererRenderMode.allCases.map(\.rawValue).contains("binaural_180"))
+        XCTAssertTrue(RendererTwoChannelPreference.allCases.map(\.rawValue).contains("binaural_180"))
         try XCTAssertFalse(sourceFile("Sources/Orbisonic/NormalMonitorRouteDescriptor.swift").localizedCaseInsensitiveContains("binaural"))
     }
 

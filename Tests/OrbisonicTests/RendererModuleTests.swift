@@ -183,6 +183,28 @@ final class RendererModuleTests: XCTestCase {
         XCTAssertEqual(output[30], 0, accuracy: Float(tolerance))
     }
 
+    func testBinauralLeftMapsToWestHemisphereForSonicSphereRenderer() {
+        let renderer = FeyStaticBedRenderer()
+        let output = renderer.render(inputFrame: [1, 0], mode: .binaural)
+        let westEnergy = energy(output, speakerIDs: [4, 5, 6, 10, 11, 15, 16, 17, 21, 22, 27, 28])
+        let eastEnergy = energy(output, speakerIDs: [2, 3, 7, 8, 13, 14, 18, 19, 24, 25, 29, 30])
+
+        XCTAssertGreaterThan(westEnergy, eastEnergy)
+        XCTAssertGreaterThan(westEnergy, 0)
+        XCTAssertEqual(output[30], 0, accuracy: Float(tolerance))
+    }
+
+    func testBinauralRightMapsToEastHemisphereForSonicSphereRenderer() {
+        let renderer = FeyStaticBedRenderer()
+        let output = renderer.render(inputFrame: [0, 1], mode: .binaural)
+        let westEnergy = energy(output, speakerIDs: [4, 5, 6, 10, 11, 15, 16, 17, 21, 22, 27, 28])
+        let eastEnergy = energy(output, speakerIDs: [2, 3, 7, 8, 13, 14, 18, 19, 24, 25, 29, 30])
+
+        XCTAssertGreaterThan(eastEnergy, westEnergy)
+        XCTAssertGreaterThan(eastEnergy, 0)
+        XCTAssertEqual(output[30], 0, accuracy: Float(tolerance))
+    }
+
     func testMonoImpulseHitsAllSpeakersUniformly() {
         let renderer = FeyStaticBedRenderer()
         let output = renderer.render(inputFrame: [1], mode: .mono)
@@ -308,7 +330,7 @@ final class RendererModuleTests: XCTestCase {
     func testRenderedColumnsArePowerNormalizedBeforeTrim() {
         let renderer = FeyStaticBedRenderer()
         let modes = [
-            RendererRenderMode.mono, .stereo, .quad, .surround51,
+            RendererRenderMode.mono, .stereo, .binaural, .quad, .surround51,
             .auro80, .auro91, .auro101, .auro111714h, .auro111515hT, .auro121, .auro131
         ]
         for mode in modes {
@@ -404,6 +426,30 @@ final class RendererModuleTests: XCTestCase {
         )
 
         XCTAssertEqual(mode, .mono)
+    }
+
+    func testRendererModePolicyDefaultsTwoChannelSourcesToStereo90() {
+        let mode = RendererModePolicy.effectiveRequestedMode(
+            requestedMode: .automatic,
+            inputChannelCount: 2,
+            alwaysMono: false,
+            twoChannelPreference: .stereo
+        )
+
+        XCTAssertEqual(mode, .stereo)
+        XCTAssertEqual(RendererTwoChannelPreference.stereo.displayName, "Stereo 90")
+    }
+
+    func testRendererModePolicyCanUseBinaural180ForTwoChannelSources() {
+        let mode = RendererModePolicy.effectiveRequestedMode(
+            requestedMode: .automatic,
+            inputChannelCount: 2,
+            alwaysMono: false,
+            twoChannelPreference: .binaural
+        )
+
+        XCTAssertEqual(mode, .binaural)
+        XCTAssertEqual(RendererTwoChannelPreference.binaural.displayName, "Binaural 180")
     }
 
     func testVerticalBarsStayTallForLowChannelCountsAndCentered() {

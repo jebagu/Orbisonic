@@ -1,58 +1,193 @@
 import XCTest
 
 final class OrbisonicUITweakTests: XCTestCase {
-    func testRendererPanelOwnsAtmosNoteAndTuningIsCollapsible() throws {
+    func testRendererPanelIsSimpleTwoChannelControlAndTuningIsCollapsible() throws {
         let source = try source("Sources/Orbisonic/ContentView.swift")
+        let rendererStart = try XCTUnwrap(source.range(of: "private var rendererTab"))
+        let rendererEnd = try XCTUnwrap(source.range(of: "private var rendererModeSelector", range: rendererStart.upperBound..<source.endIndex))
+        let rendererTab = String(source[rendererStart.lowerBound..<rendererEnd.lowerBound])
+        let selectorStart = rendererEnd
+        let selectorEnd = try XCTUnwrap(source.range(of: "private func rendererModeButtonLabel", range: selectorStart.upperBound..<source.endIndex))
+        let rendererSelector = String(source[selectorStart.lowerBound..<selectorEnd.lowerBound])
 
         XCTAssertFalse(source.contains("Safe Tuning"))
         XCTAssertTrue(source.contains("title: \"Tuning\""))
         XCTAssertTrue(source.contains("isExpanded: $rendererTuningExpanded"))
-        XCTAssertTrue(source.contains("infoRow(title: \"Atmos\", value: note)"))
-        XCTAssertTrue(source.contains("rendererAtmosNoteText"))
+        XCTAssertFalse(rendererTab.contains("OrbitalSonicSphereMeterPanel("))
+        XCTAssertFalse(rendererTab.contains("Orbital View"))
+        XCTAssertFalse(rendererTab.contains("infoRow(title: \"Atmos\""))
+        XCTAssertTrue(rendererTab.contains("EqualHeightPanelRow(spacing: 18)"))
+        XCTAssertTrue(rendererTab.contains("settingsPanel(title: \"Mode\", fillsHeight: true)"))
+        XCTAssertTrue(rendererTab.contains("settingsPanel(title: \"Renderer\", fillsHeight: true)"))
+        XCTAssertFalse(source.contains("rendererPanelEqualHeight"))
+        XCTAssertFalse(source.contains("EqualHeightPanelPreferenceKey"))
+        XCTAssertFalse(source.contains("recordsEqualHeightPanel()"))
+        XCTAssertTrue(rendererSelector.contains("Toggle(\"Always Mono\""))
+        XCTAssertTrue(rendererSelector.contains("Picker(\"2-channel\""))
+        XCTAssertFalse(rendererSelector.contains("LazyVGrid"))
+        XCTAssertFalse(rendererSelector.contains("model.setRendererRenderMode(mode)"))
     }
 
-    func testRendererTabHostsObservedOrbitalVUMeterPanel() throws {
+    func testRendererTabNoLongerHostsOrbitalVUMeterPanel() throws {
         let source = try source("Sources/Orbisonic/ContentView.swift")
+        let rendererStart = try XCTUnwrap(source.range(of: "private var rendererTab"))
+        let rendererEnd = try XCTUnwrap(source.range(of: "private var rendererModeSelector", range: rendererStart.upperBound..<source.endIndex))
+        let rendererTab = String(source[rendererStart.lowerBound..<rendererEnd.lowerBound])
 
-        XCTAssertTrue(source.contains("private struct OrbitalSonicSphereMeterPanel"))
-        XCTAssertTrue(source.contains("@ObservedObject var meterStore: ChannelMeterStore"))
-        XCTAssertTrue(source.contains("OrbitalVUMeterSnapshot("))
-        XCTAssertTrue(source.contains("source: .sonicSphereAnalysis"))
-        XCTAssertTrue(source.contains("meterState.meterSourceLabel"))
-        XCTAssertTrue(source.contains("orbitalVUMeterState: meterState"))
-        XCTAssertTrue(source.contains("accessibilityLabel(\"Orbital VU meter source\")"))
-        XCTAssertTrue(source.contains("orbital-vu-state-ring"))
-        XCTAssertTrue(source.contains("makeReservedOutputMarker"))
+        XCTAssertFalse(rendererTab.contains("OrbitalSonicSphereMeterPanel("))
+        XCTAssertFalse(rendererTab.contains("SonicSphereRendererSceneView("))
+        XCTAssertFalse(rendererTab.contains("Orbital View"))
     }
 
     func testSettingsCleanupAndOutputWebpagePanel() throws {
+        let contentSource = try source("Sources/Orbisonic/ContentView.swift")
+        let themeSource = try source("Sources/Orbisonic/OrbisonicTheme.swift")
+        let settingsStart = try XCTUnwrap(contentSource.range(of: "private var settingsTab"))
+        let settingsEnd = try XCTUnwrap(contentSource.range(of: "private var vuMeterCalibrationControls", range: settingsStart.upperBound..<contentSource.endIndex))
+        let settingsTab = String(contentSource[settingsStart.lowerBound..<settingsEnd.lowerBound])
+        let watchFoldersStart = try XCTUnwrap(settingsTab.range(of: "title: \"Watch Folders\""))
+        let watchFoldersEnd = try XCTUnwrap(settingsTab.range(of: "title: \"Sound Settings\"", range: watchFoldersStart.upperBound..<settingsTab.endIndex))
+        let watchFoldersPanel = String(settingsTab[watchFoldersStart.lowerBound..<watchFoldersEnd.lowerBound])
+
+        XCTAssertFalse(contentSource.contains("settingsPanel(title: \"Web Pages\")"))
+        XCTAssertFalse(contentSource.contains("Album Art And Local Database"))
+        XCTAssertFalse(contentSource.contains("Logs And Diagnostics"))
+        XCTAssertFalse(contentSource.contains("infoRow(title: \"Status\", value: model.webServerStatus)"))
+        XCTAssertTrue(contentSource.contains("settingsPanel(title: \"Now playing on Sonic Sphere webpage (local network only)\""))
+        XCTAssertTrue(contentSource.contains("webURLRow(title: \"Link\", url: model.webPublicPageURL)"))
+        XCTAssertFalse(contentSource.contains("outputLanePanelHeight"))
+        XCTAssertTrue(contentSource.contains("OutputLaneNaturalHeightPreferenceKey"))
+        XCTAssertTrue(contentSource.contains("outputLaneEqualHeight"))
+        XCTAssertTrue(contentSource.contains("title: \"Watch Folders\""))
+        XCTAssertFalse(contentSource.contains("settingsPanel(title: \"M3U Playlists\""))
+        XCTAssertFalse(contentSource.contains("Label(\"Add Music Folder\""))
+        XCTAssertFalse(contentSource.contains("Label(\"Add M3U\""))
+        XCTAssertFalse(contentSource.contains("Import M3U files"))
+        XCTAssertFalse(contentSource.contains("infoRow(title: \"Music\""))
+        XCTAssertFalse(contentSource.contains("infoRow(title: \"M3U\""))
+        XCTAssertTrue(contentSource.contains("Label(\"Add Folder\""))
+        XCTAssertTrue(contentSource.contains("Search subfolders"))
+        XCTAssertTrue(contentSource.contains("Enhance Metadata"))
+        XCTAssertTrue(contentSource.contains("Use Orbisonic’s cached online names and artwork for missing local music info."))
+        XCTAssertTrue(watchFoldersPanel.contains("settingsToggleRow(\n                        title: \"Search subfolders\""))
+        XCTAssertTrue(watchFoldersPanel.contains("settingsToggleRow(\n                        title: \"Enhance Metadata\""))
+        XCTAssertFalse(watchFoldersPanel.contains("HStack(spacing: 16)"))
+        XCTAssertFalse(watchFoldersPanel.contains("Toggle(\n                            \"Search subfolders\""))
+        XCTAssertTrue(contentSource.contains("infoRow(title: \"Folders\""))
+        XCTAssertTrue(contentSource.contains("title: \"Sound Settings\""))
+        XCTAssertFalse(contentSource.contains("settingsPanel(title: \"Max Volume Limiter\""))
+        XCTAssertFalse(contentSource.contains("settingsPanel(title: \"Local Playback QA\""))
+        XCTAssertFalse(contentSource.contains("Picker(\"Atmos DRP Layout\""))
+        XCTAssertFalse(contentSource.contains("Dolby Reference Player output layout."))
+        XCTAssertTrue(settingsTab.contains("EqualHeightPanelRow(spacing: 18)"))
+        XCTAssertTrue(settingsTab.contains("title: \"Watch Folders\",\n                    fillsHeight: true"))
+        XCTAssertTrue(settingsTab.contains("title: \"Sound Settings\",\n                    fillsHeight: true"))
+        XCTAssertFalse(contentSource.contains("settingsTopPanelEqualHeight"))
+        XCTAssertFalse(contentSource.contains("EqualHeightPanelPreferenceKey"))
+        XCTAssertFalse(contentSource.contains("recordsEqualHeightPanel()"))
+        XCTAssertFalse(contentSource.contains("localMusicSettingsPanelMinHeight"))
+        XCTAssertFalse(settingsTab.contains("Current Effective Volume"))
+        XCTAssertFalse(settingsTab.contains("Uses the feature-gated local gapless scheduler"))
+        XCTAssertFalse(settingsTab.contains("Only applies trusted Core Audio trim metadata"))
+        XCTAssertFalse(settingsTab.contains("infoRow(\n                        title: \"State\""))
+        XCTAssertTrue(settingsTab.contains("settingsToggleRow(\n                        title: \"Gapless local playback\""))
+        XCTAssertTrue(settingsTab.contains("settingsToggleRow(\n                        title: \"Compressed trim metadata\""))
+        XCTAssertTrue(settingsTab.contains("colorThemePanel"))
+        XCTAssertTrue(contentSource.contains("settingsPanel(title: \"Color Theme\""))
+        XCTAssertTrue(contentSource.contains("@AppStorage(OrbisonicColorScheme.storageKey)"))
+        XCTAssertTrue(themeSource.contains("static let defaultScheme: OrbisonicColorScheme = .lab"))
+        XCTAssertTrue(themeSource.contains("if rawValue == \"techRainbow\""))
+        XCTAssertTrue(themeSource.contains("private static let daftRainbowWell = rgb(52, 64, 71)"))
+        XCTAssertTrue(themeSource.contains("var linearControlWell"))
+        XCTAssertTrue(themeSource.contains("var linearControlThumb"))
+        [
+            "Orbisonic Lab",
+            "Kimi Purple",
+            "Daft Punk Bow",
+            "Rack Mint",
+            "Rack Pink",
+            "Rack Blue",
+            "Ember Console",
+            "Graphite",
+            "Flamingo Green",
+            "Flamingo Pink",
+            "Dusty Rose"
+        ].forEach { name in
+            XCTAssertTrue(themeSource.contains(name), "Missing imported theme name: \(name)")
+        }
+    }
+
+    func testVUOptionsHideObsoleteColorModePicker() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let optionsStart = try XCTUnwrap(source.range(of: "private var vuOptionsPanel"))
+        let optionsEnd = try XCTUnwrap(source.range(of: "private var analyzerVUStylePicker", range: optionsStart.upperBound..<source.endIndex))
+        let optionsPanel = String(source[optionsStart.lowerBound..<optionsEnd.lowerBound])
+        let appearanceStart = try XCTUnwrap(source.range(of: "private var vuMeterAppearanceSliders"))
+        let appearanceEnd = try XCTUnwrap(source.range(of: "private func vuSliderRow", range: appearanceStart.upperBound..<source.endIndex))
+        let appearancePanel = String(source[appearanceStart.lowerBound..<appearanceEnd.lowerBound])
+
+        XCTAssertTrue(optionsPanel.contains("title: \"VU Options\""))
+        XCTAssertFalse(source.contains("private var vuMeterColorModePicker"))
+        XCTAssertFalse(appearancePanel.contains("System Green"))
+        XCTAssertFalse(appearancePanel.contains("Sparkle"))
+        XCTAssertFalse(appearancePanel.contains("Classic"))
+    }
+
+    func testThemeLinearControlsReplaceNativeTintedSliders() throws {
+        let contentSource = try source("Sources/Orbisonic/ContentView.swift")
+        let themeSource = try source("Sources/Orbisonic/OrbisonicTheme.swift")
+
+        XCTAssertTrue(contentSource.contains("private struct OrbisonicLinearControl"))
+        XCTAssertTrue(contentSource.contains("palette.linearControlWell"))
+        XCTAssertTrue(contentSource.contains("palette.linearControlGradient"))
+        XCTAssertTrue(contentSource.contains("palette.linearControlThumb"))
+        XCTAssertTrue(themeSource.contains("compressesLinearControlRampIntoActiveSegment"))
+        XCTAssertTrue(themeSource.contains("usesCompressedRainbowLinearControls ? compressedRainbowWell : toolbar.opacity(0.82)"))
+        XCTAssertTrue(themeSource.contains("accent: Self.rgb(170, 136, 255)"))
+        XCTAssertEqual(contentSource.components(separatedBy: "Slider(value:").count - 1, 1)
+
+        let linearControlStart = try XCTUnwrap(contentSource.range(of: "private struct OrbisonicLinearControl"))
+        let linearControlEnd = try XCTUnwrap(contentSource.range(of: "private struct PlayerArtworkView", range: linearControlStart.upperBound..<contentSource.endIndex))
+        let linearControl = String(contentSource[linearControlStart.lowerBound..<linearControlEnd.lowerBound])
+        XCTAssertTrue(linearControl.contains(".gesture(linearDragGesture(width: width))"))
+        XCTAssertTrue(linearControl.contains("DragGesture(minimumDistance: 0)"))
+        XCTAssertTrue(linearControl.contains("updateValue(at: gesture.location.x, width: width)"))
+        XCTAssertTrue(linearControl.contains(".allowsHitTesting(false)"))
+
+        let volumeStart = try XCTUnwrap(contentSource.range(of: "private var sphereVolumeControl"))
+        let volumeEnd = try XCTUnwrap(contentSource.range(of: "private var playerProgressControl", range: volumeStart.upperBound..<contentSource.endIndex))
+        let volumeControl = String(contentSource[volumeStart.lowerBound..<volumeEnd.lowerBound])
+        XCTAssertTrue(volumeControl.contains("OrbisonicLinearControl(value: $model.sphereOutputVolumePercent"))
+        XCTAssertFalse(volumeControl.contains(".tint(LabTheme.cyan)"))
+
+        let progressStart = volumeEnd
+        let progressEnd = try XCTUnwrap(contentSource.range(of: "private var isPlayerProgressEditable", range: progressStart.upperBound..<contentSource.endIndex))
+        let progressControl = String(contentSource[progressStart.lowerBound..<progressEnd.lowerBound])
+        XCTAssertTrue(progressControl.contains("OrbisonicLinearControl("))
+        XCTAssertFalse(progressControl.contains(".tint(LabTheme.cyan)"))
+
+        let vuSliderStart = try XCTUnwrap(contentSource.range(of: "private func vuSliderRow"))
+        let vuSliderEnd = try XCTUnwrap(contentSource.range(of: "private func signedOffsetText", range: vuSliderStart.upperBound..<contentSource.endIndex))
+        let vuSlider = String(contentSource[vuSliderStart.lowerBound..<vuSliderEnd.lowerBound])
+        XCTAssertTrue(vuSlider.contains("OrbisonicLinearControl(value: binding, range: range)"))
+        XCTAssertFalse(vuSlider.contains(".tint(LabTheme.cyan)"))
+
+        let tuningStart = try XCTUnwrap(contentSource.range(of: "private func tuningSlider"))
+        let tuningEnd = try XCTUnwrap(contentSource.range(of: "private func centeredTuningBinding", range: tuningStart.upperBound..<contentSource.endIndex))
+        let tuningSliders = String(contentSource[tuningStart.lowerBound..<tuningEnd.lowerBound])
+        XCTAssertTrue(tuningSliders.contains("OrbisonicLinearControl(value: value, range: range)"))
+        XCTAssertTrue(tuningSliders.contains("OrbisonicLinearControl(\n                value: centeredTuningBinding"))
+        XCTAssertFalse(tuningSliders.contains(".tint(LabTheme.cyan)"))
+    }
+
+    func testDaftPunkMetersUseCompressedActiveRamp() throws {
         let source = try source("Sources/Orbisonic/ContentView.swift")
 
-        XCTAssertFalse(source.contains("settingsPanel(title: \"Web Pages\")"))
-        XCTAssertFalse(source.contains("Album Art And Local Database"))
-        XCTAssertFalse(source.contains("Logs And Diagnostics"))
-        XCTAssertFalse(source.contains("infoRow(title: \"Status\", value: model.webServerStatus)"))
-        XCTAssertTrue(source.contains("settingsPanel(title: \"Now playing on Sonic Sphere webpage (local network only)\""))
-        XCTAssertTrue(source.contains("webURLRow(title: \"Link\", url: model.webPublicPageURL)"))
-        XCTAssertFalse(source.contains("outputLanePanelHeight"))
-        XCTAssertTrue(source.contains("OutputLaneNaturalHeightPreferenceKey"))
-        XCTAssertTrue(source.contains("outputLaneEqualHeight"))
-        XCTAssertTrue(source.contains("settingsPanel(title: \"Watch Folders\""))
-        XCTAssertFalse(source.contains("settingsPanel(title: \"M3U Playlists\""))
-        XCTAssertFalse(source.contains("Label(\"Add Music Folder\""))
-        XCTAssertFalse(source.contains("Label(\"Add M3U\""))
-        XCTAssertFalse(source.contains("Import M3U files"))
-        XCTAssertFalse(source.contains("infoRow(title: \"Music\""))
-        XCTAssertFalse(source.contains("infoRow(title: \"M3U\""))
-        XCTAssertTrue(source.contains("Label(\"Add Folder\""))
-        XCTAssertTrue(source.contains("Search subfolders"))
-        XCTAssertTrue(source.contains("Enhance Metadata"))
-        XCTAssertTrue(source.contains("Use Orbisonic’s cached online names and artwork for missing local music info."))
-        XCTAssertTrue(source.contains("infoRow(title: \"Folders\""))
-        XCTAssertTrue(source.contains("settingsPanel(title: \"Max Volume Limiter\""))
-        XCTAssertTrue(source.contains("settingsPanel(title: \"Local Playback QA\""))
-        XCTAssertTrue(source.contains("Gapless local playback"))
-        XCTAssertTrue(source.contains("Compressed trim metadata"))
+        XCTAssertTrue(source.contains("private static func meterFillShading"))
+        XCTAssertTrue(source.contains("palette.compressesLinearControlRampIntoActiveSegment"))
+        XCTAssertTrue(source.contains("axis: .vertical"))
+        XCTAssertTrue(source.contains("private func daftPunkOutputMeterVisual"))
+        XCTAssertTrue(source.contains("private func daftPunkSceneMeterColor"))
     }
 
     func testPlaylistContextMenusCanAddCurrentAndQueuedTracksToPlaylist() throws {
@@ -157,12 +292,80 @@ final class OrbisonicUITweakTests: XCTestCase {
         XCTAssertFalse(artworkView.contains(".frame(width: size, height: size)"))
         XCTAssertTrue(artworkView.contains(".aspectRatio(1, contentMode: .fit)"))
         XCTAssertTrue(artworkView.contains(".frame(maxWidth: .infinity)"))
-        XCTAssertTrue(mediaBlock.contains("VStack(alignment: .leading, spacing: 10)"))
+        XCTAssertTrue(mediaBlock.contains("VStack(alignment: .leading, spacing: 8)"))
+        XCTAssertTrue(mediaBlock.contains("PlayerRailLayout.artworkSize"))
         XCTAssertFalse(mediaBlock.contains("HStack(alignment: .center, spacing: 12)"))
         XCTAssertTrue(mediaBlock.contains("PlayerArtworkView(url: nowPlayingArtworkURL)"))
         XCTAssertTrue(mediaBlock.contains("Text(nowPlayingTitle)"))
         XCTAssertTrue(mediaBlock.contains("Text(nowPlayingSubtitle)"))
         XCTAssertTrue(mediaBlock.contains("addToPlaylistMenu(for: track)"))
+    }
+
+    func testPlayerRailIsFixedHeightAndNotScrollable() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let sidebarStart = try XCTUnwrap(source.range(of: "private var sidebar"))
+        let sidebarEnd = try XCTUnwrap(source.range(of: "private var stage", range: sidebarStart.upperBound..<source.endIndex))
+        let sidebar = String(source[sidebarStart.lowerBound..<sidebarEnd.lowerBound])
+        let playerStart = try XCTUnwrap(source.range(of: "private var nowPlayingSessionCard"))
+        let playerEnd = try XCTUnwrap(source.range(of: "private var nowPlayingMediaBlock", range: playerStart.upperBound..<source.endIndex))
+        let playerCard = String(source[playerStart.lowerBound..<playerEnd.lowerBound])
+
+        XCTAssertTrue(source.contains("private enum PlayerRailLayout"))
+        XCTAssertTrue(source.contains("static let sidebarWidth: CGFloat = 360"))
+        XCTAssertTrue(source.contains("static let artworkSize: CGFloat = 284"))
+        XCTAssertTrue(source.contains(".frame(width: PlayerRailLayout.sidebarWidth, alignment: .topLeading)"))
+        XCTAssertTrue(source.contains(".frame(maxHeight: .infinity, alignment: .topLeading)"))
+        XCTAssertFalse(sidebar.contains("ScrollView"))
+        XCTAssertTrue(sidebar.contains("VStack(alignment: .leading, spacing: 14)"))
+        XCTAssertTrue(sidebar.contains("nowPlayingSessionCard\n                .frame(maxHeight: .infinity"))
+        XCTAssertTrue(sidebar.contains(".clipped()"))
+        XCTAssertTrue(playerCard.contains("playerRailCard"))
+        XCTAssertTrue(playerCard.contains(".frame(maxHeight: .infinity, alignment: .topLeading)"))
+        XCTAssertTrue(playerCard.contains("Spacer(minLength: 0)"))
+    }
+
+    func testPlayerDetailsAreCappedToFourSingleLineRows() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let detailStart = try XCTUnwrap(source.range(of: "private var playerDetailContent"))
+        let detailEnd = try XCTUnwrap(source.range(of: "private var playerDetailRows", range: detailStart.upperBound..<source.endIndex))
+        let detailContent = String(source[detailStart.lowerBound..<detailEnd.lowerBound])
+        let rowStart = try XCTUnwrap(source.range(of: "private func playerDetailRowView"))
+        let rowEnd = try XCTUnwrap(source.range(of: "private func nonEmptyPlayerRows", range: rowStart.upperBound..<source.endIndex))
+        let rowView = String(source[rowStart.lowerBound..<rowEnd.lowerBound])
+        let filterStart = rowEnd
+        let filterEnd = try XCTUnwrap(source.range(of: "private var liveInputPlaybackErrorText", range: filterStart.upperBound..<source.endIndex))
+        let rowFilter = String(source[filterStart.lowerBound..<filterEnd.lowerBound])
+
+        XCTAssertTrue(source.contains("static let detailRowLimit = 4"))
+        XCTAssertTrue(detailContent.contains("PlayerRailLayout.detailContentHeight"))
+        XCTAssertTrue(detailContent.contains(".frame(height: PlayerRailLayout.detailContentHeight"))
+        XCTAssertTrue(detailContent.contains(".clipped()"))
+        XCTAssertTrue(rowFilter.contains("Array(filtered.prefix(PlayerRailLayout.detailRowLimit))"))
+        XCTAssertTrue(rowView.contains(".lineLimit(1)"))
+        XCTAssertTrue(rowView.contains(".truncationMode(.tail)"))
+        XCTAssertTrue(rowView.contains(".truncationMode(.middle)"))
+        XCTAssertTrue(rowView.contains("height: PlayerRailLayout.detailRowHeight"))
+        XCTAssertFalse(rowView.contains(".lineLimit(2)"))
+        XCTAssertFalse(rowView.contains("minHeight: 28"))
+    }
+
+    func testLocalMusicPlayerRowsStayOnFourVisibleFacts() throws {
+        let source = try source("Sources/Orbisonic/ContentView.swift")
+        let modelStart = try XCTUnwrap(source.range(of: "enum LocalFilePlayerRowsModel"))
+        let modelEnd = try XCTUnwrap(source.range(of: "enum RoonPlayerRowsModel", range: modelStart.upperBound..<source.endIndex))
+        let rowsModel = String(source[modelStart.lowerBound..<modelEnd.lowerBound])
+        let localRowsStart = try XCTUnwrap(source.range(of: "private var localFilePlayerRows"))
+        let localRowsEnd = try XCTUnwrap(source.range(of: "private func playerDetailRow", range: localRowsStart.upperBound..<source.endIndex))
+        let localRows = String(source[localRowsStart.lowerBound..<localRowsEnd.lowerBound])
+
+        XCTAssertTrue(rowsModel.contains("PlayerDetailRowContent(title: \"Format\""))
+        XCTAssertTrue(rowsModel.contains("PlayerDetailRowContent(title: \"Channels\""))
+        XCTAssertTrue(rowsModel.contains("PlayerDetailRowContent(title: \"Layout\""))
+        XCTAssertTrue(rowsModel.contains("PlayerDetailRowContent(title: \"Length\""))
+        XCTAssertFalse(rowsModel.contains("PlayerDetailRowContent(title: \"Note\""))
+        XCTAssertTrue(localRows.contains("LocalFilePlayerRowsModel.rows(metadata: metadata).map(playerDetailRow)"))
+        XCTAssertTrue(localRows.contains("LocalFilePlayerRowsModel.rows(track: track).map(playerDetailRow)"))
+        XCTAssertTrue(source.contains("case .filePlayback:\n            return nonEmptyPlayerRows(localFilePlayerRows)"))
     }
 
     private func source(_ relativePath: String) throws -> String {

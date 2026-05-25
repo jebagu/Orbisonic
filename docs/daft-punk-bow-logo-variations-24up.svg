@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200" viewBox="0 0 1800 1200" role="img" aria-labelledby="title desc">
+  <title id="title">24-up Daft Punk bow gradient logo variations</title>
+  <desc id="desc">Twenty-four logo fill variations on a black background using the source shape outline without changing the path.</desc>
+  <defs>
+    <path id="source-shape-120" d="M79.318,20.105c-1.425-0.111-2.865-0.167-4.318-0.167c-0.017,0-0.033,0-0.05,0C44.597,19.965,20,44.579,20,74.938
+	c0,30.376,24.624,55,55,55c30.376,0,55-24.624,55-55C130,46.015,107.675,22.308,79.318,20.105z M53.992,28.639
+	c0.118-0.051,0.236-0.102,0.354-0.152c6.508-2.753-28.762,18.952,20.552,18.952c49.313,0,14.043-21.704,20.551-18.952
+	c0.118,0.05,0.236,0.101,0.354,0.152C188.166,68.488-37.432,68.084,53.992,28.639z"/>
+
+    <linearGradient id="grad-01" x1="0%" y1="15%" x2="100%" y2="85%">
+      <stop offset="0%" stop-color="#fff6b8"/>
+      <stop offset="22%" stop-color="#ffd24a"/>
+      <stop offset="48%" stop-color="#ff6f2c"/>
+      <stop offset="72%" stop-color="#e92b6b"/>
+      <stop offset="100%" stop-color="#7a5cff"/>
+    </linearGradient>
+    <linearGradient id="grad-02" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f5ff"/>
+      <stop offset="26%" stop-color="#2d7dff"/>
+      <stop offset="54%" stop-color="#7d35ff"/>
+      <stop offset="78%" stop-color="#ff2f92"/>
+      <stop offset="100%" stop-color="#ffed4a"/>
+    </linearGradient>
+    <linearGradient id="grad-03" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#d7dee8"/>
+      <stop offset="16%" stop-color="#ffffff"/>
+      <stop offset="34%" stop-color="#6b7280"/>
+      <stop offset="50%" stop-color="#f7c95f"/>
+      <stop offset="70%" stop-color="#a45d1c"/>
+      <stop offset="100%" stop-color="#f7efe2"/>
+    </linearGradient>
+    <radialGradient id="grad-04" cx="36%" cy="30%" r="76%">
+      <stop offset="0%" stop-color="#fff7d6"/>
+      <stop offset="24%" stop-color="#ffb703"/>
+      <stop offset="44%" stop-color="#fb5607"/>
+      <stop offset="68%" stop-color="#ff006e"/>
+      <stop offset="100%" stop-color="#3a0ca3"/>
+    </radialGradient>
+    <linearGradient id="grad-05" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#011627"/>
+      <stop offset="18%" stop-color="#00e5ff"/>
+      <stop offset="42%" stop-color="#66ffcc"/>
+      <stop offset="62%" stop-color="#fff176"/>
+      <stop offset="82%" stop-color="#ff4081"/>
+      <stop offset="100%" stop-color="#7c4dff"/>
+    </linearGradient>
+    <linearGradient id="grad-06" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ff004d"/>
+      <stop offset="18%" stop-color="#ff7a00"/>
+      <stop offset="36%" stop-color="#ffe600"/>
+      <stop offset="54%" stop-color="#00ff85"/>
+      <stop offset="72%" stop-color="#00c2ff"/>
+      <stop offset="90%" stop-color="#8a2be2"/>
+      <stop offset="100%" stop-color="#ff00c8"/>
+    </linearGradient>
+    <linearGradient id="grad-07" x1="8%" y1="0%" x2="92%" y2="100%">
+      <stop offset="0%" stop-color="#f9fafb"/>
+      <stop offset="14%" stop-color="#a5b4fc"/>
+      <stop offset="34%" stop-color="#38bdf8"/>
+      <stop offset="52%" stop-color="#22d3ee"/>
+      <stop offset="70%" stop-color="#f472b6"/>
+      <stop offset="100%" stop-color="#fb7185"/>
+    </linearGradient>
+    <radialGradient id="grad-08" cx="50%" cy="46%" r="70%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="20%" stop-color="#f2f7ff"/>
+      <stop offset="40%" stop-color="#80ffdb"/>
+      <stop offset="64%" stop-color="#64dfdf"/>
+      <stop offset="82%" stop-color="#5e60ce"/>
+      <stop offset="100%" stop-color="#190b46"/>
+    </radialGradient>
+    <linearGradient id="grad-09" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="18%" stop-color="#94a3b8"/>
+      <stop offset="38%" stop-color="#0f172a"/>
+      <stop offset="58%" stop-color="#f59e0b"/>
+      <stop offset="76%" stop-color="#fff7ad"/>
+      <stop offset="100%" stop-color="#a16207"/>
+    </linearGradient>
+    <linearGradient id="grad-10" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ff2e63"/>
+      <stop offset="22%" stop-color="#ff9a3c"/>
+      <stop offset="42%" stop-color="#f9f871"/>
+      <stop offset="62%" stop-color="#00d4ff"/>
+      <stop offset="82%" stop-color="#274690"/>
+      <stop offset="100%" stop-color="#a100ff"/>
+    </linearGradient>
+    <linearGradient id="grad-11" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ffe29a"/>
+      <stop offset="22%" stop-color="#f7b801"/>
+      <stop offset="42%" stop-color="#f18701"/>
+      <stop offset="62%" stop-color="#f35b04"/>
+      <stop offset="82%" stop-color="#7678ed"/>
+      <stop offset="100%" stop-color="#3d348b"/>
+    </linearGradient>
+    <radialGradient id="grad-12" cx="30%" cy="80%" r="88%">
+      <stop offset="0%" stop-color="#faff00"/>
+      <stop offset="22%" stop-color="#00ff87"/>
+      <stop offset="44%" stop-color="#00b4d8"/>
+      <stop offset="64%" stop-color="#5a189a"/>
+      <stop offset="82%" stop-color="#ff006e"/>
+      <stop offset="100%" stop-color="#ffbe0b"/>
+    </radialGradient>
+    <linearGradient id="grad-13" x1="0%" y1="28%" x2="100%" y2="72%">
+      <stop offset="0%" stop-color="#d8f3dc"/>
+      <stop offset="16%" stop-color="#95d5b2"/>
+      <stop offset="34%" stop-color="#52b788"/>
+      <stop offset="54%" stop-color="#168aad"/>
+      <stop offset="76%" stop-color="#1a759f"/>
+      <stop offset="100%" stop-color="#184e77"/>
+    </linearGradient>
+    <linearGradient id="grad-14" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f72585"/>
+      <stop offset="24%" stop-color="#b5179e"/>
+      <stop offset="48%" stop-color="#7209b7"/>
+      <stop offset="72%" stop-color="#4361ee"/>
+      <stop offset="100%" stop-color="#4cc9f0"/>
+    </linearGradient>
+    <linearGradient id="grad-15" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="16%" stop-color="#e5e7eb"/>
+      <stop offset="30%" stop-color="#fcd34d"/>
+      <stop offset="50%" stop-color="#f97316"/>
+      <stop offset="70%" stop-color="#ef4444"/>
+      <stop offset="86%" stop-color="#e879f9"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <radialGradient id="grad-16" cx="68%" cy="26%" r="82%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="18%" stop-color="#ffd6ff"/>
+      <stop offset="38%" stop-color="#e7c6ff"/>
+      <stop offset="58%" stop-color="#c8b6ff"/>
+      <stop offset="78%" stop-color="#b8c0ff"/>
+      <stop offset="100%" stop-color="#bbd0ff"/>
+    </radialGradient>
+    <linearGradient id="grad-17" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#fff3b0"/>
+      <stop offset="14%" stop-color="#ca6702"/>
+      <stop offset="30%" stop-color="#bb3e03"/>
+      <stop offset="48%" stop-color="#ae2012"/>
+      <stop offset="66%" stop-color="#9b2226"/>
+      <stop offset="84%" stop-color="#5f0f40"/>
+      <stop offset="100%" stop-color="#0a9396"/>
+    </linearGradient>
+    <linearGradient id="grad-18" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#e0fbfc"/>
+      <stop offset="16%" stop-color="#98c1d9"/>
+      <stop offset="34%" stop-color="#3d5a80"/>
+      <stop offset="52%" stop-color="#293241"/>
+      <stop offset="72%" stop-color="#ee6c4d"/>
+      <stop offset="100%" stop-color="#ffd166"/>
+    </linearGradient>
+    <linearGradient id="grad-19" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#fefae0"/>
+      <stop offset="18%" stop-color="#dda15e"/>
+      <stop offset="36%" stop-color="#bc6c25"/>
+      <stop offset="52%" stop-color="#8b5e34"/>
+      <stop offset="70%" stop-color="#2b2d42"/>
+      <stop offset="88%" stop-color="#8d99ae"/>
+      <stop offset="100%" stop-color="#edf2f4"/>
+    </linearGradient>
+    <radialGradient id="grad-20" cx="44%" cy="44%" r="78%">
+      <stop offset="0%" stop-color="#fff"/>
+      <stop offset="18%" stop-color="#ffee32"/>
+      <stop offset="36%" stop-color="#ffd100"/>
+      <stop offset="54%" stop-color="#ff5400"/>
+      <stop offset="72%" stop-color="#9e0059"/>
+      <stop offset="100%" stop-color="#390099"/>
+    </radialGradient>
+    <linearGradient id="grad-21" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#70e000"/>
+      <stop offset="18%" stop-color="#38b000"/>
+      <stop offset="36%" stop-color="#008000"/>
+      <stop offset="54%" stop-color="#0077b6"/>
+      <stop offset="72%" stop-color="#023e8a"/>
+      <stop offset="100%" stop-color="#03045e"/>
+    </linearGradient>
+    <linearGradient id="grad-22" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffafcc"/>
+      <stop offset="22%" stop-color="#ffc8dd"/>
+      <stop offset="42%" stop-color="#cdb4db"/>
+      <stop offset="62%" stop-color="#bde0fe"/>
+      <stop offset="82%" stop-color="#a2d2ff"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="grad-23" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#f94144"/>
+      <stop offset="14%" stop-color="#f3722c"/>
+      <stop offset="28%" stop-color="#f8961e"/>
+      <stop offset="42%" stop-color="#f9c74f"/>
+      <stop offset="56%" stop-color="#90be6d"/>
+      <stop offset="70%" stop-color="#43aa8b"/>
+      <stop offset="84%" stop-color="#577590"/>
+      <stop offset="100%" stop-color="#277da1"/>
+    </linearGradient>
+    <radialGradient id="grad-24" cx="64%" cy="68%" r="92%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="14%" stop-color="#00f5d4"/>
+      <stop offset="32%" stop-color="#00bbf9"/>
+      <stop offset="50%" stop-color="#9b5de5"/>
+      <stop offset="68%" stop-color="#f15bb5"/>
+      <stop offset="84%" stop-color="#fee440"/>
+      <stop offset="100%" stop-color="#fb5607"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1800" height="1200" fill="#000000"/>
+
+  <g transform="translate(45 50) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-01)"/></g>
+  <g transform="translate(345 50) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-02)"/></g>
+  <g transform="translate(645 50) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-03)"/></g>
+  <g transform="translate(945 50) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-04)"/></g>
+  <g transform="translate(1245 50) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-05)"/></g>
+  <g transform="translate(1545 50) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-06)"/></g>
+
+  <g transform="translate(45 350) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-07)"/></g>
+  <g transform="translate(345 350) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-08)"/></g>
+  <g transform="translate(645 350) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-09)"/></g>
+  <g transform="translate(945 350) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-10)"/></g>
+  <g transform="translate(1245 350) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-11)"/></g>
+  <g transform="translate(1545 350) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-12)"/></g>
+
+  <g transform="translate(45 650) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-13)"/></g>
+  <g transform="translate(345 650) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-14)"/></g>
+  <g transform="translate(645 650) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-15)"/></g>
+  <g transform="translate(945 650) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-16)"/></g>
+  <g transform="translate(1245 650) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-17)"/></g>
+  <g transform="translate(1545 650) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-18)"/></g>
+
+  <g transform="translate(45 950) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-19)"/></g>
+  <g transform="translate(345 950) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-20)"/></g>
+  <g transform="translate(645 950) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-21)"/></g>
+  <g transform="translate(945 950) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-22)"/></g>
+  <g transform="translate(1245 950) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-23)"/></g>
+  <g transform="translate(1545 950) scale(1.4)"><use href="#source-shape-120" fill="url(#grad-24)"/></g>
+</svg>

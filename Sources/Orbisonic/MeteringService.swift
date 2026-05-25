@@ -314,10 +314,6 @@ final class MeteringService {
         let targetCount = min(max(requestedCount, 0), currentState.maxChannelCount)
         guard targetCount > 0 else { return [] }
 
-        guard currentState.isActive() else {
-            return Array(repeating: MeterChannelLevel.silence, count: targetCount)
-        }
-
         var levels: [MeterChannelLevel] = []
         levels.reserveCapacity(targetCount)
         for channelIndex in 0..<targetCount {

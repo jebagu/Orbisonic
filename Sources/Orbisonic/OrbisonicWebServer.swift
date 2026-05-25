@@ -2054,7 +2054,7 @@ private extension OrbisonicWebServer {
     const $=id=>document.getElementById(id);
     function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
     function clean(v){const text=String(v??'').trim();return text==='-'?'':text}
-    function sourceName(player){return clean(player.sourceName)||({'Atmos DRP':'Atmos','Aux Cable':'Aux','Local Files':'Local Music','Roon':'Roon','Spotify':'Spotify'}[player.source]||clean(player.source)||'Sonic Sphere')}
+    function sourceName(player){return clean(player.sourceName)||({'Aux Cable':'Aux','Local Files':'Local Music','Roon':'Roon','Spotify':'Spotify'}[player.source]||clean(player.source)||'Sonic Sphere')}
     function hasMedia(player){return Boolean(player.hasMedia)}
     function setText(id,value){$(id).textContent=value}
     function setOptionalText(id,value){const el=$(id),text=clean(value);el.textContent=text;el.hidden=!text}

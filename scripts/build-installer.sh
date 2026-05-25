@@ -9,6 +9,7 @@ app_name="Orbisonic"
 bundle_path="$repo_root/${app_name}.app"
 binary_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}"
 resource_bundle_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}_${app_name}.bundle"
+icon_path="$repo_root/Sources/Orbisonic/Resources/AppIcon/${app_name}.icns"
 pkg_path="$repo_root/installer/${app_name}-${version}.pkg"
 root_path="$repo_root/.build/installer-root"
 plist_path="$bundle_path/Contents/Info.plist"
@@ -30,6 +31,9 @@ chmod +x "$bundle_path/Contents/MacOS/$app_name"
 if [ -d "$resource_bundle_path" ]; then
   rm -rf "$bundle_path/Contents/Resources/$(basename "$resource_bundle_path")"
   cp -R "$resource_bundle_path" "$bundle_path/Contents/Resources/"
+fi
+if [ -f "$icon_path" ]; then
+  cp "$icon_path" "$bundle_path/Contents/Resources/${app_name}.icns"
 fi
 
 git_commit="$(git rev-parse --short HEAD 2>/dev/null || printf 'not-available')"

@@ -232,11 +232,92 @@ private struct PlayerDetailRow: Identifiable {
     var id: String { "\(title)-\(hasTopDivider ? "divided" : "plain")" }
 }
 
+private enum PlayerRailLayout {
+    static let sidebarWidth: CGFloat = 360
+    static let artworkSize: CGFloat = 284
+    static let detailRowLimit = 4
+    static let detailRowHeight: CGFloat = 18
+    static let detailRowSpacing: CGFloat = 8
+    static let detailLabelWidth: CGFloat = 72
+    static let detailContentHeight =
+        detailRowHeight * CGFloat(detailRowLimit) +
+        detailRowSpacing * CGFloat(detailRowLimit - 1)
+}
+
 private struct OutputLaneNaturalHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+private struct EqualHeightPanelRow<Content: View>: View {
+    private let spacing: CGFloat
+    private let content: Content
+
+    init(spacing: CGFloat = 18, @ViewBuilder content: () -> Content) {
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    var body: some View {
+        EqualHeightPanelRowLayout(spacing: spacing) {
+            content
+        }
+    }
+}
+
+private struct EqualHeightPanelRowLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+
+        let totalSpacing = CGFloat(max(subviews.count - 1, 0)) * spacing
+        let columnWidth: CGFloat
+        let resolvedWidth: CGFloat
+
+        if let proposedWidth = proposal.width {
+            resolvedWidth = proposedWidth
+            columnWidth = max(0, (proposedWidth - totalSpacing) / CGFloat(subviews.count))
+        } else {
+            columnWidth = subviews
+                .map { $0.sizeThatFits(.unspecified).width }
+                .max() ?? 0
+            resolvedWidth = columnWidth * CGFloat(subviews.count) + totalSpacing
+        }
+
+        let maxNaturalHeight = subviews
+            .map { $0.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height }
+            .max() ?? 0
+
+        return CGSize(width: resolvedWidth, height: maxNaturalHeight)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard !subviews.isEmpty else { return }
+
+        let totalSpacing = CGFloat(max(subviews.count - 1, 0)) * spacing
+        let columnWidth = max(0, (bounds.width - totalSpacing) / CGFloat(subviews.count))
+
+        for index in subviews.indices {
+            let x = bounds.minX + CGFloat(index) * (columnWidth + spacing)
+            subviews[index].place(
+                at: CGPoint(x: x, y: bounds.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: columnWidth, height: bounds.height)
+            )
+        }
     }
 }
 
@@ -593,56 +674,127 @@ enum VUMeterChannelLabel {
     }
 }
 
-enum LabTheme {
-    static let bg = Color(red: 7.0 / 255.0, green: 16.0 / 255.0, blue: 20.0 / 255.0)
-    static let bgBottom = Color(red: 2.0 / 255.0, green: 7.0 / 255.0, blue: 10.0 / 255.0)
-    static let panel = Color(red: 13.0 / 255.0, green: 24.0 / 255.0, blue: 29.0 / 255.0).opacity(0.88)
-    static let panelSoft = Color.white.opacity(0.045)
-    static let toolbar = Color(red: 5.0 / 255.0, green: 12.0 / 255.0, blue: 15.0 / 255.0).opacity(0.68)
-    static let line = Color(red: 217.0 / 255.0, green: 251.0 / 255.0, blue: 255.0 / 255.0).opacity(0.14)
-    static let text = Color(red: 239.0 / 255.0, green: 252.0 / 255.0, blue: 255.0 / 255.0)
-    static let textSoft = Color(red: 159.0 / 255.0, green: 185.0 / 255.0, blue: 189.0 / 255.0)
-    static let cyan = Color(red: 94.0 / 255.0, green: 234.0 / 255.0, blue: 212.0 / 255.0)
-    static let blue = Color(red: 96.0 / 255.0, green: 165.0 / 255.0, blue: 250.0 / 255.0)
-    static let green = Color(red: 34.0 / 255.0, green: 197.0 / 255.0, blue: 94.0 / 255.0)
-    static let amber = Color(red: 250.0 / 255.0, green: 204.0 / 255.0, blue: 21.0 / 255.0)
-    static let red = Color(red: 251.0 / 255.0, green: 113.0 / 255.0, blue: 133.0 / 255.0)
-
-    static let panelRadius: CGFloat = 8
-    static let controlRadius: CGFloat = 7
-}
-
 struct LabButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.orbisonicPalette) private var palette
 
     var isActive = false
-    var accent = LabTheme.cyan
+    var accent: Color?
 
     func makeBody(configuration: Configuration) -> some View {
+        let activeAccent = accent ?? palette.accent
         configuration.label
             .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(isEnabled ? (isActive ? LabTheme.text : LabTheme.textSoft) : LabTheme.textSoft.opacity(0.58))
+            .foregroundStyle(isEnabled ? (isActive ? palette.text : palette.textSoft) : palette.textSoft.opacity(0.58))
             .frame(minHeight: 34)
             .padding(.horizontal, 12)
             .background(
                 RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                    .fill(buttonFill(configuration: configuration))
+                    .fill(buttonFill(configuration: configuration, activeAccent: activeAccent))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
-                    .stroke(isEnabled ? (isActive ? accent.opacity(0.55) : LabTheme.line) : LabTheme.line.opacity(0.48), lineWidth: 1)
+                    .stroke(isEnabled ? (isActive ? activeAccent.opacity(0.55) : palette.line) : palette.line.opacity(0.48), lineWidth: 1)
             )
             .opacity(isEnabled ? 1 : 0.62)
     }
 
-    private func buttonFill(configuration: Configuration) -> Color {
+    private func buttonFill(configuration: Configuration, activeAccent: Color) -> Color {
         if !isEnabled {
             return Color.white.opacity(0.024)
         }
         if isActive {
-            return accent.opacity(configuration.isPressed ? 0.22 : 0.14)
+            return activeAccent.opacity(configuration.isPressed ? 0.22 : 0.14)
         }
         return Color.white.opacity(configuration.isPressed ? 0.075 : 0.045)
+    }
+}
+
+private struct OrbisonicLinearControl: View {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.orbisonicPalette) private var palette
+    @State private var isEditing = false
+
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    private var normalizedValue: Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        return min(max((value - range.lowerBound) / span, 0), 1)
+    }
+
+    var body: some View {
+        ZStack {
+            GeometryReader { proxy in
+                let width = max(proxy.size.width, 1)
+                let trackHeight: CGFloat = 7
+                let thumbSize: CGFloat = 16
+                let fillWidth = width * CGFloat(normalizedValue)
+                let thumbX = min(max(fillWidth - thumbSize / 2, 0), max(width - thumbSize, 0))
+
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(palette.linearControlWell)
+                        .frame(height: trackHeight)
+
+                    if normalizedValue > 0 {
+                        Capsule()
+                            .fill(palette.linearControlGradient)
+                            .frame(width: max(trackHeight, fillWidth), height: trackHeight)
+                            .clipShape(Capsule())
+                    }
+
+                    Circle()
+                        .fill(palette.linearControlThumb)
+                        .frame(width: thumbSize, height: thumbSize)
+                        .overlay(
+                            Circle()
+                                .stroke(palette.text.opacity(0.34), lineWidth: 1)
+                        )
+                        .shadow(color: palette.linearControlThumb.opacity(0.32), radius: 7, x: 0, y: 0)
+                        .offset(x: thumbX)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+                .gesture(linearDragGesture(width: width))
+                .accessibilityHidden(true)
+            }
+
+            Slider(value: $value, in: range, onEditingChanged: onEditingChanged)
+                .tint(.clear)
+                .opacity(0.001)
+                .allowsHitTesting(false)
+        }
+        .frame(height: 24)
+        .opacity(isEnabled ? 1 : 0.42)
+    }
+
+    private func linearDragGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { gesture in
+                guard isEnabled else { return }
+                if !isEditing {
+                    isEditing = true
+                    onEditingChanged(true)
+                }
+                updateValue(at: gesture.location.x, width: width)
+            }
+            .onEnded { gesture in
+                guard isEnabled else { return }
+                updateValue(at: gesture.location.x, width: width)
+                if isEditing {
+                    isEditing = false
+                    onEditingChanged(false)
+                }
+            }
+    }
+
+    private func updateValue(at locationX: CGFloat, width: CGFloat) {
+        guard width > 0 else { return }
+        let normalized = min(max(Double(locationX / width), 0), 1)
+        value = range.lowerBound + normalized * (range.upperBound - range.lowerBound)
     }
 }
 
@@ -744,6 +896,7 @@ struct ContentView: View {
     @AppStorage("Orbisonic.vuMeterLabelGapOffset") private var vuMeterLabelGapOffset = 0.0
     @AppStorage("Orbisonic.vuMeterColorMode") private var vuMeterColorMode: VUMeterColorMode = .classic
     @AppStorage("Orbisonic.vuMeterScaleVersion") private var vuMeterScaleVersion = 0
+    @AppStorage(OrbisonicColorScheme.storageKey) private var colorSchemeRawValue = OrbisonicColorScheme.defaultScheme.rawValue
     @State private var showsLoopbackSetupDialog = false
     @State private var vuOptionsExpanded = false
     @State private var showsSaveQueuePlaylistDialog = false
@@ -759,150 +912,170 @@ struct ContentView: View {
     @State private var outputLaneEqualHeight: CGFloat = 0
     private let outputLaneLabelColumnWidth: CGFloat = 112
     private let outputLaneColumnSpacing: CGFloat = 12
-    private let localMusicSettingsPanelMinHeight: CGFloat = 300
+
+    private var activeColorScheme: OrbisonicColorScheme {
+        OrbisonicColorScheme.from(rawValue: colorSchemeRawValue)
+    }
+
+    private var activePalette: OrbisonicPalette {
+        activeColorScheme.palette
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 24) {
-            sidebar
-                .frame(width: 360)
-            stage
-        }
-        .padding(24)
-        .frame(minWidth: 1_220, minHeight: 780, alignment: .topLeading)
-        .background(
-            ZStack {
-                LinearGradient(
-                    colors: [LabTheme.bg, LabTheme.bgBottom],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                RadialGradient(
-                    colors: [LabTheme.cyan.opacity(0.17), Color.clear],
-                    center: .topTrailing,
-                    startRadius: 40,
-                    endRadius: 760
-                )
-            }
-        )
-        .alert("Audio Error", isPresented: Binding(
-            get: { model.lastError != nil },
-            set: { if !$0 { model.lastError = nil } }
-        )) {
-            Button("OK") {
-                model.lastError = nil
-            }
-        } message: {
-            Text(model.lastError ?? "Unknown error")
-        }
-        .confirmationDialog(
-            "Install Orbisonic Inputs",
-            isPresented: $showsLoopbackSetupDialog,
-            titleVisibility: .visible
-        ) {
-            Button("Got It") {
-                hasConfirmedLoopbackSetup = true
-            }
-            Button("Remind Me Later", role: .cancel) {}
-        } message: {
-            Text("Install Orbisonic Inputs to use Roon, Spotify, Atmos DRP, and Aux Cable live capture. Roon, Spotify Connect, and Dolby Reference Player are optional source helpers. Local Music works without live inputs.")
-        }
-        .onAppear {
-            migrateCenteredVUMeterDefaultsIfNeeded()
-            applyVUMeterCalibration()
-            if !hasConfirmedLoopbackSetup {
-                showsLoopbackSetupDialog = true
-            }
-        }
-        .onChange(of: vuMeterReferenceDbFS) { _, _ in applyVUMeterCalibration() }
-        .onChange(of: vuMeterResponseMode) { _, _ in applyVUMeterCalibration() }
-        .onChange(of: vuMeterMonitorTrimDb) { _, _ in applyVUMeterCalibration() }
-        .onChange(of: vuMeterSonicSphereTrimDb) { _, _ in applyVUMeterCalibration() }
-        .sheet(isPresented: $showsSaveQueuePlaylistDialog) {
-            SavePlaylistDialog(
-                title: "Save Queue as Playlist",
-                name: $saveQueuePlaylistName,
-                onCancel: {
-                    showsSaveQueuePlaylistDialog = false
-                },
-                onSave: {
-                    model.saveSessionQueueAsPlaylist(named: saveQueuePlaylistName)
-                    showsSaveQueuePlaylistDialog = false
+        appShell
+            .padding(24)
+            .frame(minWidth: 1_220, minHeight: 780, alignment: .topLeading)
+            .background(
+                ZStack {
+                    LinearGradient(
+                        colors: [activePalette.backgroundTop, activePalette.backgroundBottom],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    RadialGradient(
+                        colors: [activePalette.accent.opacity(0.17), Color.clear],
+                        center: .topTrailing,
+                        startRadius: 40,
+                        endRadius: 760
+                    )
                 }
             )
-        }
-        .sheet(isPresented: $showsNewPlaylistDialog) {
-            SavePlaylistDialog(
-                title: "New Playlist",
-                primaryActionTitle: "Create",
-                name: $newPlaylistName,
-                onCancel: {
-                    showsNewPlaylistDialog = false
-                    newPlaylistTrack = nil
-                },
-                onSave: {
-                    if let track = newPlaylistTrack {
-                        model.addLocalMusicTrackToNewPlaylist(track, named: newPlaylistName)
-                    } else {
-                        model.createLocalMusicPlaylist(named: newPlaylistName)
+            .orbisonicPalette(activePalette)
+            .alert("Audio Error", isPresented: Binding(
+                get: { model.lastError != nil },
+                set: { if !$0 { model.lastError = nil } }
+            )) {
+                Button("OK") {
+                    model.lastError = nil
+                }
+            } message: {
+                Text(model.lastError ?? "Unknown error")
+            }
+            .confirmationDialog(
+                "Install Orbisonic Inputs",
+                isPresented: $showsLoopbackSetupDialog,
+                titleVisibility: .visible
+            ) {
+                Button("Got It") {
+                    hasConfirmedLoopbackSetup = true
+                }
+                Button("Remind Me Later", role: .cancel) {}
+            } message: {
+                Text("Install Orbisonic Inputs to use Roon, Spotify, and Aux Cable live capture. Roon and Spotify Connect are optional source helpers. Local Music works without live inputs.")
+            }
+            .onAppear {
+                normalizeColorSchemeStorage()
+                migrateCenteredVUMeterDefaultsIfNeeded()
+                applyVUMeterCalibration()
+                if !hasConfirmedLoopbackSetup {
+                    showsLoopbackSetupDialog = true
+                }
+            }
+            .onChange(of: colorSchemeRawValue) { _, _ in normalizeColorSchemeStorage() }
+            .onChange(of: vuMeterReferenceDbFS) { _, _ in applyVUMeterCalibration() }
+            .onChange(of: vuMeterResponseMode) { _, _ in applyVUMeterCalibration() }
+            .onChange(of: vuMeterMonitorTrimDb) { _, _ in applyVUMeterCalibration() }
+            .onChange(of: vuMeterSonicSphereTrimDb) { _, _ in applyVUMeterCalibration() }
+            .sheet(isPresented: $showsSaveQueuePlaylistDialog) {
+                SavePlaylistDialog(
+                    title: "Save Queue as Playlist",
+                    name: $saveQueuePlaylistName,
+                    onCancel: {
+                        showsSaveQueuePlaylistDialog = false
+                    },
+                    onSave: {
+                        model.saveSessionQueueAsPlaylist(named: saveQueuePlaylistName)
+                        showsSaveQueuePlaylistDialog = false
                     }
-                    showsNewPlaylistDialog = false
-                    newPlaylistTrack = nil
-                }
-            )
-        }
-        .sheet(isPresented: $showsRenamePlaylistDialog) {
-            SavePlaylistDialog(
-                title: "Rename Playlist",
-                primaryActionTitle: "Rename",
-                name: $renamePlaylistName,
-                onCancel: {
-                    showsRenamePlaylistDialog = false
-                    playlistPendingRename = nil
-                },
-                onSave: {
-                    if let playlist = playlistPendingRename {
-                        model.renameLocalMusicPlaylist(playlist, named: renamePlaylistName)
+                )
+            }
+            .sheet(isPresented: $showsNewPlaylistDialog) {
+                SavePlaylistDialog(
+                    title: "New Playlist",
+                    primaryActionTitle: "Create",
+                    name: $newPlaylistName,
+                    onCancel: {
+                        showsNewPlaylistDialog = false
+                        newPlaylistTrack = nil
+                    },
+                    onSave: {
+                        if let track = newPlaylistTrack {
+                            model.addLocalMusicTrackToNewPlaylist(track, named: newPlaylistName)
+                        } else {
+                            model.createLocalMusicPlaylist(named: newPlaylistName)
+                        }
+                        showsNewPlaylistDialog = false
+                        newPlaylistTrack = nil
                     }
-                    showsRenamePlaylistDialog = false
-                    playlistPendingRename = nil
+                )
+            }
+            .sheet(isPresented: $showsRenamePlaylistDialog) {
+                SavePlaylistDialog(
+                    title: "Rename Playlist",
+                    primaryActionTitle: "Rename",
+                    name: $renamePlaylistName,
+                    onCancel: {
+                        showsRenamePlaylistDialog = false
+                        playlistPendingRename = nil
+                    },
+                    onSave: {
+                        if let playlist = playlistPendingRename {
+                            model.renameLocalMusicPlaylist(playlist, named: renamePlaylistName)
+                        }
+                        showsRenamePlaylistDialog = false
+                        playlistPendingRename = nil
+                    }
+                )
+            }
+            .confirmationDialog(
+                "Remove Playlist",
+                isPresented: Binding(
+                    get: { playlistPendingDeletion != nil },
+                    set: { if !$0 { playlistPendingDeletion = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let playlist = playlistPendingDeletion {
+                    let isEditable = model.isEditableLocalMusicPlaylist(playlist)
+                    Button(isEditable ? "Delete Playlist" : "Remove Playlist", role: .destructive) {
+                        model.deleteLocalMusicPlaylist(playlist)
+                        playlistPendingDeletion = nil
+                    }
                 }
-            )
-        }
-        .confirmationDialog(
-            "Remove Playlist",
-            isPresented: Binding(
-                get: { playlistPendingDeletion != nil },
-                set: { if !$0 { playlistPendingDeletion = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let playlist = playlistPendingDeletion {
-                let isEditable = model.isEditableLocalMusicPlaylist(playlist)
-                Button(isEditable ? "Delete Playlist" : "Remove Playlist", role: .destructive) {
-                    model.deleteLocalMusicPlaylist(playlist)
+                Button("Cancel", role: .cancel) {
                     playlistPendingDeletion = nil
                 }
+            } message: {
+                if let playlist = playlistPendingDeletion {
+                    Text(model.isEditableLocalMusicPlaylist(playlist)
+                        ? "Delete \(playlist.name) from Orbisonic playlists. This removes the managed playlist file."
+                        : "Remove \(playlist.name) from Orbisonic. The external M3U file will not be deleted.")
+                }
             }
-            Button("Cancel", role: .cancel) {
-                playlistPendingDeletion = nil
-            }
-        } message: {
-            if let playlist = playlistPendingDeletion {
-                Text(model.isEditableLocalMusicPlaylist(playlist)
-                    ? "Delete \(playlist.name) from Orbisonic playlists. This removes the managed playlist file."
-                    : "Remove \(playlist.name) from Orbisonic. The external M3U file will not be deleted.")
-            }
+    }
+
+    private var appShell: some View {
+        HStack(alignment: .top, spacing: 24) {
+            sidebarColumn
+            stage
         }
     }
 
+    private var sidebarColumn: some View {
+        sidebar
+            .frame(width: PlayerRailLayout.sidebarWidth, alignment: .topLeading)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
     private var sidebar: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                headerCard
-                nowPlayingSessionCard
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 14) {
+            headerCard
+
+            nowPlayingSessionCard
+                .frame(maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
     }
 
     private var stage: some View {
@@ -1002,6 +1175,13 @@ struct ContentView: View {
                 sonicSphereTrimDb: vuMeterSonicSphereTrimDb
             )
         )
+    }
+
+    private func normalizeColorSchemeStorage() {
+        let normalized = activeColorScheme.rawValue
+        if colorSchemeRawValue != normalized {
+            colorSchemeRawValue = normalized
+        }
     }
 
     private var inputTab: some View {
@@ -1756,7 +1936,7 @@ struct ContentView: View {
             maxSizeRatio: VUMeterControlScale.maxSizeRatio(offset: vuMeterMaxSizeRatio),
             outlineWeight: VUMeterControlScale.outlineWeight(offset: vuMeterOutlineWeight),
             labelGapScale: VUMeterControlScale.labelGapScale(offset: vuMeterLabelGapOffset),
-            colorMode: vuMeterColorMode
+            colorMode: .classic
         )
     }
 
@@ -1830,29 +2010,19 @@ struct ContentView: View {
 
     private var rendererTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Mode") {
+            EqualHeightPanelRow(spacing: 18) {
+                settingsPanel(title: "Mode", fillsHeight: true) {
                     rendererModeSelector
                 }
 
-                settingsPanel(title: "Renderer") {
+                settingsPanel(title: "Renderer", fillsHeight: true) {
                     infoRow(title: "Input", value: rendererInputChannelText)
                     infoRow(title: "Layout", value: rendererSourceLayoutText)
-                    if let note = rendererAtmosNoteText {
-                        infoRow(title: "Atmos", value: note)
-                    }
                     infoRow(title: "Matrix", value: model.rendererText)
                     infoRow(title: "Output", value: model.rendererSelectionText)
                     infoRow(title: "Inspect", value: model.rendererMatrixInspectionText)
                 }
             }
-
-            OrbitalSonicSphereMeterPanel(
-                sceneModel: model.rendererScene,
-                isPlaying: model.isPlaying,
-                physicalOutputChannelCount: model.rendererOutputRoute.outputChannelCount,
-                meterStore: model.rendererMeterStore
-            )
 
             OrbisonicDisclosureTray(
                 isExpanded: $rendererTuningExpanded,
@@ -1878,20 +2048,6 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
-
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                ForEach(RendererRenderMode.allCases) { mode in
-                    Button {
-                        model.setRendererRenderMode(mode)
-                    } label: {
-                        Text(rendererModeButtonLabel(for: mode))
-                            .font(.system(size: 12, weight: .bold))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(LabButtonStyle(isActive: model.rendererRenderMode == mode))
-                }
-            }
 
             if let warning = model.rendererScene.validationMessages.last,
                model.rendererScene.renderMode != model.rendererScene.requestedRenderMode {
@@ -2362,8 +2518,8 @@ struct ContentView: View {
     }
 
     private var nowPlayingSessionCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 14) {
+        playerRailCard {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 10) {
                     Text("Player")
                         .font(.system(size: 16, weight: .bold))
@@ -2396,15 +2552,18 @@ struct ContentView: View {
                     .overlay(Color.white.opacity(0.08))
 
                 playerDetailContent
+
+                Spacer(minLength: 0)
             }
+            .frame(maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
     private var nowPlayingMediaBlock: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             PlayerArtworkView(url: nowPlayingArtworkURL)
                 .padding(6)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, minHeight: PlayerRailLayout.artworkSize, maxHeight: PlayerRailLayout.artworkSize)
                 .background(
                     RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
                         .fill(Color.black.opacity(0.14))
@@ -2419,14 +2578,14 @@ struct ContentView: View {
                 Text(nowPlayingTitle)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(LabTheme.text)
-                    .lineLimit(3)
+                    .lineLimit(2)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text(nowPlayingSubtitle)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(LabTheme.textSoft)
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -2635,8 +2794,7 @@ struct ContentView: View {
                     .foregroundStyle(LabTheme.cyan)
             }
 
-            Slider(value: $model.sphereOutputVolumePercent, in: 0...100)
-                .tint(LabTheme.cyan)
+            OrbisonicLinearControl(value: $model.sphereOutputVolumePercent, range: 0...100)
                 .help("Rendered Sonic Sphere output volume, capped by the renderer safety limit")
         }
     }
@@ -2651,13 +2809,12 @@ struct ContentView: View {
             .font(.system(size: 12, weight: .medium, design: .monospaced))
             .foregroundStyle(LabTheme.textSoft)
 
-            Slider(
+            OrbisonicLinearControl(
                 value: playerProgressBinding,
-                in: 0...1,
+                range: 0...1,
                 onEditingChanged: isPlayerProgressEditable ? model.scrubEditingChanged : { _ in }
             )
-            .tint(LabTheme.cyan)
-            .disabled(!isPlayerProgressEditable)
+                .disabled(!isPlayerProgressEditable)
         }
     }
 
@@ -2757,7 +2914,8 @@ struct ContentView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(LabTheme.textSoft)
                 .lineLimit(2)
-                .frame(minHeight: 36, alignment: .topLeading)
+                .truncationMode(.tail)
+                .frame(height: PlayerRailLayout.detailContentHeight, alignment: .topLeading)
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(rows) { row in
@@ -2768,7 +2926,10 @@ struct ContentView: View {
                     }
                     playerDetailRowView(row)
                 }
+                Spacer(minLength: 0)
             }
+            .frame(height: PlayerRailLayout.detailContentHeight, alignment: .topLeading)
+            .clipped()
         }
     }
 
@@ -2922,24 +3083,26 @@ struct ContentView: View {
             Text(row.title.uppercased())
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(LabTheme.textSoft)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: 72, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: PlayerRailLayout.detailLabelWidth, height: PlayerRailLayout.detailRowHeight, alignment: .leading)
 
             Text(row.value)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(LabTheme.text)
-                .lineLimit(2)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(height: PlayerRailLayout.detailRowHeight, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private func nonEmptyPlayerRows(_ rows: [PlayerDetailRow]) -> [PlayerDetailRow] {
-        rows.filter { row in
+        let filtered = rows.filter { row in
             guard let value = row.value.trimmedNilIfBlank else { return false }
             return value != "-"
         }
+        return Array(filtered.prefix(PlayerRailLayout.detailRowLimit))
     }
 
     private var liveInputPlaybackErrorText: String? {
@@ -3776,8 +3939,11 @@ struct ContentView: View {
 
     private var settingsTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 18) {
-                settingsPanel(title: "Watch Folders", minHeight: localMusicSettingsPanelMinHeight) {
+            EqualHeightPanelRow(spacing: 18) {
+                settingsPanel(
+                    title: "Watch Folders",
+                    fillsHeight: true
+                ) {
                     HStack(spacing: 10) {
                         Button(action: model.chooseWatchFolder) {
                             Label("Add Folder", systemImage: "folder.badge.plus")
@@ -3792,34 +3958,22 @@ struct ContentView: View {
                         .buttonStyle(LabButtonStyle())
                     }
 
-                    HStack(spacing: 16) {
-                        Toggle(
-                            "Search subfolders",
-                            isOn: Binding(
-                                get: { model.localMusicSettings.scansSubfolders },
-                                set: model.setLocalMusicScansSubfolders
-                            )
+                    settingsToggleRow(
+                        title: "Search subfolders",
+                        isOn: Binding(
+                            get: { model.localMusicSettings.scansSubfolders },
+                            set: model.setLocalMusicScansSubfolders
                         )
-                        .toggleStyle(.switch)
-                        .tint(LabTheme.cyan)
-                    }
+                    )
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle(
-                            "Enhance Metadata",
-                            isOn: Binding(
-                                get: { model.localMusicSettings.enhancesMetadata },
-                                set: model.setLocalMusicEnhancesMetadata
-                            )
-                        )
-                        .toggleStyle(.switch)
-                        .tint(LabTheme.cyan)
-
-                        Text("Use Orbisonic’s cached online names and artwork for missing local music info.")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(LabTheme.textSoft)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    settingsToggleRow(
+                        title: "Enhance Metadata",
+                        isOn: Binding(
+                            get: { model.localMusicSettings.enhancesMetadata },
+                            set: model.setLocalMusicEnhancesMetadata
+                        ),
+                        helpText: "Use Orbisonic’s cached online names and artwork for missing local music info."
+                    )
 
                     infoRow(title: "Folders", value: model.localMusicWatchFolderText)
                     settingsPathList(
@@ -3828,82 +3982,132 @@ struct ContentView: View {
                         removeAction: model.removeWatchFolder
                     )
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                settingsPanel(title: "Max Volume Limiter", minHeight: localMusicSettingsPanelMinHeight) {
+                settingsPanel(
+                    title: "Sound Settings",
+                    fillsHeight: true
+                ) {
                     tuningSlider(
                         title: "Max Output Volume",
                         value: $model.sphereOutputSafetyLimitPercent,
                         range: 0...100,
                         format: "%.0f"
                     )
-                    infoRow(title: "Current Effective Volume", value: model.sphereEffectiveOutputVolumeText)
-                    Spacer(minLength: 0)
+
+                    settingsToggleRow(
+                        title: "Gapless local playback",
+                        isOn: $model.isLocalGaplessSchedulerEnabled
+                    )
+
+                    settingsToggleRow(
+                        title: "Compressed trim metadata",
+                        isOn: $model.isLocalGaplessCompressedTrimEnabled,
+                        isEnabled: model.isLocalGaplessSchedulerEnabled
+                    )
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
 
-            settingsPanel(title: "Local Playback QA") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Atmos DRP Layout", selection: $model.atmosDRPOutputLayout) {
-                        ForEach(DolbyReferencePlayerOutputLayout.allCases) { layout in
-                            Text(layout.rawValue).tag(layout)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+            colorThemePanel
+        }
+    }
 
-                    Text("Dolby Reference Player output layout. Atmos DRP temporarily routes through the Aux loopback.")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Toggle("Gapless local playback", isOn: $model.isLocalGaplessSchedulerEnabled)
-                        .toggleStyle(.switch)
-                        .tint(LabTheme.cyan)
-
-                    Text("Uses the feature-gated local gapless scheduler for compatible local queues. Keep it off for normal fallback playback.")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(LabTheme.textSoft)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Toggle("Compressed trim metadata", isOn: $model.isLocalGaplessCompressedTrimEnabled)
-                        .toggleStyle(.switch)
-                        .tint(LabTheme.cyan)
-                        .disabled(!model.isLocalGaplessSchedulerEnabled)
-
-                    Text("Only applies trusted Core Audio trim metadata on future gapless playback starts; it does not use silence detection.")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(model.isLocalGaplessSchedulerEnabled ? LabTheme.textSoft : LabTheme.textSoft.opacity(0.58))
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    infoRow(
-                        title: "State",
-                        value: model.isLocalGaplessSchedulerEnabled
-                            ? "Enabled for compatible local queues"
-                            : "Off; using fallback local playback"
-                    )
+    private var colorThemePanel: some View {
+        settingsPanel(title: "Color Theme") {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 164), spacing: 10)],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                ForEach(OrbisonicColorScheme.allCases) { scheme in
+                    colorThemeTile(for: scheme)
                 }
             }
         }
     }
 
-    private var vuMeterColorModePicker: some View {
-        HStack(spacing: 10) {
-            ForEach(VUMeterColorMode.allCases) { mode in
-                Button {
-                    vuMeterColorMode = mode
-                } label: {
-                    HStack(spacing: 8) {
-                        vuMeterColorSwatch(mode)
-                        Text(mode.rawValue)
-                            .font(.system(size: 12, weight: .bold))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 2)
+    private func colorThemeTile(for scheme: OrbisonicColorScheme) -> some View {
+        let isSelected = activeColorScheme == scheme
+        let palette = scheme.palette
+
+        return Button {
+            colorSchemeRawValue = scheme.rawValue
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 5) {
+                    themeSwatch(palette.accent)
+                    themeSwatch(palette.accentSecondary)
+                    themeSwatch(palette.success)
+                    themeSwatch(palette.warning)
+                    themeSwatch(palette.danger)
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(LabButtonStyle(isActive: vuMeterColorMode == mode))
+
+                Text(scheme.name)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text(scheme.subtitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(LabTheme.textSoft)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .topLeading)
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                    .fill(isSelected ? palette.accent.opacity(0.12) : Color.white.opacity(0.035))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: LabTheme.controlRadius, style: .continuous)
+                            .stroke(isSelected ? palette.accent.opacity(0.72) : LabTheme.line, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func themeSwatch(_ color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(color)
+            .frame(width: 18, height: 10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            )
+    }
+
+    private func settingsToggleRow(
+        title: String,
+        isOn: Binding<Bool>,
+        isEnabled: Bool = true,
+        helpText: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(title)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(isEnabled ? LabTheme.text : LabTheme.textSoft.opacity(0.58))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: 190, alignment: .leading)
+
+                Toggle("", isOn: isOn)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(LabTheme.cyan)
+                    .disabled(!isEnabled)
+
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 30)
+
+            if let helpText {
+                Text(helpText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isEnabled ? LabTheme.textSoft : LabTheme.textSoft.opacity(0.58))
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -3967,7 +4171,6 @@ struct ContentView: View {
 
     private var vuMeterAppearanceSliders: some View {
         VStack(alignment: .leading, spacing: 14) {
-            vuMeterColorModePicker
             vuSliderRow(
                 title: "Channel Label Gap",
                 valueText: signedOffsetText(vuMeterLabelGapOffset, suffix: String(format: " / %.2fx", Double(rendererVUMeterAppearance.resolvedLabelGapScale))),
@@ -4031,8 +4234,7 @@ struct ContentView: View {
                     .foregroundStyle(LabTheme.cyan)
             }
 
-            Slider(value: binding, in: range)
-                .tint(LabTheme.cyan)
+            OrbisonicLinearControl(value: binding, range: range)
 
             HStack {
                 Text(lowText)
@@ -4050,41 +4252,6 @@ struct ContentView: View {
 
     private func dbText(_ value: Double) -> String {
         "\(String(format: "%+.1f", value)) dB"
-    }
-
-    private func vuMeterColorSwatch(_ mode: VUMeterColorMode) -> some View {
-        Canvas { context, size in
-            let rect = CGRect(origin: .zero, size: size)
-            let colors: [Color]
-            switch mode {
-            case .systemGreen:
-                colors = [
-                    Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255),
-                    Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255)
-                ]
-            case .white:
-                colors = [Color.white.opacity(0.64), Color.white]
-            case .sparkle:
-                colors = [LabTheme.cyan, LabTheme.blue, Color(red: 244 / 255, green: 114 / 255, blue: 182 / 255)]
-            case .classic:
-                colors = [
-                    Color(red: 24 / 255, green: 132 / 255, blue: 8 / 255),
-                    Color(red: 189 / 255, green: 222 / 255, blue: 41 / 255),
-                    Color(red: 239 / 255, green: 49 / 255, blue: 16 / 255)
-                ]
-            }
-
-            context.fill(
-                Path(roundedRect: rect, cornerRadius: 4),
-                with: .linearGradient(Gradient(colors: colors), startPoint: rect.origin, endPoint: CGPoint(x: rect.maxX, y: rect.maxY))
-            )
-            context.stroke(
-                Path(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 4),
-                with: .color(LabTheme.text.opacity(0.7)),
-                lineWidth: 1
-            )
-        }
-        .frame(width: 22, height: 16)
     }
 
     private func settingsPathList(
@@ -4258,6 +4425,25 @@ struct ContentView: View {
         )
     }
 
+    private func playerRailCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                .fill(LabTheme.panel)
+                .overlay(
+                    RoundedRectangle(cornerRadius: LabTheme.panelRadius, style: .continuous)
+                        .stroke(LabTheme.line, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.36), radius: 18, x: 0, y: 10)
+        )
+        .clipped()
+    }
+
     private func tuningSlider(title: String, value: Binding<Double>, range: ClosedRange<Double>, format: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -4269,8 +4455,7 @@ struct ContentView: View {
                     .foregroundStyle(LabTheme.cyan)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
             }
-            Slider(value: value, in: range)
-                .tint(LabTheme.cyan)
+            OrbisonicLinearControl(value: value, range: range)
         }
     }
 
@@ -4292,8 +4477,10 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
             }
 
-            Slider(value: centeredTuningBinding(value: value, bounds: bounds, defaultValue: defaultValue), in: -1...1)
-                .tint(LabTheme.cyan)
+            OrbisonicLinearControl(
+                value: centeredTuningBinding(value: value, bounds: bounds, defaultValue: defaultValue),
+                range: -1...1
+            )
 
             HStack {
                 Text(String(format: format, bounds.lowerBound))
@@ -5641,7 +5828,15 @@ private enum DenseVUMeterRenderer {
             )
             context.fill(
                 Path(roundedRect: fillRect, cornerRadius: min(3, columnWidth * 0.22)),
-                with: .color(meterColor(level: level, seed: CGFloat(index) * 0.09, time: time, colorMode: appearance.colorMode).opacity(0.26 + Double(level) * 0.64))
+                with: meterFillShading(
+                    level: level,
+                    rect: fillRect,
+                    seed: CGFloat(index) * 0.09,
+                    time: time,
+                    colorMode: appearance.colorMode,
+                    opacity: 0.26 + Double(level) * 0.64,
+                    axis: .vertical
+                )
             )
         }
     }
@@ -5856,10 +6051,7 @@ private enum DenseVUMeterRenderer {
     ) -> Color {
         switch colorMode {
         case .systemGreen:
-            if level > 0.94 { return LabTheme.red }
-            if level > 0.76 { return LabTheme.amber }
-            if level > 0.42 { return Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255) }
-            return Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
+            return LabTheme.palette.vuColor(for: Double(level))
         case .white:
             if level > 0.94 { return LabTheme.red }
             if level > 0.78 { return LabTheme.amber }
@@ -5868,7 +6060,7 @@ private enum DenseVUMeterRenderer {
         case .sparkle:
             return sparkleColor(level: level, seed: seed, time: time)
         case .classic:
-            return classicWinampColor(level: level)
+            return LabTheme.palette.vuColor(for: Double(level))
         }
     }
 
@@ -5882,17 +6074,57 @@ private enum DenseVUMeterRenderer {
         case .sparkle:
             return sparkleColor(level: level, seed: seed, time: time)
         case .classic:
-            return classicWinampColor(level: min(1, level + Float(seed) * 0.08))
+            return LabTheme.palette.vuColor(for: Double(min(1, level + Float(seed) * 0.08)))
         case .white:
             if level > 0.94, seed > 0.35 { return LabTheme.red }
             if level > 0.78, seed > 0.22 { return LabTheme.amber }
             let value = 0.52 + Double(level) * 0.48
             return Color(red: value, green: value, blue: value)
         case .systemGreen:
-            if level > 0.94, seed > 0.35 { return LabTheme.red }
-            if level > 0.76, seed > 0.22 { return LabTheme.amber }
-            if level > 0.48, seed > 0.82 { return Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255) }
-            return Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
+            return LabTheme.palette.vuColor(for: Double(min(1, level + Float(seed) * 0.08)))
+        }
+    }
+
+    private enum MeterFillAxis {
+        case horizontal
+        case vertical
+    }
+
+    private static func meterFillShading(
+        level: Float,
+        rect: CGRect,
+        seed: CGFloat,
+        time: TimeInterval,
+        colorMode: VUMeterColorMode,
+        opacity: Double,
+        axis: MeterFillAxis
+    ) -> GraphicsContext.Shading {
+        let palette = LabTheme.palette
+        let usesCompressedPaletteRamp =
+            palette.compressesLinearControlRampIntoActiveSegment &&
+            (colorMode == .classic || colorMode == .systemGreen)
+
+        guard usesCompressedPaletteRamp else {
+            return .color(meterColor(level: level, seed: seed, time: time, colorMode: colorMode).opacity(opacity))
+        }
+
+        let gradient = Gradient(stops: palette.vuRamp
+            .sorted { $0.position < $1.position }
+            .map { Gradient.Stop(color: $0.color.opacity(opacity), location: $0.position) })
+
+        switch axis {
+        case .horizontal:
+            return .linearGradient(
+                gradient,
+                startPoint: CGPoint(x: rect.minX, y: rect.midY),
+                endPoint: CGPoint(x: rect.maxX, y: rect.midY)
+            )
+        case .vertical:
+            return .linearGradient(
+                gradient,
+                startPoint: CGPoint(x: rect.midX, y: rect.maxY),
+                endPoint: CGPoint(x: rect.midX, y: rect.minY)
+            )
         }
     }
 
@@ -6499,6 +6731,17 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
             isLFE: Bool,
             isReserved: Bool
         ) -> (color: NSColor, emission: NSColor, ringColor: NSColor) {
+            if LabTheme.palette.compressesLinearControlRampIntoActiveSegment {
+                return daftPunkOutputMeterVisual(
+                    level: level,
+                    isActive: isActive,
+                    isHot: isHot,
+                    isClipping: isClipping,
+                    isLFE: isLFE,
+                    isReserved: isReserved
+                )
+            }
+
             if isReserved {
                 let color = NSColor(calibratedRed: 0.22, green: 0.28, blue: 0.31, alpha: 0.56)
                 return (color, NSColor(calibratedRed: 0.012, green: 0.025, blue: 0.028, alpha: 1), color)
@@ -6540,6 +6783,62 @@ private struct SonicSphereRendererSceneView: NSViewRepresentable {
 
             let color = NSColor(calibratedRed: 0.20, green: 0.36, blue: 0.38, alpha: 0.58)
             return (color, NSColor(calibratedRed: 0.012, green: 0.045, blue: 0.048, alpha: 1), color)
+        }
+
+        private func daftPunkOutputMeterVisual(
+            level: CGFloat,
+            isActive: Bool,
+            isHot: Bool,
+            isClipping: Bool,
+            isLFE: Bool,
+            isReserved: Bool
+        ) -> (color: NSColor, emission: NSColor, ringColor: NSColor) {
+            if isReserved {
+                let color = NSColor(calibratedRed: 52 / 255, green: 64 / 255, blue: 71 / 255, alpha: 0.56)
+                return (color, NSColor(calibratedRed: 0.012, green: 0.025, blue: 0.028, alpha: 1), color)
+            }
+
+            if isClipping {
+                let color = NSColor(calibratedRed: 239 / 255, green: 68 / 255, blue: 68 / 255, alpha: 1)
+                return (color, NSColor(calibratedRed: 0.72, green: 0.03, blue: 0.035, alpha: 1), color)
+            }
+
+            if isHot {
+                let color = NSColor(calibratedRed: 251 / 255, green: 146 / 255, blue: 60 / 255, alpha: 1)
+                return (color, NSColor(calibratedRed: 0.58, green: 0.20, blue: 0.035, alpha: 1), color)
+            }
+
+            if isActive {
+                let color = isLFE
+                    ? NSColor(calibratedRed: 253 / 255, green: 224 / 255, blue: 71 / 255, alpha: 0.98)
+                    : daftPunkSceneMeterColor(level: level)
+                let glow = 0.20 + Double(level) * 0.48
+                return (
+                    color,
+                    color.blended(withFraction: min(glow, 0.68), of: .white) ?? color,
+                    color
+                )
+            }
+
+            let inactive = isLFE
+                ? NSColor(calibratedRed: 0.40, green: 0.36, blue: 0.17, alpha: 0.72)
+                : NSColor(calibratedRed: 52 / 255, green: 64 / 255, blue: 71 / 255, alpha: 0.58)
+            return (inactive, NSColor(calibratedRed: 0.012, green: 0.025, blue: 0.028, alpha: 1), inactive)
+        }
+
+        private func daftPunkSceneMeterColor(level: CGFloat) -> NSColor {
+            let normalized = min(max(level, 0), 1)
+            let stops: [(position: CGFloat, color: NSColor)] = [
+                (0.00, NSColor(calibratedRed: 167 / 255, green: 139 / 255, blue: 250 / 255, alpha: 1)),
+                (0.18, NSColor(calibratedRed: 91 / 255, green: 140 / 255, blue: 255 / 255, alpha: 1)),
+                (0.34, NSColor(calibratedRed: 34 / 255, green: 211 / 255, blue: 238 / 255, alpha: 1)),
+                (0.50, NSColor(calibratedRed: 52 / 255, green: 211 / 255, blue: 153 / 255, alpha: 1)),
+                (0.66, NSColor(calibratedRed: 253 / 255, green: 224 / 255, blue: 71 / 255, alpha: 1)),
+                (0.82, NSColor(calibratedRed: 251 / 255, green: 146 / 255, blue: 60 / 255, alpha: 1)),
+                (1.00, NSColor(calibratedRed: 239 / 255, green: 68 / 255, blue: 68 / 255, alpha: 1))
+            ]
+
+            return stops.last { normalized >= $0.position }?.color ?? stops[0].color
         }
 
         private func meterMaterial(color: NSColor, emission: NSColor) -> SCNMaterial {

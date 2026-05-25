@@ -66,6 +66,30 @@ final class MeteringServiceTests: XCTestCase {
         XCTAssertGreaterThan(quieterLevel.displayLevel, 0)
     }
 
+    func testInactiveNearSilenceReleasesVisualDisplayInsteadOfSnappingToZero() {
+        let service = MeteringService()
+        ingestConstant(service: service, signal: .input, amplitude: amplitude(dbFS: -18))
+        let activeLevel = service.levels(signal: .input, channelCount: 1)[0]
+
+        ingestConstant(service: service, signal: .input, amplitude: amplitude(dbFS: -100))
+        let nearSilenceRelease = service.levels(signal: .input, channelCount: 1)[0]
+
+        XCTAssertFalse(service.isActive(signal: .input))
+        XCTAssertEqual(nearSilenceRelease.rawRMSDbFS, -100, accuracy: 0.05)
+        XCTAssertEqual(nearSilenceRelease.peakDbFS, -100, accuracy: 0.05)
+        XCTAssertGreaterThan(nearSilenceRelease.displayLevel, 0)
+        XCTAssertLessThan(nearSilenceRelease.displayLevel, activeLevel.displayLevel)
+
+        ingestConstant(service: service, signal: .input, amplitude: 0)
+        let silenceRelease = service.levels(signal: .input, channelCount: 1)[0]
+
+        XCTAssertFalse(service.isActive(signal: .input))
+        XCTAssertEqual(silenceRelease.rawRMSDbFS, MeterChannelLevel.silenceDbFS)
+        XCTAssertEqual(silenceRelease.peakDbFS, MeterChannelLevel.silenceDbFS)
+        XCTAssertGreaterThan(silenceRelease.displayLevel, 0)
+        XCTAssertLessThan(silenceRelease.displayLevel, nearSilenceRelease.displayLevel)
+    }
+
     func testMonitorAndSonicTrimsAffectDisplayOnly() {
         let service = MeteringService()
         let amplitude = amplitude(dbFS: -18)

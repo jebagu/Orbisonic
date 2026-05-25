@@ -151,7 +151,7 @@ Still feature-gated:
 
 ## Enable The Feature Flag
 
-For manual testing, open Orbisonic, go to `Settings`, then use the `Local Playback QA` panel:
+For manual testing, open Orbisonic, go to `Settings`, then use the `Sound Settings` panel:
 
 1. Turn on `Gapless local playback` to route compatible local queues through `LocalGaplessScheduler`.
 2. Keep `Compressed trim metadata` off for first-pass WAV/AIFF/PCM testing.

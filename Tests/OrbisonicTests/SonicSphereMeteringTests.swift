@@ -183,7 +183,7 @@ final class SonicSphereMeteringTests: XCTestCase {
 
         XCTAssertTrue(engine.sonicSphereMeterIsActive())
         XCTAssertEqual(beforeVolumeChange.count, scene.matrix.outputCount)
-        XCTAssertTrue(beforeVolumeChange.contains { $0.peakDbFS > -96 })
+        XCTAssertTrue(beforeVolumeChange.contains { $0.peakDbFS > MeterChannelLevel.activePeakFloorDbFS })
         XCTAssertTrue(beforeVolumeChange.contains { $0.displayLevel > 0 })
         XCTAssertEqual(mutedOutput.map(\.rawRMSDbFS), beforeVolumeChange.map(\.rawRMSDbFS))
         XCTAssertEqual(fullOutput.map(\.rawRMSDbFS), beforeVolumeChange.map(\.rawRMSDbFS))

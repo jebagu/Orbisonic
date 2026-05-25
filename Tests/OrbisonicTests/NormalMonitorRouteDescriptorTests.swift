@@ -88,17 +88,17 @@ final class NormalMonitorRouteDescriptorTests: XCTestCase {
         }
     }
 
-    func testNoAudibleRouteUsesBinauralPreview() {
-        XCTAssertFalse(RendererTwoChannelPreference.allCases.map(\.rawValue).contains("binaural"))
-        XCTAssertFalse(RendererRenderMode.allCases.map(\.rawValue).contains("binaural"))
+    func testBinauralRendererPreferenceDoesNotChangeNormalMonitorRoute() {
+        XCTAssertTrue(RendererTwoChannelPreference.allCases.map(\.rawValue).contains("binaural_180"))
+        XCTAssertTrue(RendererRenderMode.allCases.map(\.rawValue).contains("binaural_180"))
 
         let resolved = RendererModePolicy.effectiveRequestedMode(
             requestedMode: .automatic,
             inputChannelCount: 2,
             alwaysMono: false,
-            twoChannelPreference: .stereo
+            twoChannelPreference: .binaural
         )
-        XCTAssertEqual(resolved, .stereo)
+        XCTAssertEqual(resolved, .binaural)
 
         for route in audibleRoutes {
             XCTAssertFalse(route.warningDescriptions.contains { $0.localizedCaseInsensitiveContains("binaural") })

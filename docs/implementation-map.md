@@ -19,9 +19,9 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - `docs/release-verification.md`: release, installer, app bundle, LaunchServices, helper, and manual hardware verification checklist.
 - `docs/readiness-summary.md`: current readiness result, automated evidence, manual verification still required, release blockers, and recommended next action.
 - `.tasks/`: bounded sequential task files for audits, test-gap passes, hardening, realtime/orbital VU work, release verification docs, readiness refresh, and manual release verification.
-- Root `Open Orbisonic.command`: the single double-clickable daily opener for the canonical app bundle, currently including the VU quiet-signal fix. It reopens the existing bundle through LaunchServices and does not rebuild or re-sign the app.
+- Root `Open Orbisonic.command`: the single double-clickable daily opener for the canonical app bundle, currently including the VU quiet-signal fix. It delegates to the repo LaunchServices reopen script, which forces the repo-root app bundle path so an installed `/Applications/Orbisonic.app` with the same bundle ID is not selected instead. It does not rebuild or re-sign the app.
 - Root `Open Orbisonic - VU Quiet Fix.command`: named alias for the same canonical VU quiet-signal build. It delegates to the same LaunchServices reopen script and does not rebuild or re-sign the app.
-- `scripts/`: app refresh, LaunchServices reopen, app installer, suite installer, Roon bridge, branch/deprecated-ref launcher helpers, and embedded librespot build scripts.
+- `scripts/`: app refresh, repo-bundle-forced LaunchServices reopen, app installer, suite installer, Roon bridge, branch/deprecated-ref launcher helpers, and embedded librespot build scripts.
 - `installer/`: app-only and suite package artifacts. Historical packages may remain for evidence, but current packages must be rebuilt from the merged canonical HEAD before release use.
 - `Vendor/`: vendored librespot source and Orbisonic librespot FFI crate.
 - `calibration/`: Sonic Sphere speaker layout JSON files.
@@ -48,6 +48,12 @@ This map helps a future Orbisonic maintainer or Codex session find the files and
 - Active work package: `.tasks/020-realtime-family-orbital-vu-work-package.md`
 
 Callback-adjacent work includes audio callbacks, render closures, event queues, controls used by audio, route plans, meter publication, panic/recovery, device I/O, and backend adapter boundaries.
+
+## UI Theme And Settings
+
+- `Sources/Orbisonic/OrbisonicTheme.swift`: owns `OrbisonicColorScheme`, `OrbisonicPalette`, VU ramp stops, the SwiftUI palette environment, and the `LabTheme` compatibility facade used by current SwiftUI surfaces.
+- `Sources/Orbisonic/ContentView.swift`: owns the fixed-height non-scrollable Player rail, four-row Player metadata cap, `Settings` color theme selector, natural equal-height panel row layout behavior, themed horizontal linear controls with direct visible-track drag handling, palette-aware VU fills, `Sound Settings`, and app-wide palette application.
+- Tests: `Tests/OrbisonicTests/OrbisonicThemeTests.swift` for palette defaults/migration/ramp behavior and `Tests/OrbisonicTests/OrbisonicUITweakTests.swift` for Player rail, Settings, and Renderer surface structure.
 
 ## SwiftPM Target Map
 
@@ -249,12 +255,14 @@ Callback-adjacent work includes audio callbacks, render closures, event queues, 
 
 ### Atmos DRP Source Support
 
+Atmos DRP remains implemented but dormant. It is not exposed in current native or web source selectors.
+
 - Implementation:
   - `Sources/Orbisonic/DolbyReferencePlayerController.swift`
     - Owns DRP device-list parsing, command argument construction, process lifecycle, pause/resume signals, and `--print-info` / `audio.csv` metadata parsing.
     - Owns `AtmosDRPRoutingPolicy`, which currently maps DRP output and Orbisonic capture to `Orbisonic Aux Cable` until a dedicated Atmos loopback exists.
   - `Sources/Orbisonic/LoopbackSourceSupport.swift`
-    - Adds `SourceMode.atmosDRP` raw value `Atmos DRP`, display title `Atmos`, temporary expected loopback policy, and source-button order.
+    - Retains `SourceMode.atmosDRP` raw value `Atmos DRP`, display title `Atmos`, and temporary expected loopback policy, while current source-button order hides it from user-facing source selectors.
   - `Sources/Orbisonic/OrbisonicViewModel.swift`
     - Starts Aux-loopback capture for the selected Atmos source, launches/stops DRP, wires experimental pause/resume, and disables seek behavior.
   - `Sources/Orbisonic/OrbisonicWebServer.swift`
@@ -278,8 +286,9 @@ Callback-adjacent work includes audio callbacks, render closures, event queues, 
   - `Sources/Orbisonic/RendererModule.swift`
   - `Sources/Orbisonic/RendererMatrixSampleRenderer.swift`
   - `Sources/Orbisonic/OrbitalVUMeterModel.swift`
+    - Owns dormant value-only orbital VU state mapping.
   - `Sources/Orbisonic/ContentView.swift`
-    - Owns the active Renderer tab orbital VU panel and SceneKit marker styling for value-only meter state.
+    - Owns the simplified active Renderer tab controls: `Always Mono`, `Stereo 90`, `Binaural 180`, equal-height mode/status panels, renderer status rows, and collapsible tuning controls.
   - `Sources/Orbisonic/SpatialTuning.swift`
   - `Sources/Orbisonic/PureAudioRouteCapabilityBridge.swift`
   - `Sources/AudioCore/RenderGraphPlan.swift`
@@ -287,10 +296,10 @@ Callback-adjacent work includes audio callbacks, render closures, event queues, 
   - `Sources/AudioCore/OutputAdapters.swift`
   - `calibration/`
 - Related tests:
-  - `Tests/OrbisonicTests/RendererModuleTests.swift` including Sonic Sphere 30.1 topology, Direct 30/31, and normal-monitor planning non-mutation coverage.
+  - `Tests/OrbisonicTests/RendererModuleTests.swift` including Sonic Sphere 30.1 topology, `Stereo 90` / `Binaural 180` two-channel spread coverage, Direct 30/31, and normal-monitor planning non-mutation coverage.
   - `Tests/OrbisonicTests/RendererMatrixSampleRendererTests.swift`
-  - `Tests/OrbisonicTests/SonicSphereMeteringTests.swift` including Sonic Sphere meter independence and orbital VU value-model mapping coverage.
-  - `Tests/OrbisonicTests/OrbisonicUITweakTests.swift` including active Renderer tab orbital VU wiring coverage.
+  - `Tests/OrbisonicTests/SonicSphereMeteringTests.swift` including Sonic Sphere meter independence and dormant orbital VU value-model mapping coverage.
+  - `Tests/OrbisonicTests/OrbisonicUITweakTests.swift` including simplified Renderer tab, VU options, and Settings surface coverage.
   - `Tests/AudioCoreTests/RenderGraphPlanTests.swift`
   - `Tests/AudioCoreTests/RenderKernelTests.swift`
   - `Tests/AudioCoreTests/OutputAdapterTests.swift`
@@ -334,7 +343,7 @@ Callback-adjacent work includes audio callbacks, render closures, event queues, 
   - `Sources/Orbisonic/LoopbackSourceSupport.swift`
   - `Sources/Orbisonic/OrbisonicWebServer.swift`
   - `Sources/Orbisonic/MeteringService.swift`
-    - Owns fixed per-signal app meter publication for input, desktop monitor, and Sonic Sphere analysis meters; callback/tap ingress publishes bounded raw RMS/peak values while UI reads apply smoothing, trims, and display mapping.
+    - Owns fixed per-signal app meter publication for input, desktop monitor, and Sonic Sphere analysis meters; callback/tap ingress publishes bounded raw RMS/peak values while UI reads apply smoothing, trims, display mapping, and low-signal visual release.
 - Related tests:
   - `Tests/OrbisonicTests/DiagnosticsLogStoreTests.swift`
   - `Tests/OrbisonicTests/LoopbackSourceSupportTests.swift`
@@ -430,7 +439,7 @@ Callback-adjacent work includes audio callbacks, render closures, event queues, 
 - `Tests/AudioContractsTests/`: sample rates, session formats, output capabilities, source descriptors, conversion ledgers, meter snapshots, and forbidden imports.
 - `Tests/AudioImportTests/`: local asset gate, sample-rate mismatch policy, offline import, conversion ledger, and layout preservation.
 - `Tests/AudioCoreTests/`: audio control API, session planner, source adapters, render graph plan, render kernels, output adapters, metering telemetry, and Apple spatial headphone monitor.
-- `Tests/OrbisonicTests/`: app-specific tests covering local playback, local library, Roon, Spotify, Atmos DRP, loopback, renderer module, matrix renderer, normal monitor, diagnostics, web state, route policy, metering, UI model behavior, build metadata, and architecture boundaries.
+- `Tests/OrbisonicTests/`: app-specific tests covering local playback, local library, Roon, Spotify, dormant Atmos DRP boundaries, loopback, renderer module, matrix renderer, normal monitor, diagnostics, web state, route policy, metering, Player rail/UI model behavior, build metadata, and architecture boundaries.
 - `Tests/OrbisonicTests/PureAudioArchitectureBoundaryTests.swift`: static boundary checks for SwiftPM dependency direction, forbidden imports, app runtime leakage, source-integration renderer ownership, monitor/production topology separation, and documented migration exceptions.
 - `Tests/OrbisonicTests/ArchitectureBoundaryAllowlist.swift`: explicit pattern and file allowlists used by architecture boundary tests.
 

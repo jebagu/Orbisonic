@@ -60,6 +60,7 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
     case automatic
     case mono
     case stereo
+    case binaural = "binaural_180"
     case quad
     case surround51
     case auro80 = "auro_8_0"
@@ -76,6 +77,7 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
         .automatic,
         .mono,
         .stereo,
+        .binaural,
         .quad,
         .surround51,
         .auro80,
@@ -96,7 +98,9 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
         case .mono:
             "Mono"
         case .stereo:
-            "Stereo"
+            "Stereo 90"
+        case .binaural:
+            "Binaural 180"
         case .quad:
             "Quad"
         case .surround51:
@@ -155,7 +159,7 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
             nil
         case .mono:
             1
-        case .stereo:
+        case .stereo, .binaural:
             2
         case .quad:
             4
@@ -182,7 +186,7 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
 
     var isRenderedBed: Bool {
         switch self {
-        case .mono, .stereo, .quad, .surround51,
+        case .mono, .stereo, .binaural, .quad, .surround51,
              .auro80, .auro91, .auro101, .auro111714h, .auro111515hT, .auro121, .auro131:
             true
         case .automatic, .direct30, .direct31:
@@ -250,28 +254,28 @@ enum RendererRenderMode: String, Codable, CaseIterable, Identifiable {
 }
 
 enum RendererTwoChannelPreference: String, Codable, CaseIterable, Identifiable {
-    case automatic
     case stereo
+    case binaural = "binaural_180"
 
-    static let allCases: [RendererTwoChannelPreference] = [.automatic, .stereo]
+    static let allCases: [RendererTwoChannelPreference] = [.stereo, .binaural]
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .automatic:
-            "Auto"
         case .stereo:
-            "Stereo"
+            "Stereo 90"
+        case .binaural:
+            "Binaural 180"
         }
     }
 
-    var renderMode: RendererRenderMode? {
+    var renderMode: RendererRenderMode {
         switch self {
-        case .automatic:
-            nil
         case .stereo:
             .stereo
+        case .binaural:
+            .binaural
         }
     }
 }
@@ -290,9 +294,8 @@ enum RendererModePolicy {
         }
 
         if requestedMode == .automatic,
-           inputChannelCount == 2,
-           let preferredMode = twoChannelPreference.renderMode {
-            return preferredMode
+           inputChannelCount == 2 {
+            return twoChannelPreference.renderMode
         }
 
         return requestedMode
@@ -797,6 +800,8 @@ struct FeySpeaker: Codable, Hashable {
 struct FeyLobes: Hashable {
     var fl: [Double]
     var fr: [Double]
+    var binauralLeft: [Double]
+    var binauralRight: [Double]
     var rl: [Double]
     var rr: [Double]
     var frontCenter: [Double]
@@ -1128,6 +1133,8 @@ final class FeyStaticBedRenderer {
         self.lobes = FeyLobes(
             fl: bled.fl,
             fr: bled.fr,
+            binauralLeft: Self.buildHemisphereVector(west: true, options: lowerVectorOptions),
+            binauralRight: Self.buildHemisphereVector(west: false, options: lowerVectorOptions),
             rl: bled.rl,
             rr: bled.rr,
             frontCenter: Self.buildFrontCenterVector(options: self.options),
@@ -1231,6 +1238,8 @@ final class FeyStaticBedRenderer {
                 (options.stereoRearFill, lobes.rr)
             ])
             return renderedMatrix(fullRangeColumns: [left, right], lfeInputIndexes: [])
+        case .binaural:
+            return renderedMatrix(fullRangeColumns: [lobes.binauralLeft, lobes.binauralRight], lfeInputIndexes: [])
         case .quad:
             return renderedMatrix(fullRangeColumns: [lobes.fl, lobes.fr, lobes.rl, lobes.rr], lfeInputIndexes: [])
         case .surround51:
@@ -1382,6 +1391,8 @@ final class FeyStaticBedRenderer {
             return FeyInputLayout(mode: mode, channelLabels: ["M"], lfeChannelIndexes: [])
         case .stereo:
             return FeyInputLayout(mode: mode, channelLabels: ["L", "R"], lfeChannelIndexes: [])
+        case .binaural:
+            return FeyInputLayout(mode: mode, channelLabels: ["L180", "R180"], lfeChannelIndexes: [])
         case .quad:
             return FeyInputLayout(mode: mode, channelLabels: ["FL", "FR", "RL", "RR"], lfeChannelIndexes: [])
         case .surround51:

@@ -237,13 +237,12 @@ final class OrbisonicEngine {
 
     private static let maxStreamingScheduledAheadSeconds: TimeInterval = 2
     private static let maxStreamingScheduledPCMBytes = 64 * 1_024 * 1_024
-    private static var isRunningUnitTests: Bool {
+    private static let isRunningUnitTests: Bool = {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
             ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil ||
-            Bundle.allBundles.contains { $0.bundlePath.hasSuffix(".xctest") } ||
             NSClassFromString("XCTest.XCTestCase") != nil ||
             NSClassFromString("XCTestCase") != nil
-    }
+    }()
 
     private let audioGraphEnabled: Bool
     private lazy var engine = AVAudioEngine()

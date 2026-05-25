@@ -43,6 +43,23 @@ struct ChannelMeter: Identifiable {
     }
 }
 
+enum VUMeterActivityModel {
+    static let visualDisplayFloor: Float = 0.0005
+    static let minimumLevelPublishDelta: Float = 0.001
+
+    static func hasRawSignal(_ levels: [MeterChannelLevel]) -> Bool {
+        levels.contains { $0.peakDbFS > MeterChannelLevel.activePeakFloorDbFS }
+    }
+
+    static func hasVisualActivity(_ levels: [MeterChannelLevel], rawIsActive: Bool) -> Bool {
+        rawIsActive || levels.contains { $0.displayLevel > visualDisplayFloor }
+    }
+
+    static func hasVisualActivity(_ levels: [Float]) -> Bool {
+        levels.contains { $0 > visualDisplayFloor }
+    }
+}
+
 enum PlaylistSortMode: String, CaseIterable, Identifiable {
     case name = "Name"
     case artist = "Artist"
@@ -55,7 +72,7 @@ enum RendererMeterDisplayModel {
     static func channels(for scene: RendererSceneModel) -> [SurroundChannel] {
         var lfeCount = 0
 
-        return SonicSphereTopology.outputSpeakers(for: scene.preset, includeLFE: true).enumerated().map { offset, speaker in
+        return scene.outputSpeakers.enumerated().map { offset, speaker in
             let role: SurroundChannelRole
             if speaker.isLFE {
                 role = lfeCount == 0 ? .lfe : .lfe2
@@ -497,14 +514,15 @@ final class ChannelMeterStore: ObservableObject {
 
     func update(with nextLevels: [Float]) {
         guard nextLevels.count == channelMeters.count else { return }
-        isActive = nextLevels.contains { $0 > 0 }
+        isActive = VUMeterActivityModel.hasVisualActivity(nextLevels)
 
         let updated = zip(channelMeters, nextLevels).map { current, next in
             ChannelMeter(channel: current.channel, level: next)
         }
 
         let shouldPublish = zip(channelMeters, updated).contains {
-            abs($0.level - $1.level) >= 0.003
+            abs($0.level - $1.level) >= VUMeterActivityModel.minimumLevelPublishDelta
+                || ($0.level > VUMeterActivityModel.visualDisplayFloor) != ($1.level > VUMeterActivityModel.visualDisplayFloor)
         }
 
         if shouldPublish {
@@ -514,14 +532,16 @@ final class ChannelMeterStore: ObservableObject {
 
     func update(with meterLevels: [MeterChannelLevel], isActive: Bool) {
         guard meterLevels.count == channelMeters.count else { return }
-        self.isActive = isActive
+        let visualIsActive = VUMeterActivityModel.hasVisualActivity(meterLevels, rawIsActive: isActive)
+        self.isActive = visualIsActive
 
         let updated = zip(channelMeters, meterLevels).map { current, next in
-            ChannelMeter(channel: current.channel, meterLevel: next, isMeasured: isActive)
+            ChannelMeter(channel: current.channel, meterLevel: next, isMeasured: visualIsActive)
         }
 
         let shouldPublish = zip(channelMeters, updated).contains {
-            abs($0.level - $1.level) >= 0.003
+            abs($0.level - $1.level) >= VUMeterActivityModel.minimumLevelPublishDelta
+                || ($0.level > VUMeterActivityModel.visualDisplayFloor) != ($1.level > VUMeterActivityModel.visualDisplayFloor)
                 || abs($0.rawRMSDbFS - $1.rawRMSDbFS) >= 0.1
                 || $0.isMeasured != $1.isMeasured
         }
@@ -627,12 +647,18 @@ final class OrbisonicViewModel: ObservableObject {
     private static let liveSignalStartupGraceSeconds = 3
     private static let liveSignalBriefSilenceSeconds = 2
     private static let liveSignalNoSignalSeconds = 15
-    private static var isRunningUnitTests: Bool {
+    private static let isRunningUnitTests: Bool = {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
             ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil ||
-            Bundle.allBundles.contains { $0.bundlePath.hasSuffix(".xctest") } ||
             NSClassFromString("XCTest.XCTestCase") != nil ||
             NSClassFromString("XCTestCase") != nil
+    }()
+
+    private struct RouteRefreshSnapshot {
+        let systemOutputRoute: OutputRouteInfo
+        let availableOutputRoutes: [OutputRouteInfo]
+        let availableInputRoutes: [InputRouteInfo]
+        let systemInputRoute: InputRouteInfo
     }
 
     private static var preloadsAdjacentLocalMusicTracksByDefault: Bool {
@@ -927,6 +953,9 @@ final class OrbisonicViewModel: ObservableObject {
     private var pendingSourceSwitchRequestedBy: String?
     private var mainActorHeartbeatTask: Task<Void, Never>?
     private var lastRouteRefreshTime = Date.distantPast
+    private var routeRefreshTask: Task<Void, Never>?
+    private var isRouteRefreshInFlight = false
+    private var hasPendingForcedRouteRefresh = false
     private var lastRoonNowPlayingRefreshTime = Date.distantPast
     private var lastRoonBridgeRefreshTime = Date.distantPast
     private var lastSpotifyNowPlayingRefreshTime = Date.distantPast
@@ -1081,27 +1110,15 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private static func loadRendererRenderMode() -> RendererRenderMode {
-        guard let storedValue = UserDefaults.standard.string(forKey: rendererRenderModeKey),
-              let mode = RendererRenderMode(rawValue: storedValue)
-        else {
-            return .automatic
-        }
-
-        switch mode {
-        case .direct30, .direct31:
-            return .automatic
-        default:
-            break
-        }
-
-        return mode
+        UserDefaults.standard.set(RendererRenderMode.automatic.rawValue, forKey: rendererRenderModeKey)
+        return .automatic
     }
 
     private static func loadRendererTwoChannelPreference() -> RendererTwoChannelPreference {
         guard let storedValue = UserDefaults.standard.string(forKey: rendererTwoChannelPreferenceKey),
               let preference = RendererTwoChannelPreference(rawValue: storedValue)
         else {
-            return .automatic
+            return .stereo
         }
 
         return preference
@@ -1194,6 +1211,7 @@ final class OrbisonicViewModel: ObservableObject {
         spotifyPlaybackStatusDebounceTask?.cancel()
         sourceSwitchTask?.cancel()
         mainActorHeartbeatTask?.cancel()
+        routeRefreshTask?.cancel()
         webServer?.stop()
         roonBridgeClient.stop()
         spotifyReceiverClient.stop()
@@ -9182,7 +9200,7 @@ final class OrbisonicViewModel: ObservableObject {
 
             let inputLevels = engine.inputMeterLevels()
             let levels = inputLevels.map(\.displayLevel)
-            meterStore.update(with: inputLevels, isActive: inputLevels.contains { $0.peakDbFS > -96 })
+            meterStore.update(with: inputLevels, isActive: VUMeterActivityModel.hasRawSignal(inputLevels))
             updateMonitorMeters()
             updateRendererMeters()
 
@@ -9231,17 +9249,50 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         let inputLevels = engine.inputMeterLevels()
-        meterStore.update(with: inputLevels, isActive: inputLevels.contains { $0.peakDbFS > -96 })
+        meterStore.update(with: inputLevels, isActive: VUMeterActivityModel.hasRawSignal(inputLevels))
         updateMonitorMeters()
         updateRendererMeters()
     }
 
     private func refreshRoutesIfNeeded(force: Bool = false) {
+        guard !Self.isRunningUnitTests else { return }
+
         let now = Date()
         guard force || now.timeIntervalSince(lastRouteRefreshTime) >= 1.0 else { return }
-        lastRouteRefreshTime = now
+        guard !isRouteRefreshInFlight else {
+            if force {
+                hasPendingForcedRouteRefresh = true
+            }
+            return
+        }
 
-        let nextSystemOutputRoute = OutputRouteMonitor.currentRoute()
+        lastRouteRefreshTime = now
+        isRouteRefreshInFlight = true
+        routeRefreshTask?.cancel()
+        routeRefreshTask = Task.detached(priority: .utility) {
+            let snapshot = RouteRefreshSnapshot(
+                systemOutputRoute: OutputRouteMonitor.currentRoute(),
+                availableOutputRoutes: OutputRouteMonitor.availableOutputRoutes(),
+                availableInputRoutes: OutputRouteMonitor.availableInputRoutes(),
+                systemInputRoute: OutputRouteMonitor.currentInputRoute()
+            )
+
+            await MainActor.run { [weak self] in
+                self?.applyRouteRefreshSnapshot(snapshot)
+            }
+        }
+    }
+
+    private func applyRouteRefreshSnapshot(_ snapshot: RouteRefreshSnapshot) {
+        isRouteRefreshInFlight = false
+        defer {
+            if hasPendingForcedRouteRefresh {
+                hasPendingForcedRouteRefresh = false
+                refreshRoutesIfNeeded(force: true)
+            }
+        }
+
+        let nextSystemOutputRoute = snapshot.systemOutputRoute
         if nextSystemOutputRoute != systemOutputRoute {
             let stateBefore = debugPlaybackStateSnapshot()
             let previousDevice = systemOutputRoute.deviceName
@@ -9259,7 +9310,7 @@ final class OrbisonicViewModel: ObservableObject {
             )
         }
 
-        let nextAvailableOutputRoutes = OutputRouteMonitor.availableOutputRoutes()
+        let nextAvailableOutputRoutes = snapshot.availableOutputRoutes
         if nextAvailableOutputRoutes != availableOutputRoutes {
             availableOutputRoutes = nextAvailableOutputRoutes
             let outputNames = nextAvailableOutputRoutes.map(\.deviceName).joined(separator: ", ")
@@ -9378,7 +9429,7 @@ final class OrbisonicViewModel: ObservableObject {
             )
         }
 
-        let nextAvailableInputRoutes = OutputRouteMonitor.availableInputRoutes()
+        let nextAvailableInputRoutes = snapshot.availableInputRoutes
         if nextAvailableInputRoutes != availableInputRoutes {
             availableInputRoutes = nextAvailableInputRoutes
             let inputNames = nextAvailableInputRoutes.map(\.deviceName).joined(separator: ", ")
@@ -9388,7 +9439,7 @@ final class OrbisonicViewModel: ObservableObject {
             )
         }
 
-        let nextSystemInputRoute = OutputRouteMonitor.currentInputRoute()
+        let nextSystemInputRoute = snapshot.systemInputRoute
         if nextSystemInputRoute != systemInputRoute {
             systemInputRoute = nextSystemInputRoute
             AppLogger.shared.notice(
@@ -9564,8 +9615,7 @@ final class OrbisonicViewModel: ObservableObject {
         }
 
         if requestedMode == .automatic,
-           currentRendererLayout?.channelCount == 2,
-           rendererTwoChannelPreference != .automatic {
+           currentRendererLayout?.channelCount == 2 {
             return "Renderer Auto uses \(rendererTwoChannelPreference.displayName) for two-channel sources."
         }
 
@@ -9626,7 +9676,7 @@ final class OrbisonicViewModel: ObservableObject {
         let channelCount = monitorChannelWalkCount
         let meterLevels = engine.monitorMeterChannelLevels(channelCount: channelCount)
         monitorMeterStore.configureIfNeeded(channels: SurroundLayoutDetector.fallbackLayout(for: channelCount).channels)
-        monitorMeterStore.update(with: meterLevels, isActive: meterLevels.contains { $0.peakDbFS > -96 })
+        monitorMeterStore.update(with: meterLevels, isActive: VUMeterActivityModel.hasRawSignal(meterLevels))
     }
 
     private func configureRendererMeters() {

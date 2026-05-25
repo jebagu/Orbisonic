@@ -4,10 +4,11 @@ import XCTest
 
 final class LoopbackSourceSupportTests: XCTestCase {
     func testMusicInputsExposeRequestedPlayerFirstOrder() {
-        XCTAssertEqual(SourceMode.musicInputs, [.filePlayback, .atmosDRP, .spotify, .roon, .aux, .off])
-        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Local Files", "Atmos DRP", "Spotify", "Roon", "Aux Cable", "Off"])
-        XCTAssertEqual(SourceMode.musicInputs.map(\.displayName), ["Local Music", "Atmos", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(SourceMode.musicInputs, [.filePlayback, .spotify, .roon, .aux, .off])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.rawValue), ["Local Files", "Spotify", "Roon", "Aux Cable", "Off"])
+        XCTAssertEqual(SourceMode.musicInputs.map(\.displayName), ["Local Music", "Spotify", "Roon", "Aux Cable", "Off"])
         XCTAssertTrue(SourceMode.musicInputs.allSatisfy(\.isUserFacingMusicInput))
+        XCTAssertFalse(SourceMode.musicInputs.contains(.atmosDRP))
         XCTAssertFalse(SourceMode.musicInputs.contains(.testTone))
     }
 

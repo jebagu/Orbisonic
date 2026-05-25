@@ -6,9 +6,11 @@ cd "$repo_root"
 
 app_name="Orbisonic"
 app_version="${1:-1.3}"
+bundle_identifier="${ORBISONIC_BUNDLE_IDENTIFIER:-audio.orbisonic.app.current}"
 bundle_path="$repo_root/${app_name}.app"
 binary_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}"
 resource_bundle_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}_${app_name}.bundle"
+icon_path="$repo_root/Sources/Orbisonic/Resources/AppIcon/${app_name}.icns"
 build_home="$repo_root/.build/dev-home"
 module_cache_path="$repo_root/.build/module-cache"
 plist_path="$bundle_path/Contents/Info.plist"
@@ -50,6 +52,10 @@ if [ -d "$resource_bundle_path" ]; then
   cp -R "$resource_bundle_path" "$bundle_path/Contents/Resources/"
 fi
 
+if [ -f "$icon_path" ]; then
+  cp "$icon_path" "$bundle_path/Contents/Resources/${app_name}.icns"
+fi
+
 git_commit="$(git rev-parse --short HEAD 2>/dev/null || printf 'not-available')"
 if ! git diff --quiet --ignore-submodules -- 2>/dev/null || ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null; then
   git_commit="${git_commit}-dirty"
@@ -65,7 +71,7 @@ else
   set_plist_string "OrbisonicGitBranch" "detached"
 fi
 set_plist_string "OrbisonicGitCommit" "$git_commit"
-set_plist_string "CFBundleIdentifier" "audio.orbisonic.app"
+set_plist_string "CFBundleIdentifier" "$bundle_identifier"
 set_plist_string "CFBundleShortVersionString" "$app_version"
 set_plist_string "CFBundleVersion" "$app_version"
 set_plist_string "NSMicrophoneUsageDescription" "macOS labels all audio input access as Microphone permission. Orbisonic uses it to capture Orbisonic Roon Input or Orbisonic Aux Cable for live sources, not the Mac mic unless you choose it."

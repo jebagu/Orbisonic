@@ -109,7 +109,7 @@ final class StreamingAudioFileSourceTests: XCTestCase {
 
         let sonicBeforeVolumeChange = engine.sonicSphereMeterLevels(channelCount: scene.matrix.outputCount)
         XCTAssertTrue(engine.sonicSphereMeterIsActive())
-        XCTAssertTrue(sonicBeforeVolumeChange.contains { $0.peakDbFS > -96 })
+        XCTAssertTrue(sonicBeforeVolumeChange.contains { $0.peakDbFS > MeterChannelLevel.activePeakFloorDbFS })
 
         let beforeVolumeChange = engine.inputMeterLevels()
         engine.setOutputVolume(0)

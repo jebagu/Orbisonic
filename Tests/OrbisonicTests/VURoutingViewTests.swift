@@ -92,6 +92,42 @@ final class VURoutingViewTests: XCTestCase {
     }
 
     @MainActor
+    func testChannelMeterStoreTreatsDecayingDisplayTailAsVisualActivity() {
+        let store = ChannelMeterStore()
+        store.configure(channels: [SurroundChannel(index: 0, role: .frontLeft)])
+        let tailLevel = MeterChannelLevel(
+            rawRMSDbFS: MeterChannelLevel.silenceDbFS,
+            peakDbFS: MeterChannelLevel.silenceDbFS,
+            vuDb: -58,
+            displayLevel: VUMeterActivityModel.visualDisplayFloor * 3
+        )
+
+        store.update(with: [tailLevel], isActive: false)
+
+        XCTAssertTrue(store.isActive)
+        XCTAssertEqual(store.channelMeters.map(\.level), [tailLevel.displayLevel])
+        XCTAssertEqual(store.channelMeters.map(\.isMeasured), [true])
+    }
+
+    @MainActor
+    func testChannelMeterStoreResetClearsDecayingDisplayTailImmediately() {
+        let store = ChannelMeterStore()
+        store.configure(channels: [SurroundChannel(index: 0, role: .frontLeft)])
+        let tailLevel = MeterChannelLevel(
+            rawRMSDbFS: MeterChannelLevel.silenceDbFS,
+            peakDbFS: MeterChannelLevel.silenceDbFS,
+            vuDb: -58,
+            displayLevel: VUMeterActivityModel.visualDisplayFloor * 3
+        )
+
+        store.update(with: [tailLevel], isActive: false)
+        store.reset()
+
+        XCTAssertFalse(store.isActive)
+        XCTAssertEqual(store.channelMeters.map(\.level), [0])
+    }
+
+    @MainActor
     func testLocalMonitorDiagnosticMetersUseLeftOnlyForFirstStereoChannel() {
         let model = OrbisonicViewModel()
 

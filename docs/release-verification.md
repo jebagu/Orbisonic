@@ -17,7 +17,7 @@ Current release-facing artifacts in this repository:
 - `installer/OrbisonicSuite-1.3.pkg`: canonical suite package path when rebuilt from the merged repo. It contains the app package plus `OrbisonicInputsComponent-0.2.0.pkg`.
 - `installer/Orbisonic-1.1.pkg` and `installer/OrbisonicSuite-1.1.pkg`: historical 1.1 artifacts. Do not use them as the current candidate.
 - `scripts/refresh-orbisonic-app.sh`: canonical build, bundle refresh, metadata stamp, ad hoc signing, codesign verify, and plist lint path.
-- `scripts/reopen-orbisonic-app.sh`: canonical LaunchServices quit and reopen path.
+- `scripts/reopen-orbisonic-app.sh`: canonical LaunchServices quit and reopen path for the repo-root app bundle. The repo-root refresh path uses the local `audio.orbisonic.app.current` bundle identifier by default so LaunchServices does not substitute an installed `/Applications/Orbisonic.app` with the release `audio.orbisonic.app` identifier.
 - `scripts/build-installer.sh`: app-only package build path.
 - `scripts/build-suite-installer.sh`: suite package assembly path. It combines the current app package with the existing input-driver component.
 - `scripts/install-roon-bridge.sh`: optional Roon bridge dependency install path.
@@ -68,7 +68,7 @@ If GUI or audio behavior changed and runtime verification is being performed, re
 Expected reopen evidence:
 
 - any running `Orbisonic` process exits.
-- `open Orbisonic.app` launches the app bundle.
+- `open -n -F Orbisonic.app` launches the repo-root app bundle rather than resolving the shared bundle ID to an installed `/Applications` copy.
 - the app opens without using `Orbisonic.app/Contents/MacOS/Orbisonic` directly.
 
 ## Package Inspection
