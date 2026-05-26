@@ -395,12 +395,14 @@ Atmos DRP remains implemented but dormant. It is not exposed in current native o
   - `scripts/reopen-orbisonic-app.sh`
   - `scripts/build-installer.sh`
   - `scripts/build-suite-installer.sh`
+  - `Sources/Orbisonic/OrbisonicResourceLocator.swift`
   - `scripts/install-roon-bridge.sh`
   - `scripts/build-embedded-librespot.sh`
   - `scripts/launch-orbisonic-ref.sh`
   - `scripts/deprecated-orbisonic-ref.sh`
   - `installer/`
-    - canonical package paths when rebuilt: `Orbisonic-1.3.pkg` and `OrbisonicSuite-1.3.pkg`
+    - canonical package paths when rebuilt: `Orbisonic-1.3.1.pkg` and `OrbisonicSuite-1.3.1.pkg`
+    - deprecated packaging-hotfix predecessor: `Orbisonic-1.3.pkg` and `OrbisonicSuite-1.3.pkg`
     - historical artifacts: `Orbisonic-1.1.pkg` and `OrbisonicSuite-1.1.pkg`
   - `Orbisonic.app`
   - `Orbisonic.entitlements`

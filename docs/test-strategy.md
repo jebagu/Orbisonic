@@ -143,7 +143,7 @@ Manual checks must record what hardware, route, source, and app bundle were actu
 - Spotify Connect receiver verification: choose Orbisonic in Spotify Connect, confirm receiver status, dedicated `Orbisonic Spotify Input`, stereo policy, live signal, stale metadata behavior, and control readiness.
 - macOS microphone permission behavior: confirm loopback input capture is permitted and that the OS microphone prompt is treated as expected loopback capture, not proof of physical mic selection.
 - App signing or entitlement gaps: confirm Apple spatial/head-tracking behavior only when the app is signed with the required entitlements; otherwise record disabled/fallback behavior.
-- Installer verification: follow `docs/release-verification.md`; install app-only and suite packages as appropriate, confirm `Orbisonic.app` opens through LaunchServices, helper resources are present, loopback drivers are available when suite-installed, and package behavior matches release notes.
+- Installer verification: follow `docs/release-verification.md`; inspect each component with `pkgutil --payload-files`, confirm suite xar contents do not contain loose `Payload/...` trees, install app-only and suite packages as appropriate, confirm `Orbisonic.app` opens through LaunchServices, helper resources are present, loopback drivers are available when suite-installed, and package behavior matches release notes.
 - Roon bridge verification: install helper dependencies when needed, authorize the Roon extension, verify snapshot/transport controls, and confirm transport metadata does not override live capture truth.
 
 ## Test Data Rules
@@ -165,7 +165,7 @@ Manual checks must record what hardware, route, source, and app bundle were actu
 - Any live source change must include selected-source isolation, route mismatch, sample-rate or channel-count mismatch, no-signal, and diagnostics coverage where practical.
 - Any monitor change must include no direct Sonic Sphere audible route, two-channel monitor output where required, no environment/spatial fallback where forbidden, and no metering side effect.
 - Any SwiftPM target, import-boundary, source-integration, or monitor/production boundary change must update `PureAudioArchitectureBoundaryTests.swift` and keep `ArchitectureBoundaryAllowlist.swift` explicit.
-- Any script, package, signing, or LaunchServices behavior change must update release verification docs and run the smallest safe manual check.
+- Any script, package, signing, resource-bundle, or LaunchServices behavior change must update release verification docs and run the smallest safe manual check.
 - Public setup and product claims in `README.md`, `docs/product-brief.md`, and release docs should be included in contract-gap audits when they describe live inputs, source names, installer behavior, supported routes, or operator-facing setup.
 - Public/raw naming pairs such as `Local Files` and `Local Music` should be tested together when they appear in native UI, public web state, or control-state values.
 

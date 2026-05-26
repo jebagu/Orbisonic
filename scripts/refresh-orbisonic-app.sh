@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 app_name="Orbisonic"
-app_version="${1:-1.3}"
+app_version="${1:-1.3.1}"
 bundle_identifier="${ORBISONIC_BUNDLE_IDENTIFIER:-audio.orbisonic.app.current}"
 bundle_path="$repo_root/${app_name}.app"
 binary_path="$repo_root/.build/arm64-apple-macosx/debug/${app_name}"
@@ -23,6 +23,36 @@ set_plist_string() {
   if ! "$plist_buddy" -c "Set :$key $value" "$plist_path" >/dev/null 2>&1; then
     "$plist_buddy" -c "Add :$key string $value" "$plist_path" >/dev/null
   fi
+}
+
+ensure_resource_bundle_info() {
+  local bundle_dir="$1"
+  local bundle_plist="$bundle_dir/Info.plist"
+
+  if [ ! -d "$bundle_dir" ]; then
+    return 0
+  fi
+
+  if [ ! -f "$bundle_plist" ]; then
+    /usr/bin/plutil -create xml1 "$bundle_plist"
+  fi
+
+  if ! "$plist_buddy" -c "Print :CFBundleIdentifier" "$bundle_plist" >/dev/null 2>&1; then
+    "$plist_buddy" -c "Add :CFBundleIdentifier string audio.orbisonic.resources" "$bundle_plist" >/dev/null
+  fi
+  if ! "$plist_buddy" -c "Print :CFBundleName" "$bundle_plist" >/dev/null 2>&1; then
+    "$plist_buddy" -c "Add :CFBundleName string Orbisonic Resources" "$bundle_plist" >/dev/null
+  fi
+  if ! "$plist_buddy" -c "Print :CFBundlePackageType" "$bundle_plist" >/dev/null 2>&1; then
+    "$plist_buddy" -c "Add :CFBundlePackageType string BNDL" "$bundle_plist" >/dev/null
+  fi
+  if ! "$plist_buddy" -c "Print :CFBundleShortVersionString" "$bundle_plist" >/dev/null 2>&1; then
+    "$plist_buddy" -c "Add :CFBundleShortVersionString string $app_version" "$bundle_plist" >/dev/null
+  fi
+  if ! "$plist_buddy" -c "Print :CFBundleVersion" "$bundle_plist" >/dev/null 2>&1; then
+    "$plist_buddy" -c "Add :CFBundleVersion string $app_version" "$bundle_plist" >/dev/null
+  fi
+  plutil -lint "$bundle_plist" >/dev/null
 }
 
 if [ ! -d "$bundle_path" ]; then
@@ -48,8 +78,10 @@ chmod +x "$bundle_path/Contents/MacOS/$app_name"
 
 if [ -d "$resource_bundle_path" ]; then
   resource_bundle_name="$(basename "$resource_bundle_path")"
-  rm -rf "$bundle_path/Contents/Resources/$resource_bundle_name"
+  resource_bundle_target="$bundle_path/Contents/Resources/$resource_bundle_name"
+  rm -rf "$resource_bundle_target"
   cp -R "$resource_bundle_path" "$bundle_path/Contents/Resources/"
+  ensure_resource_bundle_info "$resource_bundle_target"
 fi
 
 if [ -f "$icon_path" ]; then

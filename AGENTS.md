@@ -90,6 +90,20 @@ If the app is already running, quit and reopen it through LaunchServices before 
 
 Do not launch `Orbisonic.app/Contents/MacOS/Orbisonic` directly for GUI/audio verification. AppKit needs LaunchServices registration, and raw executable launches can abort before Orbisonic code runs.
 
+## Installer Packaging Rules
+
+- Treat `.pkg` files as Apple installer products, not editable xar archives.
+- Build app component packages with `pkgbuild` from the final verified `Orbisonic.app`. Prefer `pkgbuild --component Orbisonic.app --install-location /Applications` for the app package.
+- Build suite/product packages with `productbuild` from already-valid component packages.
+- Do not use `pkgutil --expand-full` as a build step for packages that will be re-flattened. It expands `Payload` from compressed cpio into loose files, and `pkgutil --flatten` will not recreate a valid payload archive.
+- Use `pkgutil --expand` only for inspection or for extracting still-flat component packages from a product package. Rebuild the final suite with `productbuild`, not by hand-editing expanded package directories.
+- After every package build, mechanically verify payload readability with `pkgutil --payload-files` for each component package.
+- For suites, run `pkgutil --payload-files` on each flat component package before `productbuild`, then expand the final product package into a temporary directory and confirm each embedded component still has a compressed `Payload` file, not a `Payload/` directory tree.
+- Inspect `xar -tf` output before publishing. A valid component has a `Payload` file; it must not contain paths such as `Payload/Applications/...` or `Payload/Library/...` inside the xar archive.
+- The final installer proof is a black-box install on a clean or explicitly chosen macOS target: install the exact built package, confirm `/Applications/Orbisonic.app` exists, launch it through LaunchServices, and confirm suite-installed HAL drivers if using the suite installer.
+- For SwiftPM resources inside the macOS app bundle, app code must resolve `Contents/Resources` and the copied `Orbisonic_Orbisonic.bundle` layout before any development-only SwiftPM fallback. Do not let production launch depend blindly on generated `Bundle.module` paths.
+- If a SwiftPM resource directory is copied into a `.bundle` inside `Orbisonic.app`, the copied bundle must contain a valid `Info.plist` before signing and packaging.
+
 ## Audio-Specific Operating Rules
 
 - The audio path is the most important part of this app. Prefer correctness, stability, and low-risk architecture over quick UI-visible fixes.

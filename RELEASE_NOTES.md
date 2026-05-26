@@ -1,5 +1,35 @@
 # Orbisonic Release Notes
 
+## 1.3.1
+
+Orbisonic 1.3.1 is a packaging hotfix for the 1.3 installer lane.
+
+### Installation
+
+Install the app only with:
+
+```sh
+installer/Orbisonic-1.3.1.pkg
+```
+
+Install the app plus Orbisonic virtual input drivers with:
+
+```sh
+installer/OrbisonicSuite-1.3.1.pkg
+```
+
+### Packaging Notes
+
+- Rebuilds the app package with `pkgbuild --component`.
+- Rebuilds the suite with `productbuild` from valid component packages.
+- Adds package payload checks so malformed loose-file `Payload` archives fail before publishing.
+- Adds packaged-resource lookup that does not depend on SwiftPM `Bundle.module` during app launch.
+- Deprecates the previous 1.3 installer assets.
+
+## 1.3
+
+Orbisonic 1.3 is deprecated. The published suite installer had a malformed payload layout and should not be used.
+
 ## 1.1
 
 Orbisonic 1.1 packages the current app build from commit `8ffa977` and adds a suite installer that bundles the app with Orbisonic Inputs 0.2.0.

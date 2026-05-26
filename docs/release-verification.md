@@ -13,8 +13,9 @@ The Task 020 Slice 10 final audit records the realtime/orbital VU work as brownf
 Current release-facing artifacts in this repository:
 
 - `Orbisonic.app`: repo-root development app bundle.
-- `installer/Orbisonic-1.3.pkg`: canonical app-only package path when rebuilt from the merged repo. It installs `Orbisonic.app` into `/Applications`.
-- `installer/OrbisonicSuite-1.3.pkg`: canonical suite package path when rebuilt from the merged repo. It contains the app package plus `OrbisonicInputsComponent-0.2.0.pkg`.
+- `installer/Orbisonic-1.3.1.pkg`: canonical app-only package path when rebuilt from the merged repo. It installs `Orbisonic.app` into `/Applications`.
+- `installer/OrbisonicSuite-1.3.1.pkg`: canonical suite package path when rebuilt from the merged repo. It contains the app package plus `OrbisonicInputsComponent-0.2.0.pkg`.
+- `installer/Orbisonic-1.3.pkg` and `installer/OrbisonicSuite-1.3.pkg`: deprecated packaging-hotfix predecessor artifacts. Do not publish or recommend them.
 - `installer/Orbisonic-1.1.pkg` and `installer/OrbisonicSuite-1.1.pkg`: historical 1.1 artifacts. Do not use them as the current candidate.
 - `scripts/refresh-orbisonic-app.sh`: canonical build, bundle refresh, metadata stamp, ad hoc signing, codesign verify, and plist lint path.
 - `scripts/reopen-orbisonic-app.sh`: canonical LaunchServices quit and reopen path for the repo-root app bundle. The repo-root refresh path uses the local `audio.orbisonic.app.current` bundle identifier by default so LaunchServices does not substitute an installed `/Applications/Orbisonic.app` with the release `audio.orbisonic.app` identifier.
@@ -26,7 +27,7 @@ Current release-facing artifacts in this repository:
 
 The suite installer payload should be verified as containing:
 
-- `Orbisonic-1.3.pkg` with `/Applications/Orbisonic.app`
+- `Orbisonic-1.3.1.pkg` with `/Applications/Orbisonic.app`
 - `OrbisonicInputsComponent-0.2.0.pkg` with:
   - `/Library/Audio/Plug-Ins/HAL/OrbisonicRoonInput.driver`
   - `/Library/Audio/Plug-Ins/HAL/OrbisonicAuxCable.driver`
@@ -55,6 +56,7 @@ Expected refresh evidence:
 - Swift build completes.
 - `Orbisonic.app/Contents/MacOS/Orbisonic` is replaced.
 - resource bundle is copied when present.
+- copied SwiftPM resource bundle has a valid `Info.plist`.
 - git ref metadata is written into `Info.plist`.
 - `codesign --verify --deep --strict --verbose=2` succeeds.
 - `plutil -lint Orbisonic.app/Contents/Info.plist` reports OK.
@@ -76,7 +78,7 @@ Expected reopen evidence:
 Inspect the app-only package payload:
 
 ```sh
-pkgutil --payload-files installer/Orbisonic-1.3.pkg
+pkgutil --payload-files installer/Orbisonic-1.3.1.pkg
 ```
 
 Expected app-only package evidence:
@@ -86,20 +88,36 @@ Expected app-only package evidence:
 - app resources, including the SwiftPM resource bundle
 - bundled `ffmpeg` and `ffprobe` tools when present in the package
 
+Inspect the app-only xar table of contents:
+
+```sh
+xar -tf installer/Orbisonic-1.3.1.pkg
+```
+
+Expected app-only xar evidence:
+
+- `Payload` appears as a single archive entry.
+- No path starts with `Payload/`.
+
 Inspect the suite package by expanding it into a temporary directory:
 
 ```sh
 tmpdir="$(mktemp -d)"
-pkgutil --expand-full installer/OrbisonicSuite-1.3.pkg "$tmpdir/pkg"
-find "$tmpdir/pkg" -maxdepth 5 -name PackageInfo -print
+pkgutil --expand installer/OrbisonicSuite-1.3.1.pkg "$tmpdir/pkg"
+find "$tmpdir/pkg" -maxdepth 2 -name PackageInfo -print
+file "$tmpdir/pkg/Orbisonic-1.3.1.pkg/Payload"
+file "$tmpdir/pkg/OrbisonicInputsComponent-0.2.0.pkg/Payload"
+xar -tf installer/OrbisonicSuite-1.3.1.pkg
 ```
 
 Expected suite package evidence:
 
-- component package `Orbisonic-1.3.pkg`
+- component package `Orbisonic-1.3.1.pkg`
 - component package `OrbisonicInputsComponent-0.2.0.pkg`
 - PackageInfo for `audio.orbisonic.app.pkg`
 - PackageInfo for `audio.orbisonic.inputs.pkg`
+- each embedded component has a compressed `Payload` file
+- no `xar -tf` entry contains `/Payload/`; component `Payload` entries must be compressed cpio files, not expanded directory trees
 - bundle identifiers:
   - `audio.orbisonic.app`
   - `audio.orbisonic.rooninput`
@@ -108,6 +126,8 @@ Expected suite package evidence:
 
 Do not commit expanded package contents or installer logs.
 
+Do not use `pkgutil --expand-full` as a build step for suite packages. It is valid for forensic inspection, but if its expanded output is flattened back into a package, the component `Payload` can become loose files inside the xar archive. Build suites with `productbuild` from valid component packages.
+
 ## Installer Verification
 
 Installer execution requires an admin-capable macOS environment. Do not run installer commands during a docs-only task unless the user explicitly asks for runtime installer verification.
@@ -115,7 +135,7 @@ Installer execution requires an admin-capable macOS environment. Do not run inst
 App-only installer manual check:
 
 ```sh
-sudo installer -pkg installer/Orbisonic-1.3.pkg -target /
+sudo installer -pkg installer/Orbisonic-1.3.1.pkg -target /
 ```
 
 Record:
@@ -131,7 +151,7 @@ Record:
 Suite installer manual check:
 
 ```sh
-sudo installer -pkg installer/OrbisonicSuite-1.3.pkg -target /
+sudo installer -pkg installer/OrbisonicSuite-1.3.1.pkg -target /
 ```
 
 Record everything from the app-only installer check plus:
@@ -536,9 +556,9 @@ The canonical merged repo must rebuild app and suite packages before any new rel
 ```sh
 ./scripts/build-installer.sh
 ./scripts/build-suite-installer.sh
-pkgutil --payload-files installer/Orbisonic-1.3.pkg
-pkgutil --check-signature installer/Orbisonic-1.3.pkg
-pkgutil --check-signature installer/OrbisonicSuite-1.3.pkg
+pkgutil --payload-files installer/Orbisonic-1.3.1.pkg
+pkgutil --check-signature installer/Orbisonic-1.3.1.pkg
+pkgutil --check-signature installer/OrbisonicSuite-1.3.1.pkg
 ```
 
 Installer/signing gates still required:

@@ -430,6 +430,34 @@ flowchart TD
     Diagnostics --> Release
 ```
 
+## 14. Release Package Build Flow
+
+Release packages are built from a verified app bundle and valid component packages. The suite is a product package, not a hand-edited archive.
+
+```mermaid
+flowchart TD
+    Build["swift build"]
+    Bundle["Refresh Orbisonic.app"]
+    Resources["Copy resources and write bundle Info.plist"]
+    Sign["Ad hoc sign and verify app bundle"]
+    AppPkg["pkgbuild app component package"]
+    Inputs["Extract valid input-driver component package"]
+    Product["productbuild suite package"]
+    Inspect["pkgutil payload checks and xar loose-Payload guard"]
+    Install["Manual black-box install and LaunchServices open"]
+
+    Build --> Bundle
+    Bundle --> Resources
+    Resources --> Sign
+    Sign --> AppPkg
+    AppPkg --> Product
+    Inputs --> Product
+    Product --> Inspect
+    Inspect --> Install
+```
+
+Do not use `pkgutil --expand-full` as part of this build flow. It is an inspection tool that expands a component payload out of compressed cpio form; round-tripping that output can produce installer packages that report success while installing zero files.
+
 Manual hardware verification should record what was actually tested and avoid claiming success for unexercised routes. For GUI or audio checks after app-code changes, use the app bundle through LaunchServices rather than launching the raw executable.
 
 ## Playback And Source State Model

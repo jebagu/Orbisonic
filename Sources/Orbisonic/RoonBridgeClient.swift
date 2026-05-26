@@ -556,20 +556,11 @@ final class RoonBridgeClient {
     }
 
     private func bundledBridgeURL() throws -> URL {
-        let candidates = [
-            Bundle.main.resourceURL?.appendingPathComponent("RoonBridge", isDirectory: true),
-            Bundle.main.resourceURL,
-            Bundle.module.resourceURL?.appendingPathComponent("RoonBridge", isDirectory: true),
-            Bundle.module.resourceURL
-        ].compactMap { $0 }
-
-        for url in candidates {
-            let bridge = url.appendingPathComponent("bridge.js")
-            let package = url.appendingPathComponent("package.json")
-            if FileManager.default.fileExists(atPath: bridge.path),
-               FileManager.default.fileExists(atPath: package.path) {
-                return url
-            }
+        if let url = OrbisonicResourceLocator.directory(
+            containing: ["bridge.js", "package.json"],
+            preferredSubdirectory: "RoonBridge"
+        ) {
+            return url
         }
 
         throw RoonBridgeClientError.bridgeResourceMissing

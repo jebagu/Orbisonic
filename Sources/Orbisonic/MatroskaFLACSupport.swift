@@ -35,15 +35,11 @@ enum FFmpegToolLocator {
             }
         }
 
-        let bundledCandidates = [
-            Bundle.main.resourceURL?.appendingPathComponent("Tools", isDirectory: true).appendingPathComponent(toolName),
-            Bundle.main.resourceURL?.appendingPathComponent(toolName),
-            Bundle.module.resourceURL?.appendingPathComponent("Tools", isDirectory: true).appendingPathComponent(toolName),
-            Bundle.module.resourceURL?.appendingPathComponent(toolName)
-        ].compactMap { $0 }
-
-        for candidate in bundledCandidates where FileManager.default.isExecutableFile(atPath: candidate.path) {
-            return candidate
+        if let bundledToolURL = OrbisonicResourceLocator.executableURL(
+            named: toolName,
+            preferredSubdirectory: "Tools"
+        ) {
+            return bundledToolURL
         }
 
         guard Bundle.main.bundleURL.pathExtension != "app" else {

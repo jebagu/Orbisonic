@@ -6,7 +6,7 @@ Realtime family compliance work package complete / canonical one-directory readi
 
 ## Current Milestone
 
-Task 020 Slice 10 of 10 is complete. The final realtime compliance audit verdict is brownfield-in-progress, not compliant. Task 021 is queued for full realtime-family compliance remediation, but it should wait until manual quality check on the last push and bug-fix triage are complete. Fresh release packaging and manual hardware, service, installer, signing, and notarization gates remain separate release-readiness work.
+Task 020 Slice 10 of 10 is complete. The final realtime compliance audit verdict is brownfield-in-progress, not compliant. Task 021 is queued for full realtime-family compliance remediation, but it should wait until manual quality check on the last push and bug-fix triage are complete. Release packaging hotfix 1.3.1 replaces the deprecated 1.3 installer assets with structurally verified app and suite packages; manual hardware, service, installer execution, signing, and notarization gates remain separate release-readiness work.
 
 ## Project Summary
 
@@ -60,7 +60,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 
 ## Pending Follow-Up Tasks
 
-- Rebuild current installers from the canonical merged repo with administrator authentication, configure Developer ID signing/notarization if release distribution is intended, then finish `.tasks/018-hardware-readiness-manual-gates.md` before calling a release candidate ready.
+- Run administrator-authenticated installer execution for the 1.3.1 app and suite installers, configure Developer ID signing/notarization if release distribution is intended, and finish `.tasks/018-hardware-readiness-manual-gates.md` before calling a release candidate ready.
 - Revalidate historical `docs/PureAudio/` claims before elevating any historical migration note into a binding contract.
 - After manual quality check and bug-fix triage, start `.tasks/021-realtime-family-full-compliance-remediation.md` before claiming realtime-family compliance.
 
@@ -90,7 +90,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 - Embedded librespot linking depends on the local Rust-built static library being present in `.build/orbisonic-librespot`.
 - Sonic Sphere, Dante, loopback devices, Spotify receiver, Roon bridge, app signing, and installer behavior all require manual runtime verification beyond unit tests.
 - Real Dolby Reference Player/iLok behavior, Atmos playback, and loopback capture for the Atmos source require manual runtime verification beyond unit tests.
-- Current package files are unsigned and must be rebuilt from the merged canonical HEAD before release use.
+- Current package files are unsigned; 1.3.1 package structure can be mechanically inspected, but release readiness still needs installer execution, signing/notarization decisions, and hardware/service checks.
 - The installed `/Applications/Orbisonic.app` may differ from the canonical repo bundle until installer execution is run.
 - Non-interactive CLI installation is blocked until administrator authentication is available.
 - Developer ID package signing and notarization are blocked until signing identities and notarytool credentials are configured.
@@ -101,6 +101,7 @@ This retrofit does not rewrite the app. It adds control documents, contracts, au
 
 ## Recent Changes
 
+- 2026-05-26: Completed packaging hotfix 1.3.1 after discovering the published 1.3 suite package had a loose-file `Payload` layout. The app now resolves packaged resources from `Contents/Resources` before development fallbacks, refresh/build scripts write a copied resource-bundle `Info.plist`, the app package uses `pkgbuild --component`, and the suite package is rebuilt with `productbuild` plus component payload checks.
 - 2026-05-25: Fixed the left Player rail as a non-scrollable surface by removing the sidebar `ScrollView`, making `nowPlayingSessionCard` fill the remaining rail height, capping artwork size, and limiting bottom Player metadata to four single-line rows (`Format`, `Channels`, `Layout`, `Length` for local playback).
 - 2026-05-25: Normalized the active app icon source so `Sources/Orbisonic/Resources/AppIcon/Orbisonic.icns`, `Sources/Orbisonic/Resources/AppIcon/Orbisonic.iconset/`, and `Orbisonic.app/Contents/Resources/Orbisonic.icns` all use the selected 1024-square pink-orange-yellow circle-gradient Orbisonic logo from the app-family logo batch. The app now also sets its runtime Dock icon from the bundled `.icns` at startup, and app refresh / installer-build scripts copy the active root `.icns` before signing so the root app does not inherit a stale installed-app icon cache. The `AppLogos` SVG files remain reference logo studies, not the current bundle icon.
 - 2026-05-25: Stabilized low-level VU display by letting read-side smoothed meter state release visually after raw activity falls below the `-96 dBFS` floor, keeping raw `MeteringService.isActive(...)` as signal truth, and treating tiny decaying display tails as visual activity in `ChannelMeterStore`.

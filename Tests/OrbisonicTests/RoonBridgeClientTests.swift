@@ -121,6 +121,18 @@ final class RoonBridgeClientTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: storedURL), data)
     }
 
+    func testPackagedResourceLocatorFindsBundledRoonBridgeWithoutBundleModule() throws {
+        let directory = try XCTUnwrap(
+            OrbisonicResourceLocator.directory(
+                containing: ["bridge.js", "package.json"],
+                preferredSubdirectory: "RoonBridge"
+            )
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("bridge.js").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("package.json").path))
+    }
+
     func testFetchImageDataReportsBridgeHTTPFailuresAsRetryableArtworkFailures() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [RoonBridgeMockURLProtocol.self]

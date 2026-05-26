@@ -142,6 +142,11 @@ final class MatroskaFLACSupportTests: XCTestCase {
         XCTAssertTrue(LocalMusicLibrary.isSupportedAudioFile(URL(fileURLWithPath: "/tmp/album.mka")))
     }
 
+    func testFFmpegToolLocatorDoesNotDependOnBundleModule() {
+        _ = FFmpegToolLocator.ffmpegURL()
+        _ = FFmpegToolLocator.ffprobeURL()
+    }
+
     func testLocalPlayerRowsSeparateTagsFormatChannelsAndLength() {
         let metadata = AudioSourceMetadata(
             fileName: "fallback-title.mka",
