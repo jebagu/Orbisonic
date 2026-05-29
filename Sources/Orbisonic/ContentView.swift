@@ -3577,8 +3577,38 @@ struct ContentView: View {
                 )
 
             localMusicSortMenu
-                .frame(width: 170)
+                .frame(width: 150)
+
+            localMusicChannelMenu
+                .frame(width: 120)
         }
+    }
+
+    private var localMusicChannelMenu: some View {
+        Menu {
+            Button("All Channels") {
+                model.localMusicChannelFilter = 0
+            }
+            ForEach(model.availableLocalMusicChannelCounts, id: \.self) { count in
+                Button("\(count) ch") {
+                    model.localMusicChannelFilter = count
+                }
+            }
+        } label: {
+            HStack {
+                Text("CH")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(LabTheme.textSoft)
+                Spacer()
+                Text(model.localMusicChannelFilter == 0 ? "All" : "\(model.localMusicChannelFilter)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LabTheme.text)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(LabTheme.cyan)
+            }
+        }
+        .buttonStyle(LabButtonStyle())
     }
 
     private var localMusicSortMenu: some View {
