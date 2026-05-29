@@ -233,7 +233,6 @@ final class NormalMonitorRouteBranchRemovalTests: XCTestCase {
             "usesDirectRendererPlayback",
             "playDirectRenderer",
             "makeFileRendererNode",
-            "rendererOutputFormat",
             "AVAudioEnvironmentNode",
             "outputType = .headphones",
             "path=\\\"direct-renderer\\\""

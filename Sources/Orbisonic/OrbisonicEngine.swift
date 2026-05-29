@@ -43,19 +43,22 @@ private final class StreamingScheduledChunk {
     let startFrame: AVAudioFramePosition
     let frameCount: AVAudioFrameCount
     let monoBuffers: [AVAudioPCMBuffer]
+    let renderedOutputBuffer: AVAudioPCMBuffer?
 
     init(
         startFrame: AVAudioFramePosition,
         frameCount: AVAudioFrameCount,
-        monoBuffers: [AVAudioPCMBuffer]
+        monoBuffers: [AVAudioPCMBuffer],
+        renderedOutputBuffer: AVAudioPCMBuffer? = nil
     ) {
         self.startFrame = startFrame
         self.frameCount = frameCount
         self.monoBuffers = monoBuffers
+        self.renderedOutputBuffer = renderedOutputBuffer
     }
 
     var byteCount: Int {
-        monoBuffers.reduce(0) { partial, buffer in
+        let sourceBytes = monoBuffers.reduce(0) { partial, buffer in
             let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
             let listedBytes = audioBuffers.reduce(0) { bytePartial, audioBuffer in
                 bytePartial + Int(audioBuffer.mDataByteSize)
@@ -70,6 +73,13 @@ private final class StreamingScheduledChunk {
             ) ?? 0
             return partial + bytes
         }
+        guard let renderedOutputBuffer else { return sourceBytes }
+
+        let renderedBytes = UnsafeMutableAudioBufferListPointer(renderedOutputBuffer.mutableAudioBufferList)
+            .reduce(0) { partial, audioBuffer in
+                partial + Int(audioBuffer.mDataByteSize)
+            }
+        return sourceBytes + renderedBytes
     }
 }
 
@@ -895,6 +905,7 @@ final class OrbisonicEngine {
             throw LiveInputError.monoFormatCreationFailed(sampleRate)
         }
 
+        configureStereoMonitorOutputGraph(sampleRate: sampleRate)
         engine.connect(node, to: preVolumeMixer, format: stereoFormat)
         testToneNodes = [node]
 
@@ -939,14 +950,16 @@ final class OrbisonicEngine {
         let node: AVAudioSourceNode
         let diagnosticAudioDescription: String
         if let speechClip = DiagnosticSpeechRenderer.clip(for: channelIndex + 1) {
-            node = makeMonitorVoiceNode(
+            node = makeChannelVoiceNode(
                 clip: speechClip,
+                channelIndex: channelIndex,
                 outputSampleRate: sampleRate
             )
             diagnosticAudioDescription = "speechSampleRate=\(speechClip.sampleRate) outputSampleRate=\(sampleRate)"
         } else {
             let frequency = 440 + Double(channelIndex % 12) * 18
-            node = makeToneNode(
+            node = makeChannelToneNode(
+                channelIndex: channelIndex,
                 frequency: frequency,
                 sampleRate: sampleRate,
                 gain: 0.14
@@ -955,14 +968,19 @@ final class OrbisonicEngine {
         }
 
         if primaryOutputEnabled {
-            guard let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
-                throw OutputDeviceSelectionError.diagnosticFormatCreationFailed(
-                    channelCount: 2,
-                    sampleRate: sampleRate
-                )
+            let hardwareChannelCount = Int(engine.outputNode.inputFormat(forBus: 0).channelCount)
+            let primaryChannelCount = max(channelCount, hardwareChannelCount)
+            let primaryFormat = try diagnosticChannelFormat(
+                channelCount: primaryChannelCount,
+                sampleRate: sampleRate
+            )
+            if engine.isRunning {
+                engine.stop()
+                resetMonitorMeterLevels()
             }
+            configureRendererOutputGraph(format: primaryFormat)
             engine.attach(node)
-            engine.connect(node, to: preVolumeMixer, format: stereoFormat)
+            engine.connect(node, to: outputGainMixer, format: primaryFormat)
             testToneNodes = [node]
 
             if !engine.isRunning {
@@ -1279,13 +1297,24 @@ final class OrbisonicEngine {
     private func configureGraph() {
         engine.attach(preVolumeMixer)
         engine.attach(outputGainMixer)
-        let stereoFormat = stereoMonitorFormat(sampleRate: preferredOutputSampleRate())
-        engine.connect(preVolumeMixer, to: outputGainMixer, format: stereoFormat)
-        engine.connect(outputGainMixer, to: engine.mainMixerNode, format: stereoFormat)
-
+        configureStereoMonitorOutputGraph(sampleRate: preferredOutputSampleRate())
         engine.mainMixerNode.outputVolume = 1
         outputGainMixer.outputVolume = 0.92
         installMonitorMeterTap()
+    }
+
+    private func configureStereoMonitorOutputGraph(sampleRate: Double) {
+        engine.disconnectNodeOutput(preVolumeMixer)
+        engine.disconnectNodeOutput(outputGainMixer)
+        let stereoFormat = stereoMonitorFormat(sampleRate: sampleRate)
+        engine.connect(preVolumeMixer, to: outputGainMixer, format: stereoFormat)
+        engine.connect(outputGainMixer, to: engine.mainMixerNode, format: stereoFormat)
+    }
+
+    private func configureRendererOutputGraph(format: AVAudioFormat) {
+        engine.disconnectNodeOutput(preVolumeMixer)
+        engine.disconnectNodeOutput(outputGainMixer)
+        engine.connect(outputGainMixer, to: engine.mainMixerNode, format: format)
     }
 
     private struct OutputDevicePlaybackSnapshot {
@@ -1747,6 +1776,36 @@ final class OrbisonicEngine {
         detachPlayerNodes()
         meteringService.setInactive(signal: .sonicSphere, channelCount: rendererScene.matrix.outputCount)
 
+        if let rendererFormat = rendererOutputFormat(
+            sourceSampleRate: context.descriptor.sourceSampleRate,
+            sourceChannelCount: context.layout.channelCount
+        ) {
+            configureRendererOutputGraph(format: rendererFormat)
+            let player = AVAudioPlayerNode()
+            playerNodes = [player]
+            engine.attach(player)
+            engine.connect(player, to: outputGainMixer, format: rendererFormat)
+
+            AppLogger.shared.info(
+                category: "streaming",
+                "Rebuilt streaming renderer graph sourceChannels=\(context.layout.channelCount) logicalOutputs=\(rendererScene.matrix.outputCount) physicalOutputs=\(Int(rendererFormat.channelCount))."
+            )
+            debugTiming?.log(
+                "streaming graph rebuild end",
+                fileURL: context.descriptor.url,
+                extra: [
+                    "graphMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - graphStart) / 1_000_000.0))",
+                    "path=\"sonic-sphere-renderer\"",
+                    "sourceChannels=\(context.layout.channelCount)",
+                    "logicalOutputs=\(rendererScene.matrix.outputCount)",
+                    "physicalOutputs=\(Int(rendererFormat.channelCount))",
+                    "playerNodes=\(playerNodes.count)"
+                ]
+            )
+            return
+        }
+
+        configureStereoMonitorOutputGraph(sampleRate: context.descriptor.sourceSampleRate)
         playerNodes = context.layout.channels.map { _ in AVAudioPlayerNode() }
         for (channel, player) in zip(context.layout.channels, playerNodes) {
             engine.attach(player)
@@ -2015,18 +2074,29 @@ final class OrbisonicEngine {
         debugScheduleFromCurrentPositionCount += 1
 #endif
 
-        for (index, player) in playerNodes.enumerated() {
-            let buffer = scheduledChunk.monoBuffers[index]
-            if index == 0 {
-                let token = context.token
-                let chunkID = scheduledChunk.id
-                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        self?.streamingChunkDidFinish(chunkID: chunkID, token: token)
-                    }
+        if let renderedOutputBuffer = scheduledChunk.renderedOutputBuffer,
+           let player = playerNodes.first {
+            let token = context.token
+            let chunkID = scheduledChunk.id
+            player.scheduleBuffer(renderedOutputBuffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.streamingChunkDidFinish(chunkID: chunkID, token: token)
                 }
-            } else {
-                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack)
+            }
+        } else {
+            for (index, player) in playerNodes.enumerated() {
+                let buffer = scheduledChunk.monoBuffers[index]
+                if index == 0 {
+                    let token = context.token
+                    let chunkID = scheduledChunk.id
+                    player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            self?.streamingChunkDidFinish(chunkID: chunkID, token: token)
+                        }
+                    }
+                } else {
+                    player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack)
+                }
             }
         }
 
@@ -2080,10 +2150,24 @@ final class OrbisonicEngine {
             monoBuffers.append(monoBuffer)
         }
 
+        let renderedBuffer: AVAudioPCMBuffer?
+        if playerNodes.count == 1 {
+            renderedBuffer = renderedOutputBuffer(
+                sourceBuffers: monoBuffers,
+                sourceSampleRate: chunk.buffer.format.sampleRate,
+                sourceChannelCount: context.layout.channelCount,
+                startFrame: 0,
+                frameCount: Int(frameCount)
+            )
+        } else {
+            renderedBuffer = nil
+        }
+
         return StreamingScheduledChunk(
             startFrame: chunk.startFrame,
             frameCount: frameCount,
-            monoBuffers: monoBuffers
+            monoBuffers: monoBuffers,
+            renderedOutputBuffer: renderedBuffer
         )
     }
 
@@ -2210,6 +2294,36 @@ final class OrbisonicEngine {
 
         meteringService.setInactive(signal: .sonicSphere, channelCount: rendererScene.matrix.outputCount)
 
+        if let rendererFormat = rendererOutputFormat(
+            sourceSampleRate: loadedFile.sampleRate,
+            sourceChannelCount: loadedFile.layout.channelCount
+        ) {
+            configureRendererOutputGraph(format: rendererFormat)
+            let player = AVAudioPlayerNode()
+            playerNodes = [player]
+            engine.attach(player)
+            engine.connect(player, to: outputGainMixer, format: rendererFormat)
+
+            AppLogger.shared.info(
+                category: "engine",
+                "Rebuilt player graph with Sonic Sphere renderer output sourceChannels=\(loadedFile.layout.channelCount) logicalOutputs=\(rendererScene.matrix.outputCount) physicalOutputs=\(Int(rendererFormat.channelCount))."
+            )
+            debugTiming?.log(
+                "replace current source graph rebuild end",
+                fileURL: loadedFile.url,
+                extra: [
+                    "graphMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - graphStart) / 1_000_000.0))",
+                    "path=\"sonic-sphere-renderer\"",
+                    "sourceChannels=\(loadedFile.layout.channelCount)",
+                    "logicalOutputs=\(rendererScene.matrix.outputCount)",
+                    "physicalOutputs=\(Int(rendererFormat.channelCount))",
+                    "playerNodes=\(playerNodes.count)"
+                ]
+            )
+            return
+        }
+
+        configureStereoMonitorOutputGraph(sampleRate: loadedFile.sampleRate)
         let player = AVAudioPlayerNode()
         playerNodes = [player]
         engine.attach(player)
@@ -2283,7 +2397,13 @@ final class OrbisonicEngine {
 
         guard let player = playerNodes.first else { return }
         player.stop()
-        let scheduledBuffer = Self.slice(buffer: loadedFile.monitorBuffer, fromFrame: currentStartFrame)
+        let scheduledBuffer = renderedOutputBuffer(
+            sourceBuffers: loadedFile.monoBuffers,
+            sourceSampleRate: loadedFile.sampleRate,
+            sourceChannelCount: loadedFile.layout.channelCount,
+            startFrame: Int(currentStartFrame),
+            frameCount: Int(max(loadedFile.frameCount - currentStartFrame, 0))
+        ) ?? Self.slice(buffer: loadedFile.monitorBuffer, fromFrame: currentStartFrame)
 
         let token = completionToken
         player.scheduleBuffer(scheduledBuffer, at: nil, options: []) { [token] in
@@ -2330,6 +2450,86 @@ final class OrbisonicEngine {
 
     private func stereoMonitorFormat(sampleRate: Double) -> AVAudioFormat? {
         AVAudioFormat(standardFormatWithSampleRate: sampleRate > 0 ? sampleRate : 48_000, channels: 2)
+    }
+
+    private func rendererOutputFormat(
+        sourceSampleRate: Double,
+        sourceChannelCount: Int
+    ) -> AVAudioFormat? {
+        guard rendererScene.matrix.inputCount == sourceChannelCount,
+              rendererScene.matrix.outputCount > 2
+        else { return nil }
+
+        let logicalOutputCount = rendererScene.matrix.outputCount
+        let hardwareChannelCount = Int(engine.outputNode.inputFormat(forBus: 0).channelCount)
+        let physicalOutputCount = max(logicalOutputCount, hardwareChannelCount)
+        guard physicalOutputCount > 2 else { return nil }
+
+        let sampleRate = sourceSampleRate > 0 ? sourceSampleRate : preferredOutputSampleRate()
+        let layoutTag = AudioChannelLayoutTag(kAudioChannelLayoutTag_DiscreteInOrder | UInt32(physicalOutputCount))
+        guard let layout = AVAudioChannelLayout(layoutTag: layoutTag) else { return nil }
+        return AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            interleaved: false,
+            channelLayout: layout
+        )
+    }
+
+    private func renderedOutputBuffer(
+        sourceBuffers: [AVAudioPCMBuffer],
+        sourceSampleRate: Double,
+        sourceChannelCount: Int,
+        startFrame: Int,
+        frameCount: Int
+    ) -> AVAudioPCMBuffer? {
+        guard let format = rendererOutputFormat(
+            sourceSampleRate: sourceSampleRate,
+            sourceChannelCount: sourceChannelCount
+        ) else { return nil }
+        return renderedOutputBuffer(
+            sourceBuffers: sourceBuffers,
+            startFrame: startFrame,
+            frameCount: frameCount,
+            format: format
+        )
+    }
+
+    private func renderedOutputBuffer(
+        sourceBuffers: [AVAudioPCMBuffer],
+        startFrame: Int,
+        frameCount: Int,
+        format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        guard frameCount > 0,
+              let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(frameCount)
+              ),
+              let outputData = buffer.floatChannelData
+        else { return nil }
+
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        for channelIndex in 0..<Int(format.channelCount) {
+            outputData[channelIndex].initialize(repeating: 0, count: frameCount)
+        }
+
+        let rendered = RendererMatrixSampleRenderer.renderSampleBuffers(
+            matrix: rendererScene.matrix,
+            sourceBuffers: sourceBuffers,
+            startFrame: startFrame,
+            frameCount: frameCount
+        )
+        guard rendered.frameCount > 0 else { return nil }
+
+        for channelIndex in 0..<min(rendered.sampleBuffers.count, Int(format.channelCount)) {
+            rendered.sampleBuffers[channelIndex].withUnsafeBufferPointer { source in
+                guard let base = source.baseAddress else { return }
+                outputData[channelIndex].update(from: base, count: rendered.frameCount)
+            }
+        }
+        buffer.frameLength = AVAudioFrameCount(rendered.frameCount)
+        return buffer
     }
 
     private func makeToneNode(
