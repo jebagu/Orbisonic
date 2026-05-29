@@ -811,6 +811,12 @@ final class OrbisonicViewModel: ObservableObject {
             AppLogger.shared.notice(category: "local-music", "Sort mode set to \(localMusicSortMode.rawValue)")
         }
     }
+    @Published var localMusicChannelFilter: Int = 0 {
+        didSet {
+            guard oldValue != localMusicChannelFilter else { return }
+            AppLogger.shared.notice(category: "local-music", "Channel filter set to \(localMusicChannelFilter)")
+        }
+    }
     @Published var atmosDRPOutputLayout: DolbyReferencePlayerOutputLayout = OrbisonicViewModel.loadAtmosDRPOutputLayout() {
         didSet {
             UserDefaults.standard.set(atmosDRPOutputLayout.rawValue, forKey: Self.atmosDRPOutputLayoutKey)
@@ -3398,7 +3404,8 @@ final class OrbisonicViewModel: ObservableObject {
             return "No audio files scanned yet."
         }
 
-        if localMusicSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let hasSearch = !localMusicSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !hasSearch && localMusicChannelFilter == 0 {
             return "\(total) tracks."
         }
 
@@ -3451,9 +3458,16 @@ final class OrbisonicViewModel: ObservableObject {
         return URL(string: coverURL)
     }
 
+    var availableLocalMusicChannelCounts: [Int] {
+        Array(Set(localMusicTracks.map { $0.channelCount }.filter { $0 > 0 })).sorted()
+    }
+
     var visibleLocalMusicTracks: [LocalMusicTrack] {
         let query = localMusicSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sortedTracks = sortedLocalMusicTracks
+        let channelFilter = localMusicChannelFilter
+        let sortedTracks = channelFilter > 0
+            ? sortedLocalMusicTracks.filter { $0.channelCount == channelFilter }
+            : sortedLocalMusicTracks
         guard !query.isEmpty else { return sortedTracks }
 
         return sortedTracks.filter { track in track.matches(query) }

@@ -58,6 +58,7 @@ private struct OrbisonicWebCommandPayload: Decodable {
     var value: String?
     var query: String?
     var sort: String?
+    var channels: Int?
     var index: Int?
     var seconds: Int?
     var shuffle: Bool?
@@ -153,6 +154,8 @@ struct OrbisonicWebState: Encodable {
     struct LocalMusic: Encodable {
         let search: String
         let sort: String
+        let channelFilter: Int
+        let availableChannelCounts: [Int]
         let count: String
         let queue: String
         let tracks: [Track]
@@ -626,6 +629,9 @@ extension OrbisonicViewModel {
             if let sort = payload.sort, let mode = PlaylistSortMode(rawValue: sort) {
                 localMusicSortMode = mode
             }
+            if let channels = payload.channels {
+                localMusicChannelFilter = max(0, channels)
+            }
         case "\(OrbisonicWebConstants.basePath)/api/local-music/track":
             throw OrbisonicWebCommandError.webControlReadOnly
         case "\(OrbisonicWebConstants.basePath)/api/local-music/playlist":
@@ -949,6 +955,8 @@ extension OrbisonicViewModel {
         OrbisonicWebState.LocalMusic(
             search: localMusicSearchText,
             sort: localMusicSortMode.rawValue,
+            channelFilter: localMusicChannelFilter,
+            availableChannelCounts: availableLocalMusicChannelCounts,
             count: localMusicCountText,
             queue: "",
             tracks: visibleLocalMusicTracks.prefix(80).map(webTrackState),
