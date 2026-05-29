@@ -288,7 +288,9 @@ Atmos DRP remains implemented but dormant. It is not exposed in current native o
   - `Sources/Orbisonic/OrbitalVUMeterModel.swift`
     - Owns dormant value-only orbital VU state mapping.
   - `Sources/Orbisonic/ContentView.swift`
-    - Owns the simplified active Renderer tab controls: `Always Mono`, `Stereo 90`, `Binaural 180`, equal-height mode/status panels, renderer status rows, and collapsible tuning controls.
+    - Owns the simplified active Renderer tab controls: `Always Mono`, `Stereo 90`, `Binaural 180`, the equal-height `Monitor Downmix` / `Sonic Sphere Render` status panels, renderer status rows, ambiguous-layout warning display, and collapsible tuning controls.
+  - `Sources/Orbisonic/MonitorDownmixPanelModel.swift`
+    - Owns the testable row text and warning model for the Renderer tab `Monitor Downmix` panel.
   - `Sources/Orbisonic/SpatialTuning.swift`
   - `Sources/Orbisonic/PureAudioRouteCapabilityBridge.swift`
   - `Sources/AudioCore/RenderGraphPlan.swift`
@@ -300,6 +302,8 @@ Atmos DRP remains implemented but dormant. It is not exposed in current native o
   - `Tests/OrbisonicTests/RendererMatrixSampleRendererTests.swift`
   - `Tests/OrbisonicTests/SonicSphereMeteringTests.swift` including Sonic Sphere meter independence and dormant orbital VU value-model mapping coverage.
   - `Tests/OrbisonicTests/OrbisonicUITweakTests.swift` including simplified Renderer tab, VU options, and Settings surface coverage.
+  - `Tests/OrbisonicTests/MonitorDownmixPanelModelTests.swift` including stereo identity, explicit 5.1, ambiguous 5.1, live multichannel fallback, and Atmos-bed-only monitor downmix panel coverage.
+  - `Tests/OrbisonicTests/DiagnosticRoutingRegressionTests.swift` including the source-level guard that Output 2 Renderer channel-walk diagnostics prepare the renderer route, not the Output 1 Monitor route.
   - `Tests/AudioCoreTests/RenderGraphPlanTests.swift`
   - `Tests/AudioCoreTests/RenderKernelTests.swift`
   - `Tests/AudioCoreTests/OutputAdapterTests.swift`
@@ -312,7 +316,12 @@ Atmos DRP remains implemented but dormant. It is not exposed in current native o
 ### Headphone Or Normal Monitor Path
 
 - Implementation:
+  - `Sources/Orbisonic/AudioFileLoader.swift`
+    - Prepares the loaded local-file reference stereo monitor buffer using `NormalMonitorStereoDownmixer` while keeping source-channel mono buffers available for input and Sonic Sphere analysis meters.
+  - `Sources/Orbisonic/OrbisonicEngine.swift`
+    - Schedules loaded local-file monitor playback through one stereo `AVAudioPlayerNode` connected to the monitor output chain, replacing the old per-source-channel audible local monitor player graph.
   - `Sources/Orbisonic/NormalMonitorStereoDownmixer.swift`
+    - Owns the deterministic stereo downmix matrix used by local-file reference monitor playback; AVAudioPCMBuffer bridging stays in the loader/runtime boundary.
   - `Sources/Orbisonic/NormalMonitorGraphTopology.swift`
   - `Sources/Orbisonic/NormalMonitorRouteDescriptor.swift`
   - `Sources/Orbisonic/NormalMonitorConversionLedger.swift`
@@ -320,6 +329,7 @@ Atmos DRP remains implemented but dormant. It is not exposed in current native o
   - `Sources/AudioCore/Monitors/AppleSpatialHeadphoneMonitor.swift`
   - `Sources/AudioCore/RenderKernels.swift`
 - Related tests:
+  - `Tests/OrbisonicTests/LocalPlayerStabilizationTests.swift` including the guard that local monitor playback uses one reference stereo player instead of per-channel local monitor player nodes.
   - `Tests/OrbisonicTests/NormalMonitorStereoDownmixerTests.swift`
   - `Tests/OrbisonicTests/NormalMonitorGraphTopologyTests.swift`
   - `Tests/OrbisonicTests/NormalMonitorRouteDescriptorTests.swift`
@@ -351,6 +361,7 @@ Atmos DRP remains implemented but dormant. It is not exposed in current native o
   - `Tests/OrbisonicTests/VURoutingViewTests.swift`
   - `Tests/OrbisonicTests/MeteringServiceTests.swift`
   - `Tests/OrbisonicTests/MeteringIsolationTests.swift`
+  - `Tests/OrbisonicTests/DiagnosticRoutingRegressionTests.swift`
   - `Tests/AudioCoreTests/MeteringTelemetryTests.swift`
 - Related docs:
   - `AGENTS.md`

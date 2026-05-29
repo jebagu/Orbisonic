@@ -4,6 +4,48 @@ import XCTest
 @testable import Orbisonic
 
 final class LocalPlayerStabilizationTests: XCTestCase {
+    func testMultiNodeLocalResumeUsesSharedHostTimeInsteadOfSequentialPlayCalls() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Orbisonic/OrbisonicEngine.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("playerNodes.forEach { $0.play() }"))
+        XCTAssertTrue(source.contains("playerNodes.forEach { $0.play(at: startTime) }"))
+    }
+
+    func testLocalMonitorPlaybackUsesSingleReferenceStereoPlayer() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Orbisonic/OrbisonicEngine.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("playerNodes = loadedFile.layout.channels.map { _ in AVAudioPlayerNode() }"))
+        XCTAssertFalse(source.contains("let sourceBuffer = loadedFile.monoBuffers[index]"))
+        XCTAssertTrue(source.contains("playerNodes = [player]"))
+        XCTAssertTrue(source.contains("Self.slice(buffer: loadedFile.monitorBuffer"))
+        XCTAssertTrue(source.contains("reference-stereo-monitor"))
+    }
+
+    func testLoadedLocalFilePreparesReferenceStereoMonitorBuffer() throws {
+        let fixture = try TemporaryLocalMusicFixture()
+        defer { fixture.remove() }
+
+        let audioURL = fixture.directory.appendingPathComponent("reference-monitor.wav")
+        try Self.writeSilentAudioFile(to: audioURL, frames: 512)
+
+        let loaded = try AudioFileLoader().load(url: audioURL)
+
+        XCTAssertEqual(loaded.monitorFormat.channelCount, 2)
+        XCTAssertEqual(loaded.monitorBuffer.format.channelCount, 2)
+        XCTAssertEqual(loaded.monitorBuffer.frameLength, AVAudioFrameCount(loaded.frameCount))
+        XCTAssertEqual(loaded.monoBuffers.count, loaded.layout.channelCount)
+    }
+
     func testScanExcludesMissingM3UEntries() throws {
         let fixture = try TemporaryLocalMusicFixture()
         defer { fixture.remove() }

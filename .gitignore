@@ -17,6 +17,7 @@ dist/
 
 # Packaged archives and local logs
 *.zip
+*.pkg
 *.log
 
 # Local environment overrides

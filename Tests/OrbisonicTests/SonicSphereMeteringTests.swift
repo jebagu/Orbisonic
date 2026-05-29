@@ -258,7 +258,13 @@ final class SonicSphereMeteringTests: XCTestCase {
         let sampleRate = 48_000.0
         let layout = SurroundLayoutDetector.fallbackLayout(for: channelCount)
         let monoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let monitorFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
         let buffers = Self.makeMonoBuffers(channelCount: channelCount, frames: frames, amplitude: amplitude)
+        let monitorBuffer = AVAudioPCMBuffer(
+            pcmFormat: monitorFormat,
+            frameCapacity: AVAudioFrameCount(frames)
+        )!
+        monitorBuffer.frameLength = AVAudioFrameCount(frames)
         let metadata = AudioSourceMetadata(
             fileName: "meter-only.wav",
             containerName: "WAV",
@@ -273,11 +279,13 @@ final class SonicSphereMeteringTests: XCTestCase {
         return LoadedAudioFile(
             url: URL(fileURLWithPath: "meter-only.wav"),
             monoFormat: monoFormat,
+            monitorFormat: monitorFormat,
             sampleRate: sampleRate,
             frameCount: AVAudioFramePosition(frames),
             layout: layout,
             metadata: metadata,
-            monoBuffers: buffers
+            monoBuffers: buffers,
+            monitorBuffer: monitorBuffer
         )
     }
 

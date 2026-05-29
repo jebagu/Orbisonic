@@ -597,6 +597,7 @@ final class OrbisonicEngine {
         }
 
         let layout = SurroundLayoutDetector.fallbackLayout(for: requestedChannelCount)
+        let liveLayoutSource = "Live Core Audio route channel count; no explicit semantic layout"
         let metadata = AudioSourceMetadata(
             fileName: sourceName,
             containerName: "Live",
@@ -606,7 +607,14 @@ final class OrbisonicEngine {
             channelCount: layout.channelCount,
             sampleRate: sampleRate,
             bitDepth: 32,
-            duration: 0
+            duration: 0,
+            channelLayoutConfidence: AudioSourceMetadata.fallbackLayoutConfidence(for: layout.channelCount),
+            channelLayoutSourceDescription: requestedChannelCount > 2 ? liveLayoutSource : "Live Core Audio route",
+            channelLayoutWarnings: AudioSourceMetadata.fallbackLayoutWarnings(
+                channelCount: layout.channelCount,
+                channelSummary: layout.channelSummary,
+                sourceDescription: liveLayoutSource
+            )
         )
         let liveSource = LiveInputSource(layout: layout, metadata: metadata)
         let liveRendererScene = RendererMatrixBuilder.sceneModel(
@@ -716,7 +724,7 @@ final class OrbisonicEngine {
                 startPlayers()
                 AppLogger.shared.notice(category: "transport", "Rescheduled paused playback at frame=\(currentStartFrame).")
             } else {
-                playerNodes.forEach { $0.play() }
+                startPlayers()
             }
             pausedPlaybackNeedsReschedule = false
             state = .playing
@@ -2136,7 +2144,7 @@ final class OrbisonicEngine {
 
         switch state {
         case .paused:
-            playerNodes.forEach { $0.play() }
+            startPlayers()
             pausedPlaybackNeedsReschedule = false
             state = .playing
             AppLogger.shared.notice(category: "streaming", "Resumed streaming playback at \(formatTime(currentTime())) / \(context.metadata.durationText).")
@@ -2170,7 +2178,8 @@ final class OrbisonicEngine {
     }
 
     private static func streamingMetadata(for descriptor: AudioAssetDescriptor) -> AudioSourceMetadata {
-        AudioSourceMetadata(
+        let layoutSource = "Streaming asset descriptor channel layout"
+        return AudioSourceMetadata(
             fileName: descriptor.url.lastPathComponent,
             containerName: descriptor.containerDescription ?? descriptor.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
             codecName: descriptor.codecDescription ?? "Unknown",
@@ -2180,7 +2189,14 @@ final class OrbisonicEngine {
             sampleRate: descriptor.sourceSampleRate,
             bitDepth: 32,
             duration: descriptor.durationSeconds ?? 0,
-            formatNote: "Streaming local playback; decoded in bounded chunks."
+            formatNote: "Streaming local playback; decoded in bounded chunks.",
+            channelLayoutConfidence: AudioSourceMetadata.fallbackLayoutConfidence(for: descriptor.channelCount),
+            channelLayoutSourceDescription: layoutSource,
+            channelLayoutWarnings: AudioSourceMetadata.fallbackLayoutWarnings(
+                channelCount: descriptor.channelCount,
+                channelSummary: descriptor.channelLayout.channelSummary,
+                sourceDescription: layoutSource
+            )
         )
     }
 
@@ -2194,31 +2210,29 @@ final class OrbisonicEngine {
 
         meteringService.setInactive(signal: .sonicSphere, channelCount: rendererScene.matrix.outputCount)
 
-        playerNodes = loadedFile.layout.channels.map { _ in AVAudioPlayerNode() }
-
-        for (channel, player) in zip(loadedFile.layout.channels, playerNodes) {
-            engine.attach(player)
-            engine.connect(player, to: preVolumeMixer, format: loadedFile.monoFormat)
-            configureNormalMonitorNode(player, for: channel, sourceChannelCount: loadedFile.layout.channelCount)
-        }
+        let player = AVAudioPlayerNode()
+        playerNodes = [player]
+        engine.attach(player)
+        engine.connect(player, to: preVolumeMixer, format: loadedFile.monitorFormat)
 
         AppLogger.shared.info(
             category: "engine",
-            "Rebuilt player graph with \(playerNodes.count) mono sources through Normal Monitor."
+            "Rebuilt player graph with one reference stereo monitor source."
         )
         debugTiming?.log(
             "replace current source graph rebuild end",
             fileURL: loadedFile.url,
             extra: [
                 "graphMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - graphStart) / 1_000_000.0))",
-                "path=\"normal-monitor\"",
+                "path=\"reference-stereo-monitor\"",
                 "playerNodes=\(playerNodes.count)"
             ]
         )
     }
 
     private func applyTuning(_ tuning: SpatialTuning) {
-        if let loadedFile {
+        if let loadedFile,
+           playerNodes.count == loadedFile.layout.channelCount {
             for (channel, player) in zip(loadedFile.layout.channels, playerNodes) {
                 configureNormalMonitorNode(player, for: channel, sourceChannelCount: loadedFile.layout.channelCount)
             }
@@ -2264,33 +2278,27 @@ final class OrbisonicEngine {
 
         AppLogger.shared.debug(
             category: "transport",
-            "Scheduling \(playerNodes.count) channels from frame=\(currentStartFrame)"
+            "Scheduling reference stereo monitor stream from frame=\(currentStartFrame)"
         )
 
-        for (index, player) in playerNodes.enumerated() {
-            player.stop()
-            let sourceBuffer = loadedFile.monoBuffers[index]
-            let scheduledBuffer = Self.slice(buffer: sourceBuffer, fromFrame: currentStartFrame)
+        guard let player = playerNodes.first else { return }
+        player.stop()
+        let scheduledBuffer = Self.slice(buffer: loadedFile.monitorBuffer, fromFrame: currentStartFrame)
 
-            if index == 0 {
-                let token = completionToken
-                player.scheduleBuffer(scheduledBuffer, at: nil, options: []) { [token] in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.completionToken == token else { return }
-                        guard self.state == .playing else {
-                            AppLogger.shared.debug(
-                                category: "transport",
-                                "Ignored playback completion while state=\(self.state.rawValue)."
-                            )
-                            return
-                        }
-                        AppLogger.shared.notice(category: "transport", "Playback finished naturally.")
-                        self.stop()
-                        self.onPlaybackEnded?()
-                    }
+        let token = completionToken
+        player.scheduleBuffer(scheduledBuffer, at: nil, options: []) { [token] in
+            Task { @MainActor [weak self] in
+                guard let self, self.completionToken == token else { return }
+                guard self.state == .playing else {
+                    AppLogger.shared.debug(
+                        category: "transport",
+                        "Ignored playback completion while state=\(self.state.rawValue)."
+                    )
+                    return
                 }
-            } else {
-                player.scheduleBuffer(scheduledBuffer, at: nil, options: [])
+                AppLogger.shared.notice(category: "transport", "Playback finished naturally.")
+                self.stop()
+                self.onPlaybackEnded?()
             }
         }
         pausedPlaybackNeedsReschedule = false
@@ -2608,15 +2616,35 @@ final class OrbisonicEngine {
     private static func slice(buffer: AVAudioPCMBuffer, fromFrame startFrame: AVAudioFramePosition) -> AVAudioPCMBuffer {
         let sourceStart = max(startFrame, 0)
         let availableFrames = AVAudioFramePosition(buffer.frameLength)
-        let framesRemaining = max(availableFrames - sourceStart, 1)
-        let monoFormat = buffer.format
-        let slice = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: AVAudioFrameCount(framesRemaining))!
+        let format = buffer.format
+        guard availableFrames > 0,
+              sourceStart < availableFrames
+        else {
+            let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1)!
+            silence.frameLength = 1
+            if let channels = silence.floatChannelData {
+                for channelIndex in 0..<Int(format.channelCount) {
+                    channels[channelIndex].initialize(repeating: 0, count: 1)
+                }
+            }
+            return silence
+        }
+
+        let framesRemaining = availableFrames - sourceStart
+        let slice = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(framesRemaining))!
         slice.frameLength = AVAudioFrameCount(framesRemaining)
 
-        let source = buffer.floatChannelData![0]
-        let destination = slice.floatChannelData![0]
+        guard let sourceChannels = buffer.floatChannelData,
+              let destinationChannels = slice.floatChannelData
+        else { return slice }
+
         let offset = Int(sourceStart)
-        destination.update(from: source.advanced(by: offset), count: Int(framesRemaining))
+        for channelIndex in 0..<Int(format.channelCount) {
+            destinationChannels[channelIndex].update(
+                from: sourceChannels[channelIndex].advanced(by: offset),
+                count: Int(framesRemaining)
+            )
+        }
         return slice
     }
 

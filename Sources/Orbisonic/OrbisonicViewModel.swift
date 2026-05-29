@@ -3988,6 +3988,7 @@ final class OrbisonicViewModel: ObservableObject {
         let layout = channelCount > 0
             ? SurroundLayoutDetector.fallbackLayout(for: channelCount)
             : SurroundLayout(name: "Probing", channels: [])
+        let layoutSource = "Pending local library metadata"
 
         return AudioSourceMetadata(
             fileName: request.url.lastPathComponent,
@@ -4002,7 +4003,14 @@ final class OrbisonicViewModel: ObservableObject {
             title: track?.title?.trimmedNilIfBlank,
             album: track?.album?.trimmedNilIfBlank,
             artist: track?.artist?.trimmedNilIfBlank,
-            formatNote: "Preparing full playback buffers."
+            formatNote: "Preparing full playback buffers.",
+            channelLayoutConfidence: AudioSourceMetadata.fallbackLayoutConfidence(for: channelCount),
+            channelLayoutSourceDescription: layoutSource,
+            channelLayoutWarnings: AudioSourceMetadata.fallbackLayoutWarnings(
+                channelCount: channelCount,
+                channelSummary: layout.channelSummary,
+                sourceDescription: layoutSource
+            )
         )
     }
 
@@ -4011,6 +4019,7 @@ final class OrbisonicViewModel: ObservableObject {
         request: LocalFileLoadRequest
     ) -> AudioSourceMetadata {
         let track = track(for: request)
+        let layoutSource = "Audio asset descriptor channel layout"
         return AudioSourceMetadata(
             fileName: descriptor.url.lastPathComponent,
             containerName: descriptor.containerDescription ?? descriptor.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
@@ -4024,7 +4033,14 @@ final class OrbisonicViewModel: ObservableObject {
             title: track?.title?.trimmedNilIfBlank,
             album: track?.album?.trimmedNilIfBlank,
             artist: track?.artist?.trimmedNilIfBlank,
-            formatNote: "Descriptor ready; preparing full playback buffers."
+            formatNote: "Descriptor ready; preparing full playback buffers.",
+            channelLayoutConfidence: AudioSourceMetadata.fallbackLayoutConfidence(for: descriptor.channelCount),
+            channelLayoutSourceDescription: layoutSource,
+            channelLayoutWarnings: AudioSourceMetadata.fallbackLayoutWarnings(
+                channelCount: descriptor.channelCount,
+                channelSummary: descriptor.channelLayout.channelSummary,
+                sourceDescription: layoutSource
+            )
         )
     }
 
@@ -4198,7 +4214,8 @@ final class OrbisonicViewModel: ObservableObject {
     }
 
     private func localGaplessMetadata(for track: LocalMusicTrack) -> AudioSourceMetadata {
-        AudioSourceMetadata(
+        let layoutSource = "Local library channel metadata"
+        return AudioSourceMetadata(
             fileName: track.fileName,
             containerName: track.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
             codecName: "Local file",
@@ -4211,7 +4228,14 @@ final class OrbisonicViewModel: ObservableObject {
             title: track.title?.trimmedNilIfBlank,
             album: track.album?.trimmedNilIfBlank,
             artist: track.artist?.trimmedNilIfBlank,
-            formatNote: "Gapless local playback; decoded in bounded chunks."
+            formatNote: "Gapless local playback; decoded in bounded chunks.",
+            channelLayoutConfidence: AudioSourceMetadata.fallbackLayoutConfidence(for: track.channelCount),
+            channelLayoutSourceDescription: layoutSource,
+            channelLayoutWarnings: AudioSourceMetadata.fallbackLayoutWarnings(
+                channelCount: track.channelCount,
+                channelSummary: track.channelSummary,
+                sourceDescription: layoutSource
+            )
         )
     }
 
@@ -5288,6 +5312,7 @@ final class OrbisonicViewModel: ObservableObject {
         request: LocalFileLoadRequest
     ) -> AudioSourceMetadata {
         let track = track(for: request)
+        let layoutSource = "Streaming asset descriptor channel layout"
         return AudioSourceMetadata(
             fileName: descriptor.url.lastPathComponent,
             containerName: descriptor.containerDescription ?? descriptor.url.pathExtension.trimmedNilIfBlank?.uppercased() ?? "Unknown",
@@ -5301,7 +5326,14 @@ final class OrbisonicViewModel: ObservableObject {
             title: track?.title?.trimmedNilIfBlank,
             album: track?.album?.trimmedNilIfBlank,
             artist: track?.artist?.trimmedNilIfBlank,
-            formatNote: "Streaming local playback; decoded in bounded chunks."
+            formatNote: "Streaming local playback; decoded in bounded chunks.",
+            channelLayoutConfidence: AudioSourceMetadata.fallbackLayoutConfidence(for: descriptor.channelCount),
+            channelLayoutSourceDescription: layoutSource,
+            channelLayoutWarnings: AudioSourceMetadata.fallbackLayoutWarnings(
+                channelCount: descriptor.channelCount,
+                channelSummary: descriptor.channelLayout.channelSummary,
+                sourceDescription: layoutSource
+            )
         )
     }
 
@@ -7054,7 +7086,7 @@ final class OrbisonicViewModel: ObservableObject {
         case .monitor:
             return ensureOutputForAction(.monitor)
         case .renderer:
-            return ensureOutputForAction(.monitor)
+            return ensureOutputForAction(.renderer)
         }
     }
 
@@ -7600,6 +7632,16 @@ final class OrbisonicViewModel: ObservableObject {
             ? "1 decoded channel"
             : "\(metadata.channelCount) decoded channels"
         return sourceMode.isLiveInput ? "\(sourceText) • live capture" : "\(sourceText) • local player"
+    }
+
+    var monitorDownmixPanelModel: MonitorDownmixPanelModel {
+        MonitorDownmixPanelModel.make(
+            sourceMode: sourceMode,
+            metadata: visibleLocalSourceMetadata,
+            signalText: renderFlowTitle,
+            outputText: monitorOutputNowText,
+            liveReadinessText: liveInputReadinessText
+        )
     }
 
     var routeFlowTitle: String {

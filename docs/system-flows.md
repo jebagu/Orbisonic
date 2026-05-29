@@ -112,7 +112,7 @@ sequenceDiagram
     Engine-->>Diagnostics: Playback, meter, and error status
 ```
 
-Current local playback surfaces include probing, loading, streaming, local music library state, optional gapless scheduling, metering, renderer scene refresh, and normal monitor setup. Unsupported formats, source-channel overflow, sample-rate policy failures, and decode failures stay visible as errors instead of being hidden. When the selected source changes away from Local Files to Off or Test Tone, stale local playback metadata is cleared so the idle or diagnostic source cannot present the previous track as active.
+Current local playback surfaces include probing, loading, streaming, local music library state, optional gapless scheduling, metering, renderer scene refresh, and normal monitor setup. Source metadata now carries channel-layout confidence, source evidence, and warning text so the Renderer tab can distinguish explicit layouts from fallback channel-count assumptions. Loaded local files now prepare one reference stereo monitor buffer with `NormalMonitorStereoDownmixer`; the audible monitor path schedules that single stereo buffer instead of one `AVAudioPlayerNode` per source channel, while source-channel buffers remain available for input and Sonic Sphere analysis meters. Local and streaming multichannel pause/resume restart any remaining per-channel monitor player nodes against the same host-time start so paused resume does not issue one sequential `play()` call per channel. Unsupported formats, source-channel overflow, sample-rate policy failures, ambiguous layout warnings, and decode failures stay visible instead of being hidden. When the selected source changes away from Local Files to Off or Test Tone, stale local playback metadata is cleared so the idle or diagnostic source cannot present the previous track as active.
 
 ## 4. Live Roon Loopback Flow
 
@@ -268,7 +268,7 @@ flowchart TD
 
 Direct 30 and Direct 30.1 are bypass modes only when source width matches. `Stereo 90` is the default two-channel Sonic Sphere spread, and `Binaural 180` maps two-channel sources to opposite Sonic Sphere hemispheres; it is not headphone/HRTF/Apple Spatial monitor binaural. Renderer output must not be derived from monitor output, and monitor choices must not mutate the Sonic Sphere topology.
 
-The current Renderer tab is a compact mode/status/tuning surface. The older orbital Sonic Sphere VU model remains a value-only helper in source, but it is no longer rendered as a visible Renderer-tab panel.
+The current Renderer tab is a compact mode/status/tuning surface. Its status row is split into equal-height `Monitor Downmix` and `Sonic Sphere Render` panels: the left panel describes the audible normal-monitor stereo downmix and warns when multichannel layout evidence is ambiguous, while the right panel describes the Sonic Sphere render scene, matrix, output, and inspection state. The older orbital Sonic Sphere VU model remains a value-only helper in source, but it is no longer rendered as a visible Renderer-tab panel.
 
 ## 9. Headphone Or Normal Monitor Flow
 
@@ -294,7 +294,7 @@ flowchart LR
     SourcePCM -.-> Production
 ```
 
-Normal monitor topology is source PCM to stereo downmixer to monitor output. It should not contain an audible Sonic Sphere matrix node, duplicate direct and staged routes, or monitor-volume behavior that changes production output.
+Normal monitor topology is source PCM to stereo downmixer to monitor output. For loaded local files, the downmixer now produces a finished stereo monitor buffer before audible playback, so the monitor output chain receives one stereo stream rather than independently scheduled source-channel streams. The Renderer tab `Monitor Downmix` panel reports the selected source signal, mapping confidence, `NormalMonitorStereoDownmixer`, stereo/multichannel/LFE rules, monitor output route, and any ambiguous-layout warning. It should not contain an audible Sonic Sphere matrix node, duplicate direct and staged routes, or monitor-volume behavior that changes production output.
 
 ## 10. Route Diagnostics Flow
 
@@ -339,7 +339,7 @@ Diagnostics should distinguish missing loopback devices, wrong selected routes, 
 
 ## 11. Test Tone Flow
 
-Test tones are diagnostic sources. They can target monitor checks, renderer output channel walks, or multichannel VU activity without implying that external player audio or hardware has been verified.
+Test tones are diagnostic sources. They can target monitor checks, renderer output channel walks, or multichannel VU activity without implying that external player audio or hardware has been verified. Output 2 Renderer channel walks must prepare and log the selected renderer route; Output 1 Monitor route selection is a separate monitor diagnostic path.
 
 ```mermaid
 sequenceDiagram

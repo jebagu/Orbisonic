@@ -393,6 +393,9 @@ struct AudioSourceMetadata {
     let album: String?
     let artist: String?
     let formatNote: String?
+    let channelLayoutConfidence: ChannelLayoutConfidence
+    let channelLayoutSourceDescription: String
+    let channelLayoutWarnings: [String]
 
     init(
         fileName: String,
@@ -407,7 +410,10 @@ struct AudioSourceMetadata {
         title: String? = nil,
         album: String? = nil,
         artist: String? = nil,
-        formatNote: String? = nil
+        formatNote: String? = nil,
+        channelLayoutConfidence: ChannelLayoutConfidence = .high,
+        channelLayoutSourceDescription: String = "Source layout metadata",
+        channelLayoutWarnings: [String] = []
     ) {
         self.fileName = fileName
         self.containerName = containerName
@@ -422,6 +428,9 @@ struct AudioSourceMetadata {
         self.album = album
         self.artist = artist
         self.formatNote = formatNote
+        self.channelLayoutConfidence = channelLayoutConfidence
+        self.channelLayoutSourceDescription = channelLayoutSourceDescription
+        self.channelLayoutWarnings = channelLayoutWarnings
     }
 
     var sampleRateText: String {
@@ -445,6 +454,24 @@ struct AudioSourceMetadata {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+extension AudioSourceMetadata {
+    static func fallbackLayoutConfidence(for channelCount: Int) -> ChannelLayoutConfidence {
+        channelCount > 2 ? .low : .high
+    }
+
+    static func fallbackLayoutWarnings(
+        channelCount: Int,
+        channelSummary: String,
+        sourceDescription: String
+    ) -> [String] {
+        guard channelCount > 2 else { return [] }
+        let fallbackOrder = channelSummary.isEmpty ? "\(channelCount) channels" : channelSummary
+        return [
+            "Channel layout is ambiguous. \(sourceDescription); using fallback order \(fallbackOrder)."
+        ]
     }
 }
 
@@ -733,6 +760,7 @@ struct AudioMetadataBuilder {
         for file: AVAudioFile,
         layout: SurroundLayout,
         duration: TimeInterval,
+        layoutDescriptor: ChannelRoleLayoutDescriptor? = nil,
         sourceURL: URL? = nil,
         containerName: String? = nil,
         codecName: String? = nil,
@@ -760,7 +788,10 @@ struct AudioMetadataBuilder {
             title: tags.title?.trimmedNilIfBlank,
             album: tags.album?.trimmedNilIfBlank,
             artist: tags.artist?.trimmedNilIfBlank,
-            formatNote: formatNote
+            formatNote: formatNote,
+            channelLayoutConfidence: layoutDescriptor?.confidence ?? .high,
+            channelLayoutSourceDescription: layoutDescriptor?.sourceDescription ?? "Source layout metadata",
+            channelLayoutWarnings: layoutDescriptor?.warningDescriptions ?? []
         )
     }
 

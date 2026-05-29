@@ -5,11 +5,13 @@ import CoreAudioTypes
 struct LoadedAudioFile: @unchecked Sendable {
     let url: URL
     let monoFormat: AVAudioFormat
+    let monitorFormat: AVAudioFormat
     let sampleRate: Double
     let frameCount: AVAudioFramePosition
     let layout: SurroundLayout
     let metadata: AudioSourceMetadata
     let monoBuffers: [AVAudioPCMBuffer]
+    let monitorBuffer: AVAudioPCMBuffer
 
     var duration: TimeInterval {
         guard sampleRate > 0 else { return 0 }
@@ -86,6 +88,7 @@ enum AudioFileLoaderError: LocalizedError {
     case layoutCreationFailed(UInt32)
     case surroundFormatCreationFailed(Double, UInt32)
     case convertedBufferAllocationFailed
+    case monitorBufferAllocationFailed
     case monoFormatCreationFailed(Double)
     case monoBufferAllocationFailed
     case converterCreationFailed
@@ -111,6 +114,8 @@ enum AudioFileLoaderError: LocalizedError {
             "Unable to create an internal \(channels)-channel float format at \(sampleRate) Hz."
         case .convertedBufferAllocationFailed:
             "Unable to allocate the converted audio buffer."
+        case .monitorBufferAllocationFailed:
+            "Unable to allocate the reference stereo monitor buffer."
         case .monoFormatCreationFailed(let sampleRate):
             "Unable to create an internal mono float format at \(sampleRate) Hz."
         case .monoBufferAllocationFailed:
@@ -517,11 +522,43 @@ final class AudioFileLoader {
             ]
         )
 
+        guard let monitorFormat = AVAudioFormat(
+            standardFormatWithSampleRate: surroundFormat.sampleRate,
+            channels: 2
+        ) else {
+            throw AudioFileLoaderError.monitorBufferAllocationFailed
+        }
+        guard let monitorBuffer = AVAudioPCMBuffer(
+            pcmFormat: monitorFormat,
+            frameCapacity: surroundBuffer.frameLength
+        ) else {
+            throw AudioFileLoaderError.monitorBufferAllocationFailed
+        }
+
+        let monitorRenderStart = DispatchTime.now().uptimeNanoseconds
+        try checkCancellation("before reference monitor render", fileURL: readURL)
+        timing.log("reference monitor render start", fileURL: readURL, extra: ["channels=\(channelCount)", "frames=\(surroundBuffer.frameLength)"])
+        try Self.renderReferenceMonitorBuffer(
+            inputBuffers: monoBuffers,
+            layout: detectedLayout,
+            outputBuffer: monitorBuffer
+        )
+        try checkCancellation("after reference monitor render", fileURL: readURL)
+        timing.log(
+            "reference monitor render end",
+            fileURL: readURL,
+            extra: [
+                "frames=\(monitorBuffer.frameLength)",
+                "renderMs=\(String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - monitorRenderStart) / 1_000_000.0))"
+            ]
+        )
+
         let duration = Double(surroundBuffer.frameLength) / surroundFormat.sampleRate
         let metadata = AudioMetadataBuilder.build(
             for: file,
             layout: detectedLayout,
             duration: duration,
+            layoutDescriptor: layoutDescriptor,
             sourceURL: url,
             containerName: matroskaStreamInfo == nil ? nil : "Matroska",
             codecName: matroskaStreamInfo?.codecName ?? codecNameOverride,
@@ -548,12 +585,70 @@ final class AudioFileLoader {
         return LoadedAudioFile(
             url: url,
             monoFormat: monoFormat,
+            monitorFormat: monitorFormat,
             sampleRate: surroundFormat.sampleRate,
             frameCount: AVAudioFramePosition(surroundBuffer.frameLength),
             layout: detectedLayout,
             metadata: metadata,
-            monoBuffers: monoBuffers
+            monoBuffers: monoBuffers,
+            monitorBuffer: monitorBuffer
         )
+    }
+
+    private static func renderReferenceMonitorBuffer(
+        inputBuffers: [AVAudioPCMBuffer],
+        layout: SurroundLayout,
+        outputBuffer: AVAudioPCMBuffer
+    ) throws {
+        let downmixer = NormalMonitorStereoDownmixer(layout: layout)
+        guard inputBuffers.count == downmixer.matrix.sourceChannelCount else {
+            throw NormalMonitorStereoDownmixerError.inputChannelCountMismatch(
+                expected: downmixer.matrix.sourceChannelCount,
+                actual: inputBuffers.count
+            )
+        }
+        guard Int(outputBuffer.format.channelCount) == downmixer.matrix.outputChannelCount else {
+            throw NormalMonitorStereoDownmixerError.outputChannelCountMismatch(
+                expected: downmixer.matrix.outputChannelCount,
+                actual: Int(outputBuffer.format.channelCount)
+            )
+        }
+
+        let frameCount = Int(inputBuffers.first?.frameLength ?? 0)
+        guard Int(outputBuffer.frameCapacity) >= frameCount else {
+            throw AudioFileLoaderError.monitorBufferAllocationFailed
+        }
+        for (index, inputBuffer) in inputBuffers.enumerated() where Int(inputBuffer.frameLength) != frameCount {
+            throw NormalMonitorStereoDownmixerError.inputFrameCountMismatch(
+                channelIndex: index,
+                expected: frameCount,
+                actual: Int(inputBuffer.frameLength)
+            )
+        }
+        guard let outputChannels = outputBuffer.floatChannelData else {
+            throw AudioFileLoaderError.formatConversionFailed("missing monitor output float channel data")
+        }
+
+        outputBuffer.frameLength = AVAudioFrameCount(frameCount)
+        for channelIndex in 0..<downmixer.matrix.outputChannelCount {
+            outputChannels[channelIndex].initialize(repeating: 0, count: frameCount)
+        }
+        guard frameCount > 0 else { return }
+
+        for coefficient in downmixer.matrix.coefficients {
+            guard let inputChannels = inputBuffers[coefficient.inputIndex].floatChannelData else {
+                throw AudioFileLoaderError.formatConversionFailed("missing monitor input float channel data")
+            }
+
+            let input = inputChannels[0]
+            let left = outputChannels[0]
+            let right = outputChannels[1]
+            for frameIndex in 0..<frameCount {
+                let sample = input[frameIndex]
+                left[frameIndex] += sample * coefficient.left
+                right[frameIndex] += sample * coefficient.right
+            }
+        }
     }
 
     private static func fileSizeBytes(_ url: URL) -> Int? {

@@ -2010,18 +2010,13 @@ struct ContentView: View {
 
     private var rendererTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            EqualHeightPanelRow(spacing: 18) {
-                settingsPanel(title: "Mode", fillsHeight: true) {
-                    rendererModeSelector
-                }
+            settingsPanel(title: "Mode") {
+                rendererModeSelector
+            }
 
-                settingsPanel(title: "Renderer", fillsHeight: true) {
-                    infoRow(title: "Input", value: rendererInputChannelText)
-                    infoRow(title: "Layout", value: rendererSourceLayoutText)
-                    infoRow(title: "Matrix", value: model.rendererText)
-                    infoRow(title: "Output", value: model.rendererSelectionText)
-                    infoRow(title: "Inspect", value: model.rendererMatrixInspectionText)
-                }
+            EqualHeightPanelRow(spacing: 18) {
+                monitorDownmixRenderPanel
+                sonicSphereRenderPanel
             }
 
             OrbisonicDisclosureTray(
@@ -2034,6 +2029,31 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var monitorDownmixRenderPanel: some View {
+        let panel = model.monitorDownmixPanelModel
+        return settingsPanel(title: "Monitor Downmix", fillsHeight: true) {
+            infoRow(title: "Signal", value: panel.signalText)
+            infoRow(title: "Input", value: panel.inputText)
+            infoRow(title: "Mapping", value: panel.mappingText)
+            infoRow(title: "Render", value: panel.renderText)
+            infoRow(title: "Rules", value: panel.rulesText)
+            infoRow(title: "Output", value: panel.outputText)
+            if let warning = panel.warningText {
+                monitorDownmixWarningText(warning)
+            }
+        }
+    }
+
+    private var sonicSphereRenderPanel: some View {
+        settingsPanel(title: "Sonic Sphere Render", fillsHeight: true) {
+            infoRow(title: "Input", value: rendererInputChannelText)
+            infoRow(title: "Layout", value: rendererSourceLayoutText)
+            infoRow(title: "Matrix", value: model.rendererText)
+            infoRow(title: "Output", value: model.rendererSelectionText)
+            infoRow(title: "Inspect", value: model.rendererMatrixInspectionText)
+        }
     }
 
     private var rendererModeSelector: some View {
@@ -4536,6 +4556,21 @@ struct ContentView: View {
                 .truncationMode(.middle)
                 .frame(minHeight: 32, alignment: .topLeading)
         }
+    }
+
+    private func monitorDownmixWarningText(_ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(LabTheme.amber)
+
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(LabTheme.amber)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func outputDestinationCard<Content: View>(
